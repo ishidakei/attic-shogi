@@ -11,7 +11,7 @@
 
 > 名称について
 > 公開リポジトリ名は `attic-shogi`、ビルドされるバイナリ名は `attic`、USI の
-> `id name` は `Attic 9.70` です。
+> `id name` は `Attic 9.70git` です。
 
 ## ライセンスと帰属
 

@@ -53,6 +53,7 @@ use crate::aligned::Aligned64;
 use crate::features::{
     FeatureIndex, MoveDelta, active_features, changed_indices, requires_full_refresh,
 };
+use crate::finny::FinnyCache;
 use crate::simd::{post_ft_kernel, transformer_kernel};
 use crate::types::{FC_0_INPUT_DIMS, HIDDEN_SIZE, NnueNetwork};
 
@@ -226,6 +227,52 @@ impl Accumulator {
         }
     }
 
+    /// [`Accumulator::derive_into`] with the king-move rebuild routed through a
+    /// worker-private finny table ([`FinnyCache`]).
+    ///
+    /// The `delta.half(color) == Some(..)` arm — the overwhelmingly common one —
+    /// is byte-for-byte the same code as [`derive_into`](Self::derive_into).
+    /// Only the `None` arm differs: instead of rebuilding the half from the FT
+    /// biases plus all 40 active columns, it diffs the post-move feature list
+    /// against the cached refreshed half for that king square and copies the
+    /// result out. Bit-identical to [`Accumulator::refresh`] on `post_pos`,
+    /// exactly as `derive_into` is — the cache stores a *sum of columns*, and
+    /// wrapping `i16` addition does not care how that sum is decomposed.
+    ///
+    /// **Deviation from the reference pin (76d58ef).** The pin has no finny
+    /// tables. Upstream YaneuraOu added them in commit `72c91d8`
+    /// (`nnue_feature_transformer.h`) but ships them dormant behind an
+    /// undefined `USE_FINNY_TABLES`, so this is an ahead-of-pin adaptation of
+    /// dormant upstream code, adopted on a measured NPS win. It is
+    /// value-invariant, so it changes no search behaviour and no node count.
+    ///
+    /// # Panics
+    /// Panics if `post_pos` is missing either king.
+    pub fn derive_into_cached(
+        src: &Accumulator,
+        dst: &mut Accumulator,
+        net: &NnueNetwork,
+        post_pos: &Position,
+        delta: &MoveDelta,
+        cache: &mut FinnyCache,
+    ) {
+        for color in [Color::Black, Color::White] {
+            let i = color.index();
+            match delta.half(color) {
+                Some(pd) => {
+                    dst.perspectives[i].copy_from_slice(&src.perspectives[i]);
+                    apply_diff(
+                        &mut dst.perspectives[i],
+                        &net.ft_weights,
+                        pd.added(),
+                        pd.removed(),
+                    );
+                }
+                None => cache.refresh_into(net, post_pos, color, &mut dst.perspectives[i]),
+            }
+        }
+    }
+
     /// Output transform: pack the accumulator into `out`, the byte input buffer
     /// for L1 (`fc_0`), for the given side to move.
     ///
@@ -251,7 +298,7 @@ impl Default for Accumulator {
 /// feature's weight column. `out` and `ft_biases` are `HIDDEN_SIZE` long;
 /// `ft_weights` is a row-major `[feature][lane]` block of `HIDDEN_SIZE`-wide
 /// columns.
-fn refresh_perspective(
+pub(crate) fn refresh_perspective(
     out: &mut [i16],
     ft_biases: &[i16],
     ft_weights: &[i16],
@@ -270,7 +317,12 @@ fn refresh_perspective(
 /// [`transformer_kernel::add_sub_features`] / `add_sub_sub_features` kernels
 /// (one accumulator round-trip per lane); any other shape falls back to a
 /// separate sub-then-add. Faithful port of the reference `apply_diff`.
-fn apply_diff(out: &mut [i16], weights: &[i16], added: &[FeatureIndex], removed: &[FeatureIndex]) {
+pub(crate) fn apply_diff(
+    out: &mut [i16],
+    weights: &[i16],
+    added: &[FeatureIndex],
+    removed: &[FeatureIndex],
+) {
     match (added.len(), removed.len()) {
         (1, 1) => transformer_kernel::add_sub_features(out, weights, added, removed),
         (1, 2) => transformer_kernel::add_sub_sub_features(
@@ -381,6 +433,14 @@ mod tests {
     /// otherwise the add-side of the diff would be a trivial no-op. The pattern
     /// depends only on `(idx, lane)`, so overlapping fills are idempotent.
     fn synthetic_net_covering(positions: &[Position]) -> NnueNetwork {
+        synthetic_net_covering_salted(positions, 0)
+    }
+
+    /// [`synthetic_net_covering`] with every bias and weight shifted by `salt`,
+    /// so two nets over the same positions hold demonstrably different
+    /// parameters (used to prove the finny cache invalidates on a network
+    /// change rather than serving a stale entry).
+    fn synthetic_net_covering_salted(positions: &[Position], salt: i16) -> NnueNetwork {
         let header = NetHeader {
             version: 0,
             hash: 0,
@@ -391,7 +451,7 @@ mod tests {
         // seeded, so the ~215 MiB weight block is barely touched.
         let mut builder = NnueNetworkBuilder::new(header, [0u8; 32]);
         for (i, slot) in builder.ft_biases_mut().iter_mut().enumerate() {
-            *slot = (i as i16) % 17 - 8;
+            *slot = ((i as i16) % 17 - 8).wrapping_add(salt);
         }
         {
             let ft_weights = builder.ft_weights_mut();
@@ -401,8 +461,9 @@ mod tests {
                         let base = idx as usize * HIDDEN_SIZE;
                         for (i, slot) in ft_weights[base..base + HIDDEN_SIZE].iter_mut().enumerate()
                         {
-                            *slot = ((idx as i32).wrapping_mul(31).wrapping_add(i as i32 * 7) % 23
-                                - 11) as i16;
+                            *slot = (((idx as i32).wrapping_mul(31).wrapping_add(i as i32 * 7) % 23
+                                - 11) as i16)
+                                .wrapping_add(salt);
                         }
                     }
                 }
@@ -770,6 +831,262 @@ mod tests {
         assert!(saw_promotion, "playout exercised no promotion");
         assert!(saw_drop, "playout exercised no drop");
         assert!(saw_king_move, "playout exercised no king move");
+    }
+
+    // --- Finny-table cached rebuild ----------------------------------------
+    //
+    // The gate is bit-identity against a from-scratch rebuild in every cache
+    // state: cold entry, warm entry on the same position, warm entry carried
+    // over from a DIFFERENT position that shares the king square (the stale-entry
+    // case the diff must absorb), and across a network change (which must reset
+    // the cache rather than serve a stale half).
+
+    use crate::finny::FinnyCache;
+
+    /// Rebuild `color`'s half through `cache` and assert it equals the
+    /// independent `biases + active columns` recomputation, then re-check the
+    /// cache's own invariant over every initialised entry.
+    fn assert_cached_refresh_matches(
+        cache: &mut FinnyCache,
+        net: &NnueNetwork,
+        pos: &Position,
+        color: Color,
+        what: &str,
+    ) {
+        let mut dst = vec![0i16; HIDDEN_SIZE];
+        cache.refresh_into(net, pos, color, &mut dst);
+        assert_eq!(
+            dst,
+            expected_half(net, pos, color),
+            "{color:?}: cached rebuild != from-scratch refresh ({what})",
+        );
+        cache.assert_invariant(net);
+    }
+
+    #[test]
+    fn cached_refresh_matches_a_cold_entry_then_a_warm_one() {
+        let pos = parse_sfen(STARTPOS).unwrap();
+        let net = synthetic_net_for(&pos);
+        let mut cache = FinnyCache::new();
+
+        for color in [Color::Black, Color::White] {
+            let king = pos.king_square(color).unwrap();
+            assert!(!cache.is_warm(color, king), "entry warm before any rebuild");
+            assert_cached_refresh_matches(&mut cache, &net, &pos, color, "cold entry");
+            assert!(cache.is_warm(color, king), "entry not warmed by a rebuild");
+            // Second pass over the same position: the diff is empty, and the
+            // cached half must still be exactly right.
+            assert_cached_refresh_matches(
+                &mut cache,
+                &net,
+                &pos,
+                color,
+                "warm entry, same position",
+            );
+        }
+    }
+
+    #[test]
+    fn cached_refresh_absorbs_a_stale_entry_from_a_different_position() {
+        // Same black king square (5i) in both positions, wildly different piece
+        // sets — so the second rebuild hits a warm entry whose cached half
+        // belongs to the first position and must be diffed all the way across.
+        let a = parse_sfen(STARTPOS).unwrap();
+        let b = parse_sfen("4k4/9/2+R6/9/9/1n2s4/9/9/4K4 b GPl2p 1").unwrap();
+        assert_eq!(a.king_square(Color::Black), b.king_square(Color::Black));
+
+        let net = synthetic_net_covering(&[a.clone(), b.clone()]);
+        let mut cache = FinnyCache::new();
+
+        assert_cached_refresh_matches(&mut cache, &net, &a, Color::Black, "cold entry");
+        assert_cached_refresh_matches(
+            &mut cache,
+            &net,
+            &b,
+            Color::Black,
+            "stale entry, same bucket",
+        );
+        // ...and back again, so the diff runs in both directions.
+        assert_cached_refresh_matches(&mut cache, &net, &a, Color::Black, "stale entry, reversed");
+    }
+
+    #[test]
+    fn cached_refresh_invalidates_on_a_network_change() {
+        let pos = parse_sfen(STARTPOS).unwrap();
+        let net_a = synthetic_net_covering_salted(std::slice::from_ref(&pos), 0);
+        let net_b = synthetic_net_covering_salted(std::slice::from_ref(&pos), 5);
+        // Both nets are live at once, so they cannot share an identity token.
+        assert_ne!(
+            net_a.ft_biases.to_vec(),
+            net_b.ft_biases.to_vec(),
+            "the two synthetic nets must actually differ",
+        );
+
+        let mut cache = FinnyCache::new();
+        assert_cached_refresh_matches(&mut cache, &net_a, &pos, Color::Black, "net A, cold");
+
+        // Rebuilding the SAME position against a different network must reset
+        // the cache: reusing the entry would return net A's half.
+        assert_cached_refresh_matches(&mut cache, &net_b, &pos, Color::Black, "net B after net A");
+        assert!(
+            !cache.is_warm(Color::White, pos.king_square(Color::White).unwrap()),
+            "the reset must clear every entry, not just the one rebuilt",
+        );
+        // And back to net A, which must reset again rather than serve net B's half.
+        assert_cached_refresh_matches(&mut cache, &net_a, &pos, Color::Black, "net A after net B");
+    }
+
+    #[test]
+    fn derive_into_cached_matches_derive_into_on_a_king_move() {
+        // The wiring gate: the cached hot-path entry point agrees with both the
+        // uncached one and a from-scratch refresh, on a move that rebuilds.
+        let mut pos = parse_sfen("4k4/9/9/9/9/9/9/9/4K4 b - 1").unwrap();
+        let mv = parse_usi_move("5i5h", &pos).unwrap();
+        let mut after_pos = pos.clone();
+        after_pos.do_move(mv);
+        let net = synthetic_net_covering(&[pos.clone(), after_pos]);
+
+        let mut parent = Accumulator::new();
+        parent.refresh(&net, &pos);
+
+        let delta = MoveDelta::from_move(&pos, mv);
+        assert!(
+            delta.half(Color::Black).is_none(),
+            "this fixture must exercise the rebuild arm",
+        );
+        pos.do_move(mv);
+
+        let mut uncached = Accumulator::new();
+        Accumulator::derive_into(&parent, &mut uncached, &net, &pos, &delta);
+
+        let mut cache = FinnyCache::new();
+        let mut cached = Accumulator::new();
+        Accumulator::derive_into_cached(&parent, &mut cached, &net, &pos, &delta, &mut cache);
+
+        let mut expected = Accumulator::new();
+        expected.refresh(&net, &pos);
+
+        for color in [Color::Black, Color::White] {
+            assert_eq!(
+                cached.perspective(color),
+                expected.perspective(color),
+                "{color:?}: derive_into_cached != refresh",
+            );
+            assert_eq!(
+                cached.perspective(color),
+                uncached.perspective(color),
+                "{color:?}: derive_into_cached != derive_into",
+            );
+        }
+    }
+
+    #[test]
+    fn derive_into_cached_stays_bit_exact_over_a_long_playout() {
+        // The `derive_into` playout gate, re-run through one persistent finny
+        // cache: every ply must still equal a from-scratch refresh bit for bit,
+        // with real king moves and real warm-entry hits along the way.
+        const PLIES: usize = 48;
+
+        let mut walk = parse_sfen(STARTPOS).unwrap();
+        let mut visited = vec![walk.clone()];
+        let mut line: Vec<Move> = Vec::new();
+        for ply in 0..PLIES {
+            let mut moves: Vec<Move> = Vec::new();
+            walk.generate_legal_all(&mut moves);
+            if moves.is_empty() {
+                break;
+            }
+            // Sibling king-move successors are visited by the derive loop
+            // below, so their feature columns must be seeded too — otherwise
+            // those rebuilds would run against untouched zero pages.
+            for &m in moves
+                .iter()
+                .filter(|m| !m.is_drop() && m.moved_piece_after().kind == PieceKind::King)
+            {
+                let mut side = walk.clone();
+                side.do_move(m);
+                visited.push(side);
+            }
+            let mv = choose(ply, &walk, &moves);
+            line.push(mv);
+            walk.do_move(mv);
+            visited.push(walk.clone());
+        }
+        assert!(line.len() >= 30, "playout too short: {}", line.len());
+        let net = synthetic_net_covering(&visited);
+
+        let mut cache = FinnyCache::new();
+        let mut king_moves = 0usize;
+        let mut warm_hits = 0usize;
+
+        // Two passes over the same line through ONE cache. A single linear
+        // playout rarely revisits a king square; a real search does constantly,
+        // both by re-searching the same king move from many nodes and by trying
+        // several king moves at one node. The sibling loop below models the
+        // second, the repeated pass the first.
+        for pass in 0..2 {
+            let mut pos = parse_sfen(STARTPOS).unwrap();
+            let mut base = Accumulator::new();
+            base.refresh(&net, &pos);
+            let mut stack: Vec<Accumulator> = vec![base];
+
+            for (i, &mv) in line.iter().enumerate() {
+                // Every legal king move at this node, derived and discarded —
+                // the do/undo "try a sibling move" shape of the search.
+                let mut siblings: Vec<Move> = Vec::new();
+                pos.generate_legal_all(&mut siblings);
+                siblings.retain(|m| {
+                    *m != mv && !m.is_drop() && m.moved_piece_after().kind == PieceKind::King
+                });
+                for &sib in siblings.iter().chain(std::iter::once(&mv)) {
+                    let delta = MoveDelta::from_move(&pos, sib);
+                    let undo = pos.do_move(sib);
+
+                    // Classify the rebuild BEFORE it happens: a rebuild arm
+                    // whose entry is already initialised is exactly a warm hit.
+                    for color in [Color::Black, Color::White] {
+                        if delta.half(color).is_none() {
+                            king_moves += 1;
+                            if cache.is_warm(color, pos.king_square(color).unwrap()) {
+                                warm_hits += 1;
+                            }
+                        }
+                    }
+
+                    let mut child = Accumulator::new();
+                    Accumulator::derive_into_cached(
+                        stack.last().unwrap(),
+                        &mut child,
+                        &net,
+                        &pos,
+                        &delta,
+                        &mut cache,
+                    );
+
+                    let mut expected = Accumulator::new();
+                    expected.refresh(&net, &pos);
+                    for color in [Color::Black, Color::White] {
+                        assert_eq!(
+                            child.perspective(color),
+                            expected.perspective(color),
+                            "{color:?}: drift on pass {pass} at ply {i} after `{}`",
+                            format_usi_move(sib),
+                        );
+                    }
+                    cache.assert_invariant(&net);
+
+                    pos.undo_move(sib, undo);
+                    if sib == mv {
+                        // The line move is the one that actually advances.
+                        pos.do_move(mv);
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+
+        assert!(king_moves > 0, "playout exercised no king move");
+        assert!(warm_hits > 0, "playout never hit a warm cache entry");
     }
 
     // --- Output transform: clipping edges ----------------------------------

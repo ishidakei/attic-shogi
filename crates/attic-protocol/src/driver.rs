@@ -32,7 +32,7 @@ use crate::parser::{Command, GoLimits, MATE_UNLIMITED_MS, PositionSfen, parse_li
 /// only on an upstream catch-up. The `git` suffix marks a build past the last
 /// tagged release; a tagged release snapshot carries the plain `Attic 9.70`
 /// form.
-pub const ENGINE_NAME: &str = "Attic 9.70";
+pub const ENGINE_NAME: &str = "Attic 9.70git";
 pub const ENGINE_AUTHOR: &str = "Kei Ishida <ishida.kei@gmail.com>";
 
 // The transposition table is sized from the `USI_Hash` option (default 1024

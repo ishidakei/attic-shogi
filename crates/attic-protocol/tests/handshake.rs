@@ -14,7 +14,7 @@ fn drive(input: &str) -> String {
 fn full_usi_to_usiok_golden() {
     let out = drive("usi\nquit\n");
     let expected = "\
-id name Attic 9.70\n\
+id name Attic 9.70git\n\
 id author Kei Ishida <ishida.kei@gmail.com>\n\
 option name USI_Hash type spin default 1024 min 1 max 33554432\n\
 option name Threads type spin default 4 min 1 max 1024\n\
@@ -96,7 +96,7 @@ fn oversized_line_emits_command_too_long() {
 #[test]
 fn full_handshake_then_setoption_then_quit() {
     let out = drive("usi\nsetoption name USI_Hash value 256\nisready\nquit\n");
-    assert!(out.starts_with("id name Attic 9.70\n"));
+    assert!(out.starts_with("id name Attic 9.70git\n"));
     assert!(out.contains("usiok\n"));
     assert!(!out.contains("rejected"));
     // No EvalDir set → default `eval/nn.bin` is absent → load fails, no readyok.

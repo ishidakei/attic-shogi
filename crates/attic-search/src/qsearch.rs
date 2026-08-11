@@ -70,7 +70,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use attic_eval::{Accumulator, MoveDelta, NnueNetwork, evaluate_with};
+use attic_eval::{Accumulator, FinnyCache, MoveDelta, NnueNetwork, evaluate_with};
 use attic_state::{Color, Move, Piece, PieceKind, Position, RepetitionState, piece_value};
 use attic_storage::{Bound, TranspositionTable, TtSlot, Value};
 
@@ -494,6 +494,14 @@ pub struct QSearch<'a> {
     /// live top of the do/undo stack). Incremented per `do_move`, decremented per
     /// `undo_move`; `0` at every root node.
     acc_depth: usize,
+    /// This worker's private finny table: one cached refreshed
+    /// accumulator half per (perspective, own-king square), so a `do_move` whose
+    /// own king moved diffs against that cached half instead of summing all 40
+    /// feature columns from the FT biases. Value-invariant — see
+    /// [`Accumulator::derive_into_cached`]. Allocated once per worker (~0.5 MiB)
+    /// and never touched off the `push_accumulator` path; never shared between
+    /// Lazy-SMP workers, so it needs no synchronisation.
+    finny: Box<FinnyCache>,
     /// Test-only: when set, [`Self::static_eval`] asserts the differential
     /// accumulator equals a from-scratch [`attic_eval::evaluate`] at every
     /// evaluation point (the accumulator-equivalence gate). Off by default, so
@@ -802,6 +810,7 @@ impl<'a> QSearch<'a> {
                 .map_err(|_| ())
                 .expect("ACC_LEN slots collected"),
             acc_depth: 0,
+            finny: FinnyCache::new(),
             verify_accumulator: false,
             histories,
             reductions: {
@@ -1209,8 +1218,13 @@ impl<'a> QSearch<'a> {
 
     /// Derive the child accumulator from the current top and advance the depth,
     /// mirroring a `do_move`. `post_pos` is the position *after* the move (used
-    /// only to full-refresh a perspective whose own king moved); `delta` is the
+    /// only to rebuild a perspective whose own king moved); `delta` is the
     /// move-derived add/sub feature delta captured from the pre-move position.
+    ///
+    /// The king-move rebuild goes through this worker's finny table
+    /// ([`Self::finny`]), which turns most such rebuilds into a few-column diff
+    /// against the cached refreshed half for that king square. Bit-identical to
+    /// the uncached [`Accumulator::derive_into`] either way.
     #[inline]
     fn push_accumulator(&mut self, post_pos: &Position, delta: &MoveDelta) {
         // Software-prefetch the child position's TT cluster. The
@@ -1228,7 +1242,14 @@ impl<'a> QSearch<'a> {
         let net = self.net;
         let d = self.acc_depth;
         let (parent_slots, child_slots) = self.acc_stack.split_at_mut(d + 1);
-        Accumulator::derive_into(&parent_slots[d], &mut child_slots[0], net, post_pos, delta);
+        Accumulator::derive_into_cached(
+            &parent_slots[d],
+            &mut child_slots[0],
+            net,
+            post_pos,
+            delta,
+            &mut self.finny,
+        );
         self.acc_depth = d + 1;
     }
 

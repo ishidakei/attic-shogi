@@ -269,6 +269,27 @@ fn king_square_scan(pos: &Position, color: Color) -> Square {
 /// Panics if `pos` is missing the `perspective` side's king.
 pub fn active_features(pos: &Position, perspective: Color) -> Vec<FeatureIndex> {
     let mut list = Vec::with_capacity(MAX_ACTIVE_FEATURES);
+    active_features_into(pos, perspective, &mut list);
+    list
+}
+
+/// [`active_features`] writing into a caller-owned buffer instead of a fresh
+/// `Vec`: `list` is cleared and refilled with exactly the same
+/// [`MAX_ACTIVE_FEATURES`] indices, in the same order.
+///
+/// Used by the finny-table refresh cache ([`crate::FinnyCache`]), which reuses
+/// one scratch buffer across every cached rebuild so the king-move arm does not
+/// allocate per node.
+///
+/// # Panics
+/// Panics if `pos` is missing the `perspective` side's king.
+pub(crate) fn active_features_into(
+    pos: &Position,
+    perspective: Color,
+    list: &mut Vec<FeatureIndex>,
+) {
+    list.clear();
+    list.reserve(MAX_ACTIVE_FEATURES);
 
     let own_king_persp = from_persp(king_square(pos, perspective), perspective);
     let mirror = needs_mirror(own_king_persp);
@@ -313,8 +334,6 @@ pub fn active_features(pos: &Position, perspective: Color) -> Vec<FeatureIndex> 
     while list.len() < MAX_ACTIVE_FEATURES {
         list.push(encode_feature(sq_k_code, BONA_PIECE_ZERO));
     }
-
-    list
 }
 
 /// Active features for both perspectives, indexed by [`Color::index`]
@@ -363,13 +382,49 @@ pub(crate) fn changed_indices(
     before: &[FeatureIndex],
     after: &[FeatureIndex],
 ) -> (Vec<FeatureIndex>, Vec<FeatureIndex>) {
-    let mut sorted_before = before.to_vec();
-    let mut sorted_after = after.to_vec();
+    let mut scratch = DiffScratch::default();
+    changed_indices_into(before, after, &mut scratch);
+    (scratch.removed, scratch.added)
+}
+
+/// Reusable buffers for [`changed_indices_into`]: the two sorted copies plus the
+/// two outputs. Owned by the finny-table cache so a cached rebuild reuses the
+/// same four allocations for the whole search.
+#[derive(Debug, Default)]
+pub(crate) struct DiffScratch {
+    sorted_before: Vec<FeatureIndex>,
+    sorted_after: Vec<FeatureIndex>,
+    /// Features present in `before` but not in `after` (multiset semantics).
+    pub(crate) removed: Vec<FeatureIndex>,
+    /// Features present in `after` but not in `before` (multiset semantics).
+    pub(crate) added: Vec<FeatureIndex>,
+}
+
+/// [`changed_indices`] writing into caller-owned buffers: fills
+/// `scratch.removed` / `scratch.added` with exactly the lists `changed_indices`
+/// would have returned (this is the single implementation; `changed_indices` is
+/// a thin allocating wrapper over it).
+pub(crate) fn changed_indices_into(
+    before: &[FeatureIndex],
+    after: &[FeatureIndex],
+    scratch: &mut DiffScratch,
+) {
+    let DiffScratch {
+        sorted_before,
+        sorted_after,
+        removed,
+        added,
+    } = scratch;
+
+    sorted_before.clear();
+    sorted_before.extend_from_slice(before);
+    sorted_after.clear();
+    sorted_after.extend_from_slice(after);
     sorted_before.sort_unstable();
     sorted_after.sort_unstable();
+    removed.clear();
+    added.clear();
 
-    let mut removed = Vec::new();
-    let mut added = Vec::new();
     let (mut i, mut j) = (0usize, 0usize);
     while i < sorted_before.len() && j < sorted_after.len() {
         match sorted_before[i].cmp(&sorted_after[j]) {
@@ -389,7 +444,6 @@ pub(crate) fn changed_indices(
     }
     removed.extend_from_slice(&sorted_before[i..]);
     added.extend_from_slice(&sorted_after[j..]);
-    (removed, added)
 }
 
 // --- Move-derived (dirty-piece) accumulator delta ------------------------
