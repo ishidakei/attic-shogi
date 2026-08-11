@@ -1,0 +1,10 @@
+{
+  "sfen": "6n1l/2+S1k4/2lp4p/1np1B2b1/3PP4/1N1S3rP/1P2+pPP+p1/1p1G5/3KG2r1 b GSN2L4Pgs2p 1",
+  "depth": 8,
+  "hash_mb": 256,
+  "fv_scale": 28,
+  "bestmove": "N*4d",
+  "score": { "cp": -501 },
+  "nodes": 21091,
+  "pv": ["N*4d", "5b5c", "S*4b", "2d4b", "6f5g", "G*7i", "6i5h", "2i2h+", "5i4h", "5c4d"]
+}

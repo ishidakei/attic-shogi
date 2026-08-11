@@ -1,0 +1,5 @@
+# Pins the workspace toolchain. An auto-fetched pinned toolchain must bring
+# rustfmt + clippy along, or the fmt/lint gates break on a fresh checkout.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

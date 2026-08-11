@@ -1,0 +1,8 @@
+{
+  "sfen": "4k4/9/4r4/9/9/9/4K3B/9/9 b RG2gs2n3p 1",
+  "depth": 8,
+  "bestmove": "1g5c+",
+  "score": { "cp": 2806 },
+  "nodes": 2271,
+  "pv": ["1g5c+", "P*5f", "5g5f", "G*6e", "5f6e", "N*7c", "6e5e", "P*5d", "5c5d"]
+}

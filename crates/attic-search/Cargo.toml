@@ -1,0 +1,28 @@
+[package]
+name = "attic-search"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Search layer. Dependency rules: Search may depend on Evaluation and State,
+# never on Protocol. The greedy 1-ply policy scores child positions with the
+# real NNUE network (Evaluation) over the legal moves produced by `attic-state`
+# (State). Search additionally owns the transposition table (Storage layer):
+# the `attic-storage` module docs state the Search layer owns the table and is
+# responsible for widening / validating stored moves against a `Position`.
+[dependencies]
+attic-eval = { path = "../attic-eval", default-features = false }
+attic-state = { path = "../attic-state", default-features = false }
+attic-storage = { path = "../attic-storage" }
+
+# See `attic-state/Cargo.toml`: `quick-draw` selects upstream's
+# `ENABLE_QUICK_DRAW` repetition semantics. The search only re-exports the
+# switch; its own repetition handling is the shared
+# `RepetitionState`-to-score mapping, which is identical either way.
+[features]
+default = ["quick-draw"]
+quick-draw = ["attic-state/quick-draw", "attic-eval/quick-draw"]
+
+[dev-dependencies]
+serde = { version = "~1.0", features = ["derive"] }
+serde_json = "~1.0"

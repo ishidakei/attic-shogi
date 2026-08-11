@@ -1,0 +1,18 @@
+#YANEURAOU-DB2016 1.00
+# Hand-authored ground-truth book for the .ybb reader parity gate.
+# Positions are drawn from the existing parity-fixture SFENs (see
+# tests/fixtures/perft/*.json). Move lines are `<bestmove> <ponder> <value>
+# <depth> <count>`; the .ybb format stores move16/value/depth only (no ponder,
+# no per-move count), so after conversion count collapses to 0.
+sfen lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1
+7g7f none 42 20 1500
+2g2f none -13 18 900
+6i7h none 5 16 120
+sfen 4k4/9/4r4/9/9/9/4K3B/9/9 b RG2gs2n3p 1
+1g5c+ none 50 14 8
+G*5f none 30 12 5
+5g6h none 10 10 3
+sfen k8/1P7/G8/1N2P4/9/9/9/9/8K b 2PG2pg 1
+5d5c+ none -5 8 1
+sfen 9/4k4/9/9/9/9/9/4K4/9 b 9P9p 1
+P*5e none 0 3 1

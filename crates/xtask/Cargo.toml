@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+attic-state = { path = "../attic-state", default-features = false }
+
+# Pass-through only; see `attic-state/Cargo.toml`. xtask captures fixtures from
+# the C++ reference and never consults `is_repetition`, but it has to opt out of
+# default features so a workspace-wide `--no-default-features` is not undone by
+# Cargo's per-crate feature unification.
+[features]
+default = ["quick-draw"]
+quick-draw = ["attic-state/quick-draw"]

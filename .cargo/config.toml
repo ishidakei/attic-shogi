@@ -1,0 +1,10 @@
+[alias]
+xtask = "run --quiet -p xtask --"
+
+# Premise: every build of this repo runs on the machine that produced it (dev VM,
+# CI runner) — binaries are never distributed across machines. So compile for the
+# exact host CPU by default; this removes a confound from the NPS analysis (the
+# reference binary is built fully optimized for the host, so the Rust side is too)
+# and needs no manual RUSTFLAGS at bench time. Applies to every profile.
+[build]
+rustflags = ["-C", "target-cpu=native"]

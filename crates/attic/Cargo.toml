@@ -1,0 +1,26 @@
+[package]
+name = "attic"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# `src/main.rs` is auto-discovered and takes the package name, so the binary is
+# `target/<profile>/attic` without an explicit `[[bin]]` override. The `[[test]]`
+# below is NOT auto-discovered — it lives one directory down.
+[[test]]
+name = "parity_perft"
+path = "tests/parity/perft.rs"
+
+[dependencies]
+attic-protocol = { path = "../attic-protocol", default-features = false }
+attic-state = { path = "../attic-state", default-features = false }
+
+# Pass-through only; see `attic-state/Cargo.toml`. This is the crate that builds
+# the shipped binary, so its default is what the tournament build gets.
+[features]
+default = ["quick-draw"]
+quick-draw = ["attic-protocol/quick-draw", "attic-state/quick-draw"]
+
+[dev-dependencies]
+serde = { version = "~1.0", features = ["derive"] }
+serde_json = "~1.0"

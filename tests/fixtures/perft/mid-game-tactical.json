@@ -1,0 +1,8 @@
+{
+  "sfen": "l7l/1r1sg2k1/2nppgsp1/p1p3p1p/1p2N4/2P1P1P2/PPSP1PB1P/3GG1SR1/LN2K3L b BNPp 1",
+  "results": [
+    { "depth": 1, "expected_nodes": 122 },
+    { "depth": 2, "expected_nodes": 4585 },
+    { "depth": 3, "expected_nodes": 448664 }
+  ]
+}

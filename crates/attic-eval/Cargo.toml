@@ -1,0 +1,25 @@
+[package]
+name = "attic-eval"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Evaluation layer. Dependency rules: Evaluation may import State and Storage,
+# never Protocol or Search. Feature extraction reads the board/hands off
+# `attic-state::Position`; the loaded feature-transformer weights are backed by
+# the Storage layer's shared huge-page allocator (`attic-storage::LargePageArray`).
+[dependencies]
+attic-state = { path = "../attic-state", default-features = false }
+attic-storage = { path = "../attic-storage" }
+
+# Pass-through of `attic-state/quick-draw` so the whole workspace can be built in
+# either repetition configuration from one flag. Cargo unifies features per
+# crate, so every path dependency on `attic-state` has to opt out of default
+# features and re-export the switch, or `--no-default-features` on one member
+# would be silently overridden by another.
+[features]
+default = ["quick-draw"]
+quick-draw = ["attic-state/quick-draw"]
+
+[dev-dependencies]
+serde_json = "~1.0"

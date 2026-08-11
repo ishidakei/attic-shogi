@@ -1,0 +1,20 @@
+[package]
+name = "attic-storage"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Storage layer. Dependency rules: Storage is a substrate
+# — it may depend on std + utility crates only, and MUST NOT import
+# attic-state, attic-eval, attic-search, or attic-protocol. The
+# transposition table therefore speaks in primitives (u64 key, u16 move
+# fragment, i32 value/depth, a local Bound enum) rather than State-layer types;
+# the Search layer, which owns both, adapts between them.
+[dependencies]
+
+# Unix-only: `madvise(MADV_HUGEPAGE)` over the transposition-table allocation
+# (see `src/tt.rs`), mirroring the reference's `aligned_large_pages_alloc`. The
+# call itself is Linux-gated in code; the dependency is `cfg(unix)`-gated so
+# non-Unix targets never pull it in.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

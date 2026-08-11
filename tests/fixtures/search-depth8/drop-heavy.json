@@ -1,0 +1,8 @@
+{
+  "sfen": "k8/1P7/G8/1N2P4/9/9/9/9/8K b 2PG2pg 1",
+  "depth": 8,
+  "bestmove": "8d9b+",
+  "score": { "mate": 1 },
+  "nodes": 1105,
+  "pv": ["8d9b+"]
+}

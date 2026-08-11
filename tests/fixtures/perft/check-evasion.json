@@ -1,0 +1,8 @@
+{
+  "sfen": "4k4/9/4r4/9/9/9/4K3B/9/9 b RG2gs2n3p 1",
+  "results": [
+    { "depth": 1, "expected_nodes": 14 },
+    { "depth": 2, "expected_nodes": 4135 },
+    { "depth": 3, "expected_nodes": 534922 }
+  ]
+}

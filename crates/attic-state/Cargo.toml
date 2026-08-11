@@ -1,0 +1,22 @@
+[package]
+name = "attic-state"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+
+# `quick-draw` mirrors upstream's `ENABLE_QUICK_DRAW` (`config.h`), which the
+# reference's `FOR_TOURNAMENT` build defines. It selects the query-time
+# repetition walk in `Position::is_repetition` (2nd occurrence adjudicates, no
+# `repetition < ply` root gate) over the incremental `do_move` precompute. The
+# engine plays tournaments, so it is the default; clearing it
+# (`--no-default-features`) restores the non-QUICK_DRAW variant, which the
+# pre-existing parity fixtures were gated against.
+[features]
+default = ["quick-draw"]
+quick-draw = []
+
+[dev-dependencies]
+proptest = "~1.11"
+serde_json = "~1.0"

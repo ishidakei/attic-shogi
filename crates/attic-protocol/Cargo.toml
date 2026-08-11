@@ -1,0 +1,25 @@
+[package]
+name = "attic-protocol"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Protocol layer. The dependency rules permit
+# Protocol to import Search, Storage, and State, never Evaluation directly: the
+# driver owns the transposition table (Storage) next to the loaded network and
+# drives the depth-1 root search (`attic-search`); only a direct Protocol ->
+# Evaluation dependency is forbidden.
+[dependencies]
+attic-numa = { path = "../attic-numa" }
+attic-search = { path = "../attic-search", default-features = false }
+attic-state = { path = "../attic-state", default-features = false }
+attic-storage = { path = "../attic-storage" }
+
+# Pass-through only; see `attic-state/Cargo.toml`.
+[features]
+default = ["quick-draw"]
+quick-draw = ["attic-search/quick-draw", "attic-state/quick-draw"]
+
+[dev-dependencies]
+serde = { version = "~1.0", features = ["derive"] }
+serde_json = "~1.0"

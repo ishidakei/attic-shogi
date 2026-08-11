@@ -1,0 +1,37 @@
+{
+  "with_depth": true,
+  "positions": [
+    {
+      "sfen": "k8/1P7/G8/1N2P4/9/9/9/9/8K b 2PG2pg 1",
+      "ply": 1,
+      "moves": [
+        { "usi": "5d5c+", "move16": 37798, "value": -5, "depth": 8, "count": 0 }
+      ]
+    },
+    {
+      "sfen": "4k4/9/4r4/9/9/9/4K3B/9/9 b RG2gs2n3p 1",
+      "ply": 1,
+      "moves": [
+        { "usi": "1g5c+", "move16": 33574, "value": 50, "depth": 14, "count": 0 },
+        { "usi": "G*5f", "move16": 17321, "value": 30, "depth": 12, "count": 0 },
+        { "usi": "5g6h", "move16": 5428, "value": 10, "depth": 10, "count": 0 }
+      ]
+    },
+    {
+      "sfen": "9/4k4/9/9/9/9/9/4K4/9 b 9P9p 1",
+      "ply": 1,
+      "moves": [
+        { "usi": "P*5e", "move16": 16552, "value": 0, "depth": 3, "count": 0 }
+      ]
+    },
+    {
+      "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
+      "ply": 1,
+      "moves": [
+        { "usi": "7g7f", "move16": 7739, "value": 42, "depth": 20, "count": 0 },
+        { "usi": "2g2f", "move16": 1934, "value": -13, "depth": 18, "count": 0 },
+        { "usi": "6i7h", "move16": 6845, "value": 5, "depth": 16, "count": 0 }
+      ]
+    }
+  ]
+}

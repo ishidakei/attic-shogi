@@ -1,0 +1,23 @@
+[package]
+name = "attic-numa"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# NUMA topology discovery, a port of the reference's `NumaConfig` machinery
+# (`source/numa.h`, pinned submodule @ 76d58ef). This crate
+# is a pure, currently *unwired* library: nothing in the workspace consumes it
+# yet, so it cannot affect parity fixtures, bench output, or the handshake
+# golden. It depends on std only, plus `libc` (Linux-only) for the one syscall
+# it needs — `sched_getaffinity`, to snapshot the process's startup CPU
+# affinity. All sysfs topology parsing is pure and takes an injectable root
+# path, so it is exercised against fixture directories under `tests/`.
+[dependencies]
+
+# Linux-only: `sched_getaffinity` for the startup process-affinity snapshot
+# (see `startup_affinity`). The syscall itself is Linux-gated in code; the
+# dependency is `cfg(target_os = "linux")`-gated so other targets never pull it
+# in, and never reference it (the non-Linux affinity path falls back to
+# "all system threads" without touching libc).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

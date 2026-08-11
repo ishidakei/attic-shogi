@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/attic", "crates/attic-eval", "crates/attic-numa", "crates/attic-protocol", "crates/attic-search", "crates/attic-state", "crates/attic-storage", "crates/xtask"]
+
+[workspace.package]
+edition = "2024"
+# One version for every workspace member. The number expresses exactly one
+# thing: how far upstream YaneuraOu has been tracked (currently V9.70). It is
+# NOT bumped for divergences, fixes, or additions — only on an upstream
+# catch-up. The USI `id name` derives from it (`Attic 9.70git`).
+version = "9.70.0"
+
+# Release profile is the standing build for benches, A/B NPS tables, and the
+# eventual tournament binary — bake full optimization in so no manual RUSTFLAGS
+# is ever required. Fat LTO + a single codegen unit trade link time for run-time
+# speed (~+7% NPS measured together with `-C target-cpu=native` from
+# `.cargo/config.toml`). `panic = "abort"` matches the reference build, which is
+# compiled `-fno-exceptions -fno-rtti` (see `source/Makefile`):
+# it strips unwind edges, cleanup landing pads and `drop_in_place` chains from the
+# hot search code, shrinking the text segment (this machine is I-cache sensitive).
+# Cargo ignores `panic` when building test targets, so `cargo test --release`
+# keeps unwinding and works unchanged. `strip` stays unset — perf work needs
+# symbols.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
