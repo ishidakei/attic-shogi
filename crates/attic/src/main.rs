@@ -6,6 +6,18 @@ use attic::perft;
 use attic_protocol::UsiDriver;
 use attic_state::{Position, parse_sfen, parse_usi_move};
 
+/// The engine binary allocates through mimalloc rather than the platform
+/// allocator. It is a per-binary choice: nothing in the library crates knows or
+/// cares, and no search result depends on it — node counts, bestmoves and the
+/// handshake are byte-identical either way, only allocation speed moves.
+///
+/// The `not(miri)` gate is required, not defensive: mimalloc is C behind FFI and
+/// miri cannot execute foreign functions, so under the miri gate the binary
+/// falls back to the default Rust allocator.
+#[cfg(not(miri))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const USAGE: &str = "\
 usage:
   engine                                              # run USI event loop on stdin/stdout

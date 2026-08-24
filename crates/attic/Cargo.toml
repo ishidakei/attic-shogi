@@ -15,6 +15,13 @@ path = "tests/parity/perft.rs"
 attic-protocol = { path = "../attic-protocol", default-features = false }
 attic-state = { path = "../attic-state", default-features = false }
 
+# Global allocator for the shipped binary only (`src/main.rs`); every library
+# crate stays allocator-agnostic. Default features — `secure` is deliberately
+# left off, it buys hardening this engine has no threat model for and costs
+# throughput. This is a divergence from the reference build, which uses the
+# system allocator; it is a performance choice with no semantic effect.
+mimalloc = "0.1"
+
 # Pass-through only; see `attic-state/Cargo.toml`. This is the crate that builds
 # the shipped binary, so its default is what the tournament build gets.
 [features]
