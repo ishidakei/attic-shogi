@@ -385,7 +385,9 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     }
     msg.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in msg.chunks_exact(64) {
+    // Padding above makes the length an exact multiple of 64, so the remainder
+    // half of `as_chunks` is always empty.
+    for chunk in msg.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
         for (i, word) in w.iter_mut().enumerate().take(16) {
             let b = i * 4;
