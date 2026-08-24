@@ -150,6 +150,7 @@ fn bestmove_lines(out: &str) -> Vec<&str> {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn synthetic_network_session_matches_direct_search_choice() {
     let dir = TempDir::new("session");
     let path = write_synthetic_nn_bin(dir.path());
@@ -216,6 +217,7 @@ fn synthetic_network_session_matches_direct_search_choice() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn isready_keep_alive_emits_bare_newline_during_heavy_load() {
     // The isready keep-alive (reference `Engine::run_heavy_job`): a helper thread
     // emits a bare newline every `KEEP_ALIVE_TICKS_PER_NEWLINE` polls so a GUI
@@ -267,6 +269,7 @@ fn isready_keep_alive_emits_bare_newline_during_heavy_load() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn synthetic_network_reuse_reset_and_mate_resign() {
     let dir = TempDir::new("reuse");
     write_synthetic_nn_bin(dir.path());
@@ -351,6 +354,7 @@ const DECLARABLE_SFEN: &str = "+R+R+B+B5/3GKG3/2SGGGS2/9/9/9/9/9/4k4 b R 1";
 const TRYABLE_SFEN: &str = "9/4K4/9/9/9/9/9/9/8k b - 1";
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn entering_king_default_declares_win_without_searching() {
     // With default options a 27-point-declarable position
     // yields `bestmove win` and emits no search `info` line (the pre-search
@@ -379,6 +383,7 @@ fn entering_king_default_declares_win_without_searching() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn entering_king_none_runs_a_real_search() {
     // `NoEnteringKing` disables the declaration, so the same
     // position runs an ordinary search and reports a normal move.
@@ -422,6 +427,7 @@ fn entering_king_none_runs_a_real_search() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn entering_king_try_rule_declares_the_king_move() {
     // Under `TryRule` a try-able position yields the actual
     // king move onto the try square (`5b5a`) with no search.
@@ -461,6 +467,7 @@ fn entering_king_try_rule_declares_the_king_move() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn threads4_stop_then_quit_joins_all_workers_and_exits_cleanly() {
     // A `stop` then `quit` while a `Threads=4` search is
     // running must join every worker (the main coordinator plus its three

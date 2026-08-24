@@ -43,6 +43,7 @@ fn full_refresh_argmax(net: &NnueNetwork, p: &Position) -> Option<Move> {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn startpos_choice_is_legal_deterministic_and_matches_full_refresh() {
     let path = nn_bin_path();
     if !path.exists() {

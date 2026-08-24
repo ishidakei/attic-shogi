@@ -23,6 +23,7 @@ fn drive(input: &str) -> String {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn numa_policy_none_emits_both_lines_threads_emits_allocation_only() {
     // `NumaPolicy none` first (both lines), then `Threads value 2` (allocation
     // line only). At the NumaPolicy step the thread count is still the default 4.
@@ -63,6 +64,7 @@ fn numa_policy_none_emits_both_lines_threads_emits_allocation_only() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn numa_policy_config_line_matches_available_processors_format() {
     // The config line begins with the exact reference prefix and a non-empty
     // processor list (its exact CPU set is machine-specific under `none`).

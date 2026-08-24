@@ -11,6 +11,7 @@ fn drive(input: &str) -> String {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn full_usi_to_usiok_golden() {
     let out = drive("usi\nquit\n");
     let expected = "\
@@ -60,6 +61,7 @@ usiok\n";
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn isready_without_network_reports_load_failure() {
     // Default EvalDir (`eval`) has no `nn.bin` in the test CWD, so the load
     // fails: an `info string eval load failed:` notice and no `readyok`, per
@@ -78,12 +80,14 @@ fn isready_without_network_reports_load_failure() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn unknown_command_emits_info_string() {
     let out = drive("frobnicate\nquit\n");
     assert_eq!(out, "info string unknown command: frobnicate\n");
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn oversized_line_emits_command_too_long() {
     // 64 KB + 1 byte → TooLong. Followed by a real line so the driver loops past it.
     let mut input = "x".repeat(64 * 1024 + 1);
@@ -94,6 +98,7 @@ fn oversized_line_emits_command_too_long() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn full_handshake_then_setoption_then_quit() {
     let out = drive("usi\nsetoption name USI_Hash value 256\nisready\nquit\n");
     assert!(out.starts_with("id name Attic 9.70git\n"));
@@ -105,6 +110,7 @@ fn full_handshake_then_setoption_then_quit() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn usinewgame_emits_nothing() {
     let out = drive("usinewgame\nquit\n");
     assert_eq!(out, "");

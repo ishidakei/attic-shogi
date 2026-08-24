@@ -534,6 +534,7 @@ mod tests {
     // ---- WorkerHistories init/clear under the large-page allocation -------
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn worker_histories_new_applies_reference_init_values() {
         // The tables live on the shared huge-page allocator; this pins that the
         // `clear()`-init values a fresh bundle exposes are byte-for-byte the
@@ -619,6 +620,7 @@ mod tests {
     // ---- update_continuation_histories ------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn continuation_histories_writes_expected_cells() {
         // A stack where (ss-1)..(ss-6) all have distinct ok currentMoves and
         // distinct continuation planes, current cell NOT in check. Verify each
@@ -660,6 +662,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn continuation_histories_skips_deep_plies_when_in_check() {
         // With the current cell in check, only i <= 2 are updated.
         let mut hist = WorkerHistories::new();
@@ -696,6 +699,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn continuation_histories_skips_null_prev_moves() {
         // A ply whose currentMove is not ok is skipped.
         let mut hist = WorkerHistories::new();
@@ -725,6 +729,7 @@ mod tests {
     // ---- update_quiet_histories -------------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn quiet_histories_hand_computed() {
         let mut hist = WorkerHistories::new();
         let pos = simple_pos();
@@ -775,6 +780,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn quiet_histories_negative_bonus_uses_550_pawn_scale() {
         let mut hist = WorkerHistories::new();
         let pos = simple_pos();
@@ -797,6 +803,7 @@ mod tests {
     // ---- update_all_stats -------------------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn all_stats_capture_best_updates_capture_history() {
         // Black rook on 5e captures a white pawn on 5d. bestMove is a capture,
         // so the capture branch runs: captureHistory[rook][5d][pawn] gets the
@@ -839,6 +846,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn all_stats_quiet_best_bumps_best_and_decays_others() {
         // bestMove is a quiet pawn push; one other quiet was searched. The best
         // gets +bonus*806/1024; the other gets the decayed negated malus.
@@ -891,6 +899,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn all_stats_non_best_capture_gets_malus() {
         // A non-best capture in capturesSearched gets captureHistory
         // -malus*1559/1024. Best is a quiet so the quiet branch runs for it.
@@ -936,6 +945,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn all_stats_refutation_penalty_hits_prev_ply_continuation() {
         // prevSq real, (ss-1).moveCount == 1 + ttHit, !priorCapture ⇒ the
         // previous ply's continuation plane is penalised at [piece_on(prevSq)]
@@ -993,6 +1003,7 @@ mod tests {
     // ---- update_correction_history ----------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn correction_history_hand_computed() {
         // A position with a black pawn already on 5d, so that (ss-1)'s move
         // landing there has `piece_on(to) == Some` (the continuation-correction
@@ -1074,6 +1085,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn correction_history_skips_continuation_when_prev_move_not_ok() {
         // With (ss-1).currentMove not ok, only the four channel writes fire.
         let pos = simple_pos();

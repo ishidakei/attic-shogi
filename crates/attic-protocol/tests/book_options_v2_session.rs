@@ -58,6 +58,7 @@ fn v2_prefix(dir: &str) -> String {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn v2_profile_handshake_surface() {
     let dir = TempDir::new("v2-handshake");
     let profile = write_option_profile(dir.path(), "# large-book profile\nBOOK_OPTIONS = V2\n");
@@ -128,6 +129,7 @@ fn v2_profile_handshake_surface() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn absent_profile_file_keeps_the_v1_surface() {
     let dir = TempDir::new("v2-absent");
     // Deliberately do NOT write the profile file.
@@ -141,6 +143,7 @@ fn absent_profile_file_keeps_the_v1_surface() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn a_v1_profile_file_keeps_the_v1_surface() {
     let dir = TempDir::new("v2-explicit-v1");
     let profile = write_option_profile(dir.path(), "BOOK_OPTIONS = V1\n");
@@ -153,6 +156,7 @@ fn a_v1_profile_file_keeps_the_v1_surface() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn v2_black_root_filters_with_the_black_eval_diff() {
     let dir = TempDir::new("v2-eval-black");
     write_synthetic_nn_bin(dir.path());
@@ -213,6 +217,7 @@ fn v2_black_root_filters_with_the_black_eval_diff() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn v2_white_root_filters_with_the_white_eval_diff() {
     let dir = TempDir::new("v2-eval-white");
     write_synthetic_nn_bin(dir.path());
@@ -276,6 +281,7 @@ fn v2_white_root_filters_with_the_white_eval_diff() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn v2_depth_floor_follows_the_root_side_to_move() {
     let dir = TempDir::new("v2-depth");
     write_synthetic_nn_bin(dir.path());
@@ -343,6 +349,7 @@ fn v2_depth_floor_follows_the_root_side_to_move() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn v1_still_uses_the_single_eval_diff_and_depth_limit() {
     let dir = TempDir::new("v1-unchanged");
     write_synthetic_nn_bin(dir.path());

@@ -26,6 +26,9 @@ target
 # Terraform crash dumps, wherever they land.
 crash.log
 
+# Byte-code caches from the repository's Python helpers.
+__pycache__/
+
 # Evaluation network files placed at the repository root. `nn.bin` is obtained
 # out-of-band and must never be committed.
 /eval/

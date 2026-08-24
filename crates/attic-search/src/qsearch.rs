@@ -3915,6 +3915,7 @@ mod tests {
     /// weights, so a wrong accumulator would change the eval and trip the check);
     /// skipped when `nn.bin` is absent, exactly like the other real-network tests.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn differential_accumulator_matches_refresh_at_every_eval_site() {
         let path = real_nn_bin();
         if !path.exists() {
@@ -3987,6 +3988,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn draw_value_table_matches_defaults_and_contempt() {
         let net = zero_net();
         let table = fresh_tt();
@@ -4018,6 +4020,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn set_draw_value_signs_the_repetition_draw_row_per_side() {
         // `set_draw_value(contempt)` installs the pawn-scaled
         // per-`go` draw contempt; the REPETITION_DRAW row is `+contempt` for the
@@ -4062,6 +4065,7 @@ mod tests {
     const TWO_KINGS: &str = "4k4/9/9/9/9/9/9/9/4K4 b - 1";
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn stand_pat_cutoff_adjusts_and_writes_unsearched_lower_bound() {
         let net = zero_net();
         let mut table = fresh_tt();
@@ -4121,6 +4125,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn futility_first_prune_floors_bestvalue_at_futility_value() {
         // alpha == 418 == futilityBase(328) + PawnValue(90): the first futility
         // test `futilityValue <= alpha` fires, flooring bestValue at 418.
@@ -4135,6 +4140,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn futility_see_branch_floors_bestvalue_at_min_alpha_base() {
         // alpha == 200: futilityValue(418) > alpha, but SEE(-225) < alpha -
         // futilityBase (== -128), so the SEE branch fires with the floor
@@ -4150,6 +4156,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn see_minus_73_skips_a_losing_capture() {
         // alpha == 0: futility does not prune (futilityValue 418 > 0, SEE clears
         // alpha - base == -328), so the capture reaches the `!see_ge(m, -73)`
@@ -4175,6 +4182,7 @@ mod tests {
     const THREE_CAPTURES: &str = "6k2/9/9/9/b3R3g/9/4p4/9/K8 b - 1";
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn movecount_prune_drops_the_third_capture() {
         let p = pos(THREE_CAPTURES);
         assert!(!p.in_check());
@@ -4196,6 +4204,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn prevsq_exemption_lets_a_recapture_past_movecount_pruning() {
         // Same position, but drive qsearch directly with `(ss-1)->currentMove`
         // set so `prevSq == 5g` (the pawn-capture's target). The 3rd capture is
@@ -4222,6 +4231,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn correction_value_is_eval_neutral_on_fresh_tables() {
         // On fresh correction tables (unified channels all 0,
         // continuation-correction all 6), the correction contributes nothing to
@@ -4282,6 +4292,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn leaf_qsearch_correction_value_reads_live_worker_update() {
         // A leaf `correction_value` read must reflect an update made to the one
         // live worker correction table *before* the call — there is
@@ -4308,6 +4319,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn leaf_qsearch_value_reflects_worker_correction_update() {
         // End-to-end: a quiet, not-in-check startpos qsearch stand-pats to the
         // corrected static eval. With the zero-eval network the uncorrected eval
@@ -4353,6 +4365,7 @@ mod tests {
     const CAPTURE_MATE: &str = "k8/p8/G8/9/9/9/9/9/L7K b - 1";
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn givescheck_exemption_searches_a_checking_capture_under_futility() {
         let p = pos(CAPTURE_MATE);
         assert!(!p.in_check());
@@ -4394,6 +4407,7 @@ mod tests {
     const QUIET_CHECK: &str = "k8/9/9/9/4R4/9/9/9/8K b - 1";
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn quiet_tt_move_is_dropped_by_the_capture_filter() {
         let p = pos(QUIET_CHECK);
         assert!(!p.in_check());
@@ -4438,6 +4452,7 @@ mod tests {
     const BLACK_MATED: &str = "4K4/3ggg3/4k4/9/9/9/9/9/9 b - 1";
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn no_evasion_in_check_returns_mated_in_ply() {
         let p = pos(BLACK_MATED);
         assert!(p.in_check());
@@ -4457,6 +4472,7 @@ mod tests {
     const MATE_IN_1: &str = "k8/9/G1N6/9/9/9/9/9/8K b G 1";
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn mate_1ply_short_circuits_with_exact_tt_write() {
         let p = pos(MATE_IN_1);
         assert!(!p.in_check());
@@ -4485,6 +4501,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn max_ply_returns_draw_with_dither() {
         let net = zero_net();
         let table = fresh_tt();
@@ -4503,6 +4520,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn repetition_draw_is_detected_with_dither() {
         let net = zero_net();
         let table = fresh_tt();
@@ -4566,6 +4584,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn read_tt_false_ignores_a_cutoff_entry() {
         let net = zero_net();
         let mut table = fresh_tt();
@@ -4589,6 +4608,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn search_is_deterministic_across_runs() {
         let net = zero_net();
         let run_once = || {
@@ -4603,6 +4623,7 @@ mod tests {
     // The reference folds EVERY worker's `bestMoveChanges` into `totBestMoveChanges`
     // and zeroes each, on the main thread only (`yaneuraou-search.cpp`).
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn fold_best_move_changes_sums_and_zeroes_every_slot() {
         let net = zero_net();
         let table = fresh_tt();
@@ -4653,6 +4674,7 @@ mod tests {
     // moment the ponder flag is seen cleared (the reference `set_ponderhit`
     // ordering, `yaneuraou-search.cpp`).
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn sync_ponderhit_copies_the_stamped_instant_before_the_budget_decision() {
         let net = zero_net();
         let table = fresh_tt();
@@ -4723,6 +4745,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn run_root_resigns_with_no_legal_move() {
         let net = zero_net();
         let table = fresh_tt();
@@ -4739,6 +4762,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn run_root_declares_a_nyugyoku_win() {
         let net = zero_net();
         let table = fresh_tt();
@@ -4761,6 +4785,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn qsearch_forced_draw_past_max_moves_to_draw_is_exact() {
         // A quiet, non-repetition position at game_ply 60. With the horizon set
         // below it, the ply-0 qsearch node adjudicates an unconditional draw
@@ -4783,6 +4808,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn qsearch_default_horizon_does_not_force_draw() {
         // The same position under the default (unlimited) horizon runs a real
         // qsearch: no captures at startpos, zero-eval stand-pat ⇒ value 0. The
@@ -4802,6 +4828,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn run_root_max_moves_to_draw_suppresses_a_mate() {
         // A gold-drop head mate (`G*8a`) at a high game ply — the White king on
         // 9a is not itself in check at the root (so no root move captures it),
@@ -4850,6 +4877,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn reductions_table_and_reduction_formula() {
         let net = zero_net();
         let table = fresh_tt();
@@ -4882,6 +4910,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn move_stat_score_capture_and_quiet() {
         let net = zero_net();
         let table = fresh_tt();
@@ -4909,6 +4938,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn razoring_boundary_returns_qsearch_without_do_move() {
         let net = zero_net();
         // eval == 0, depth 1 ⇒ razoring fires when alpha - 502 - 306 > 0, i.e.
@@ -4934,6 +4964,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn futility_boundary_returns_two_beta_plus_eval_over_three() {
         let net = zero_net();
         // depth 1, !ttHit ⇒ futilityMult 55, improving false, opponentWorsening
@@ -4960,6 +4991,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn null_move_boundary_returns_null_value() {
         let net = zero_net();
         let p = pos(TWO_KINGS);
@@ -5014,6 +5046,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn probcut_returns_value_minus_margin() {
         let net = zero_net();
         // Black rook (5e) can capture the undefended white pawn (5d); the white
@@ -5049,6 +5082,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn fail_low_writes_the_documented_bonuses() {
         let net = zero_net();
         let tt = fresh_tt();
@@ -5110,6 +5144,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn interior_smoke_runs_and_leaves_state_balanced() {
         let net = zero_net();
         const SFEN: &str =
@@ -5196,6 +5231,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn torn_tt_move_decode_is_total_over_all_patterns() {
         let positions: Vec<Position> = TORN_ENTRY_SFENS.iter().map(|s| pos(s)).collect();
 
@@ -5421,6 +5457,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn to_move_widen_chain_totality_and_oracle() {
         for sfen in TORN_ENTRY_SFENS {
             let p = pos(sfen);
@@ -5429,6 +5466,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn to_move_widen_chain_oracle_over_playouts() {
         // Gate 2 requires the legal-move oracle to hold along a deterministic
         // playout of >= 30 plies from each fixture. The move choice rotates by

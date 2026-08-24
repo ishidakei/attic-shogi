@@ -91,6 +91,7 @@ fn go_and_wait(h: &StreamHarness, position: &str, go: &str, expect_bestmoves: us
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn usi_hash_small_matches_default_fixed_depth() {
     // A small USI_Hash only changes speed, not a fixed-depth result: the depth-3
     // startpos search under USI_Hash 8 must produce the same info line (nodes /
@@ -119,6 +120,7 @@ fn usi_hash_small_matches_default_fixed_depth() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn usi_hash_mid_session_resize_between_gos() {
     // A resize between two go's works and the second search completes. The
     // driver joins the first (async) worker before resizing, so both go's emit a
@@ -160,6 +162,7 @@ fn usi_hash_mid_session_resize_between_gos() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn depth_limit_caps_search_and_matches_plain_go_depth() {
     // With DepthLimit 2 and a generous movetime the search stops at depth 2 (no
     // `info depth 3`), and its bestmove / nodes equal the plain `go depth 2` run.
@@ -207,6 +210,7 @@ fn depth_limit_caps_search_and_matches_plain_go_depth() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn nodes_limit_matches_go_nodes() {
     // With NodesLimit N (below the position's uncapped node count) the final
     // aggregated node count respects the cap exactly as `go nodes N` does: the
@@ -238,6 +242,7 @@ fn nodes_limit_matches_go_nodes() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn max_moves_to_draw_adjudicates_a_draw_past_the_horizon() {
     // A mate-in-1 position at a high game ply. Unlimited (MaxMovesToDraw 0 =
     // default) the search finds the mate; a small MaxMovesToDraw makes every
@@ -288,6 +293,7 @@ fn max_moves_to_draw_adjudicates_a_draw_past_the_horizon() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn gameover_releases_infinite_search_and_a_fresh_go_works() {
     // `go infinite` then `gameover lose` releases the bestmove exactly as `stop`
     // would; afterwards `usinewgame` + a fresh `go` works normally.
@@ -337,6 +343,7 @@ fn gameover_releases_infinite_search_and_a_fresh_go_works() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn gameover_result_token_is_optional_and_ignored() {
     // A bare `gameover` (no win/lose/draw token) is accepted and releases the
     // held reply just like `gameover lose` / `stop`.

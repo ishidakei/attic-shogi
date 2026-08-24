@@ -3075,16 +3075,19 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn quit_returns_immediately() {
         assert_eq!(run_with("quit\n"), "");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn eof_returns_ok() {
         assert_eq!(run_with(""), "");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn isready_without_network_reports_load_failure() {
         // Default EvalDir is `eval`; `eval/nn.bin` is absent in the test CWD, so
         // the load fails: the contract is an `info string eval load failed:`
@@ -3179,11 +3182,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn usinewgame_is_no_op() {
         assert_eq!(run_with("usinewgame\nquit\n"), "");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn unknown_command_echoes_back() {
         assert_eq!(
             run_with("frobnicate\nquit\n"),
@@ -3192,11 +3197,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn setoption_happy_path_silent() {
         assert_eq!(run_with("setoption name USI_Hash value 256\nquit\n"), "");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn setoption_unknown_option_rejected() {
         assert_eq!(
             run_with("setoption name Nonexistent value foo\nquit\n"),
@@ -3205,6 +3212,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn setoption_bad_int_rejected() {
         assert_eq!(
             run_with("setoption name USI_Hash value not-a-number\nquit\n"),
@@ -3213,22 +3221,26 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn position_startpos_silent() {
         assert_eq!(run_with("position startpos\nquit\n"), "");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn position_sfen_startpos_silent() {
         let sfen = attic_state::STARTPOS_SFEN;
         assert_eq!(run_with(&format!("position sfen {sfen}\nquit\n")), "");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn position_startpos_moves_silent() {
         assert_eq!(run_with("position startpos moves 7g7f\nquit\n"), "");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn position_sfen_malformed_emits_info_string() {
         let out = run_with("position sfen not-a-board b - 1\nquit\n");
         assert!(
@@ -3238,6 +3250,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn position_with_illegal_move_emits_info_string() {
         // 1a1b would move a non-existent piece (square 1a empty at startpos).
         let out = run_with("position startpos moves 1a1b\nquit\n");
@@ -3248,6 +3261,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn position_with_pseudo_legal_but_illegal_move_emits_info_string() {
         // 1a1b' shape — pick a syntactically valid move that is not a legal
         // generated move from startpos. Pawn on 7g cannot jump to 5g.
@@ -3259,6 +3273,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn position_parse_error_leaves_prior_state_intact() {
         // Apply a legal move; then send a malformed sfen; then `go`. The reply
         // must be a legal move from the *post-7g7f* position, not from startpos
@@ -3283,6 +3298,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn go_without_network_resigns_with_notice() {
         // No successful `isready`, so no network is loaded. `go` must not crash;
         // it emits the notice and `bestmove resign`. (The positive path — a
@@ -3298,6 +3314,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn go_with_limit_subtokens_still_emits_one_bestmove() {
         // Whatever subset of GoLimits the host provides, the driver parses and
         // accepts them and still emits exactly one bestmove line (resign here,
@@ -3309,6 +3326,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn stop_is_silent() {
         assert_eq!(run_with("stop\nquit\n"), "");
         // `stop` with no network resolves the same as `go` alone: the no-network
@@ -3317,6 +3335,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn setoption_threads_emits_allocation_line() {
         // Resizing the worker pool emits the reference allocation info line.
         // `NumaPolicy
@@ -3357,6 +3376,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn numa_policy_option_mapping() {
         let root = write_two_node_sysfs_fixture();
         let opts = SysfsOptions {
@@ -3488,6 +3508,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn build_worker_shared_unbound_shares_one_set() {
         let cfg = NumaConfig::from_string("0-3").unwrap();
         let ws = build_worker_shared(&cfg, &[], 4);
@@ -3504,6 +3525,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn build_worker_shared_unbound_rounds_thread_count_up() {
         let cfg = NumaConfig::from_string("0-3").unwrap();
         // 3 workers → next_power_of_two(3) == 4 (matches the reference helper).
@@ -3524,6 +3546,7 @@ mod tests {
     // `iterative_deepening`, did not run). This drives the real
     // `finish_search_join` with exactly the carry every short-circuit returns.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn skip_search_carry_updates_scores_and_ply_but_not_time_reduction() {
         assert_eq!(
             skip_search_carry(),
@@ -3569,6 +3592,7 @@ mod tests {
     // A real search's carry (`Some(tr)`) *does* overwrite `previous_time_reduction`
     // — the complement of the short-circuit case above.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn real_search_carry_overwrites_time_reduction() {
         let output = Arc::new(Mutex::new(Vec::<u8>::new()));
         let mut driver = UsiDriver::new(&b""[..], Arc::clone(&output));
@@ -3865,6 +3889,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn priority_series_stops_at_the_first_gap_and_appends_the_base_last() {
         let dir = book_name_fixture_dir("series");
         let base = dir.join("user_book1.ybb");
@@ -3909,6 +3934,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn no_numbered_files_yields_just_the_base_name() {
         let dir = book_name_fixture_dir("bare");
         let base = dir.join("user_book1.ybb");
@@ -3920,6 +3946,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn no_book_has_an_empty_series() {
         let dir = book_name_fixture_dir("nobook");
         let base = dir.join("no_book");
@@ -3935,6 +3962,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn cross_extension_resolution_prefers_the_bases_own_extension() {
         let dir = book_name_fixture_dir("crossext");
 
@@ -3989,6 +4017,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn db_names_still_resolve_to_their_ybb_sibling() {
         // The `BookFile` combo advertises only `.ybb` names, so this fallback is
         // unreachable from the option surface — but `reload_book` routes every

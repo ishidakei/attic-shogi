@@ -68,6 +68,7 @@ fn assert_legal_after(moves: &[&str], tok: &str) {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn go_ponder_holds_until_stop() {
     let dir = TempDir::new("ponder-hold-stop");
     write_synthetic_nn_bin(dir.path());
@@ -102,6 +103,7 @@ fn go_ponder_holds_until_stop() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn ponderhit_continues_and_emits_one_bestmove() {
     let dir = TempDir::new("ponder-hit");
     write_synthetic_nn_bin(dir.path());
@@ -143,6 +145,7 @@ fn ponderhit_continues_and_emits_one_bestmove() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn stop_on_ponderhit_stops_promptly_after_a_late_ponderhit() {
     let dir = TempDir::new("ponder-stoponhit");
     write_synthetic_nn_bin(dir.path());
@@ -186,6 +189,7 @@ fn stop_on_ponderhit_stops_promptly_after_a_late_ponderhit() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn stochastic_ponder_reissues_on_the_current_position() {
     let dir = TempDir::new("ponder-stochastic");
     write_synthetic_nn_bin(dir.path());
@@ -224,6 +228,7 @@ fn stochastic_ponder_reissues_on_the_current_position() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn gameover_terminates_a_pondering_search() {
     let dir = TempDir::new("ponder-gameover");
     write_synthetic_nn_bin(dir.path());

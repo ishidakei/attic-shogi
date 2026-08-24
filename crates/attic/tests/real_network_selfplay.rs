@@ -55,6 +55,7 @@ fn legal_moves(p: &Position) -> Vec<Move> {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn real_network_self_play_stays_legal_and_exits_cleanly() {
     let dir = eval_dir();
     if !dir.join("nn.bin").exists() {

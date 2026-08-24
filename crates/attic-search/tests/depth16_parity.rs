@@ -139,6 +139,7 @@ fn format_score(v: i32) -> ScoreJson {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn depth16_search_matches_reference_fixture() {
     let path = nn_bin_path();
     if !path.exists() {

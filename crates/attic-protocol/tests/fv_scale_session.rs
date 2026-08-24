@@ -111,6 +111,7 @@ fn drive(input: &str) -> String {
 const OVERRIDE_LINE: &str = "info string engine option override. name = FV_SCALE , value = 24";
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn eval_options_override_applies_at_isready() {
     let dir = TempDir::new("apply");
     write_synthetic_nn_bin(dir.path());
@@ -141,6 +142,7 @@ fn eval_options_override_applies_at_isready() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn absent_eval_options_is_silent() {
     let dir = TempDir::new("absent");
     write_synthetic_nn_bin(dir.path());
@@ -165,6 +167,7 @@ fn absent_eval_options_is_silent() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn setoption_after_override_is_fixed() {
     let dir = TempDir::new("fixed");
     write_synthetic_nn_bin(dir.path());

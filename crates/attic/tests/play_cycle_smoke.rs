@@ -31,6 +31,7 @@ fn is_well_formed_usi_move(s: &str) -> bool {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn multi_cycle_play_via_spawned_binary() {
     let exe = env!("CARGO_BIN_EXE_attic");
     let mut child = Command::new(exe)

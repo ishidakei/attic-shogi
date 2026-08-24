@@ -69,6 +69,7 @@ fn field_after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn depth1_session_matches_reference_startpos_fixture() {
     let dir = eval_dir();
     if !dir.join("nn.bin").exists() {

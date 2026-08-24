@@ -492,6 +492,7 @@ const GOLDEN_TABLES_SHA256: &str =
     "5f5c5937aadc1b12c824824d2d595fa2fd893b956c4bfb54aa1bcd02a53502a0";
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn golden_table_checksum_is_stable() {
     let digest = to_hex(&sha256(&serialize_port_tables()));
     assert_eq!(

@@ -15,6 +15,7 @@ fn nn_bin_path() -> PathBuf {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn loads_real_network_if_present() {
     let path = nn_bin_path();
     if !path.exists() {

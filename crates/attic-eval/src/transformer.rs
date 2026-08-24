@@ -487,6 +487,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn refresh_matches_independent_recomputation() {
         let pos = parse_sfen(STARTPOS).unwrap();
         let net = synthetic_net_for(&pos);
@@ -502,6 +503,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn refresh_is_deterministic() {
         let pos = parse_sfen(STARTPOS).unwrap();
         let net = synthetic_net_for(&pos);
@@ -551,32 +553,38 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn update_after_quiet_move_matches_refresh() {
         assert_incremental_matches_refresh(STARTPOS, "7g7f");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn update_after_capture_matches_refresh() {
         assert_incremental_matches_refresh("4k4/1p7/9/9/9/9/9/1R7/4K4 b - 1", "8h8b");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn update_after_drop_matches_refresh() {
         assert_incremental_matches_refresh("4k4/9/9/9/9/9/9/9/4K4 b P 1", "P*5e");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn update_after_promotion_matches_refresh() {
         assert_incremental_matches_refresh("4k4/9/9/1P7/9/9/9/9/4K4 b - 1", "8d8c+");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn update_after_black_king_move_matches_refresh() {
         // Black's own king moves -> Black refreshes, White stays incremental.
         assert_incremental_matches_refresh("4k4/9/9/9/9/9/9/9/4K4 b - 1", "5i5h");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn update_after_white_king_move_matches_refresh() {
         // White to move, White's own king moves -> White refreshes, Black
         // stays incremental.
@@ -584,6 +592,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn update_after_move_sequence_stays_bit_exact() {
         // Thread a multi-ply line through incremental updates, do/undo style,
         // then compare against a fresh refresh at the leaf.
@@ -674,26 +683,31 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_after_quiet_move_matches_refresh() {
         assert_derive_matches_refresh(STARTPOS, "7g7f");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_after_capture_matches_refresh() {
         assert_derive_matches_refresh("4k4/1p7/9/9/9/9/9/1R7/4K4 b - 1", "8h8b");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_after_drop_matches_refresh() {
         assert_derive_matches_refresh("4k4/9/9/9/9/9/9/9/4K4 b P 1", "P*5e");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_after_promotion_matches_refresh() {
         assert_derive_matches_refresh("4k4/9/9/1P7/9/9/9/9/4K4 b - 1", "8d8c+");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_after_capture_promotion_matches_refresh() {
         // Bishop captures and promotes to a horse; the victim enters hand as a
         // rook — the two-add / two-sub shape, with a promoted board plane.
@@ -701,6 +715,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_after_capturing_a_promoted_piece_matches_refresh() {
         // The captured piece is a dragon (promoted rook); it must revert to a
         // bare rook in the capturer's hand (base kind, not the promoted plane).
@@ -708,17 +723,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_after_black_king_move_matches_refresh() {
         // Black's own king moves -> Black refreshes, White stays incremental.
         assert_derive_matches_refresh("4k4/9/9/9/9/9/9/9/4K4 b - 1", "5i5h");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_after_white_king_move_matches_refresh() {
         assert_derive_matches_refresh("4k4/9/9/9/9/9/9/9/4K4 w - 1", "5a5b");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_after_king_capture_matches_refresh() {
         // Black king captures an adjacent enemy piece: for White (incremental),
         // the mover is a king (shared king plane) AND a capture happens.
@@ -726,6 +744,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn null_move_leaves_the_accumulator_unchanged() {
         // A null move changes no pieces and no king squares, so both perspective
         // halves are identical to a refresh of the post-null position — the
@@ -766,6 +785,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_into_stays_bit_exact_over_a_long_playout() {
         // A >=30-ply deterministic playout from the start position. As pieces are
         // captured, dropped, promoted, and kings shuffle, the stacked accumulator
@@ -864,6 +884,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn cached_refresh_matches_a_cold_entry_then_a_warm_one() {
         let pos = parse_sfen(STARTPOS).unwrap();
         let net = synthetic_net_for(&pos);
@@ -887,6 +908,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn cached_refresh_absorbs_a_stale_entry_from_a_different_position() {
         // Same black king square (5i) in both positions, wildly different piece
         // sets — so the second rebuild hits a warm entry whose cached half
@@ -911,6 +933,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn cached_refresh_invalidates_on_a_network_change() {
         let pos = parse_sfen(STARTPOS).unwrap();
         let net_a = synthetic_net_covering_salted(std::slice::from_ref(&pos), 0);
@@ -937,6 +960,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_into_cached_matches_derive_into_on_a_king_move() {
         // The wiring gate: the cached hot-path entry point agrees with both the
         // uncached one and a from-scratch refresh, on a move that rebuilds.
@@ -981,6 +1005,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn derive_into_cached_stays_bit_exact_over_a_long_playout() {
         // The `derive_into` playout gate, re-run through one persistent finny
         // cache: every ply must still equal a from-scratch refresh bit for bit,

@@ -5,6 +5,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn handshake_round_trip_via_spawned_binary() {
     let exe = env!("CARGO_BIN_EXE_attic");
     let mut child = Command::new(exe)

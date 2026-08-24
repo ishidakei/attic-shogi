@@ -143,6 +143,7 @@ fn assert_simd_path_selected() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn eval_fixtures_match_reference_exactly() {
     let nn_bin = nn_bin_path();
     if !nn_bin.exists() {

@@ -503,6 +503,7 @@ mod tests {
 
     // i32::MIN / MAX witness the i64-squaring path: mullo_epi32 would wrap.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn sqr_clipped_relu_matches_scalar_on_boundary_values() {
         require_avx512bw!();
         let inputs: [i32; 16] = [
@@ -646,6 +647,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn fused_fc_chain_matches_per_layer_flow_for_all_buckets() {
         require_vnni!();
         for bucket in 0..LAYER_STACKS {

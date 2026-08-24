@@ -58,6 +58,7 @@ fn session_for(dir: &str, choice: &str) -> String {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn the_advertised_choice_list_is_the_expected_ybb_set() {
     assert_eq!(
         advertised_choices(),
@@ -77,6 +78,7 @@ fn the_advertised_choice_list_is_the_expected_ybb_set() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn every_advertised_choice_is_accepted_by_setoption() {
     // A combo rejects any value outside its list with an `option … rejected:`
     // info string. No advertised choice may take that path.
@@ -94,6 +96,7 @@ fn every_advertised_choice_is_accepted_by_setoption() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn every_advertised_book_choice_loads_from_book_dir() {
     for (i, choice) in advertised_choices().iter().enumerate() {
         let dir = TempDir::new(&format!("choice-load-{i}"));
@@ -147,6 +150,7 @@ fn every_advertised_book_choice_loads_from_book_dir() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn every_advertised_book_choice_drives_its_priority_series() {
     // The advertised names must work with the Multiple Book enumeration too:
     // a `<stem>-000.ybb` alongside the base is picked up first, and the base

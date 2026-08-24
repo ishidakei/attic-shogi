@@ -1369,6 +1369,7 @@ mod tests {
     /// predicate must agree with the clone-and-probe oracle on the pawn-drop-mate
     /// candidate. Gate (a)/(b): parity-fixture playouts + drop-mate-rich seeds.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn legal_drop_matches_clone_probe_oracle_over_playouts() {
         const MIN_PLIES: usize = 40;
         let mut total_compared = 0usize;
@@ -1881,6 +1882,7 @@ mod gate_318 {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn piece_set_matches_scan_over_playouts() {
         const MIN_PLIES: usize = 60;
         for (fi, sfen) in SFENS.iter().enumerate() {

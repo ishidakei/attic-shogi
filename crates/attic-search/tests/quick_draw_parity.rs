@@ -194,6 +194,7 @@ fn assert_fixture(name: &str, net: &attic_eval::NnueNetwork) {
 /// Both fixtures gate `bestmove` / `score` / `nodes` hard, each an inseparable
 /// triple. Skipped with a notice when `nn.bin` is absent.
 #[test]
+#[cfg_attr(miri, ignore)]
 fn quick_draw_search_matches_tournament_reference_fixtures() {
     let path = nn_bin_path();
     if !path.exists() {

@@ -22,4 +22,5 @@ default = ["quick-draw"]
 quick-draw = ["attic-state/quick-draw"]
 
 [dev-dependencies]
+proptest = "~1.11"
 serde_json = "~1.0"

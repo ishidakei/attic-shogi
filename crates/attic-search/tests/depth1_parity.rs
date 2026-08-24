@@ -175,6 +175,7 @@ fn assert_fixture(name: &str, net: &attic_eval::NnueNetwork, tt: &mut Transposit
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn depth1_search_matches_reference_fixtures() {
     let path = nn_bin_path();
     if !path.exists() {

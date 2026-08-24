@@ -421,6 +421,7 @@ fn is_capture(board: &Board, m: Move) -> bool {
 const THRESHOLDS: [i32; 9] = [-3000, -900, -90, -1, 0, 1, 90, 900, 3000];
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn see_ge_is_deterministic_and_panic_free_on_fixture_playouts() {
     const MIN_PLIES: usize = 40;
 

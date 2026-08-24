@@ -103,6 +103,7 @@ fn retreat(net: &NnueNetwork, pos: &mut Position, frame: Frame, parent: &Accumul
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn incremental_accumulator_matches_refresh_on_fixture_lines() {
     let nn_bin = nn_bin_path();
     if !nn_bin.exists() {
@@ -193,6 +194,7 @@ impl Rng {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn incremental_accumulator_matches_refresh_on_random_playouts() {
     let nn_bin = nn_bin_path();
     if !nn_bin.exists() {

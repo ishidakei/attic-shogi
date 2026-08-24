@@ -2237,6 +2237,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn gives_check_matches_oracle_over_random_playouts() {
         const MIN_PLIES: usize = 30;
         for (fi, sfen) in FIXTURE_SFENS.iter().enumerate() {
@@ -2328,6 +2329,7 @@ mod tests {
     /// `is_legal` is exercised only over its contract set (see
     /// [`is_legal_contract_moves`]).
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn cached_check_info_predicates_match_scratch_oracles_over_playouts() {
         const MIN_PLIES: usize = 30;
         for (fi, sfen) in FIXTURE_SFENS.iter().enumerate() {
@@ -2818,6 +2820,7 @@ mod tests {
     /// `~pieces(Us)` target is the union of the enemy-only and empty-only
     /// targets — for the not-in-check fixtures.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn non_evasions_set_equals_captures_union_quiets() {
         for sfen in FIXTURE_SFENS {
             let p = pos(sfen);
@@ -3100,6 +3103,7 @@ mod gate_262 {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn gate_set_consistency_and_attack_equivalence_along_playouts() {
         const PLIES: usize = 32;
         for (fx, sfen) in FIXTURES.iter().enumerate() {
@@ -3272,6 +3276,7 @@ mod gate_267 {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn generators_emit_byte_identical_sequences_over_playouts() {
         const MIN_PLIES: usize = 30;
         let mut in_check_visits = 0usize;
@@ -3464,6 +3469,7 @@ mod gate_280 {
     ];
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn drop_emitter_matches_scan_over_playouts() {
         const MIN_PLIES: usize = 40;
         let mut cov = Coverage::default();

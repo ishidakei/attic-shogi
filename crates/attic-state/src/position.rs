@@ -1670,6 +1670,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn incremental_key_matches_from_scratch_on_random_playouts() {
         const MIN_PLIES: usize = 30;
 
@@ -1890,6 +1891,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn key_agrees_with_repetition_equality_on_sennichite() {
         // Along the sennichite perft fixture's move list, every recurrence that
         // `position_occurrences` detects (structural equality of board, hands,
@@ -2009,6 +2011,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn is_repetition_none_before_and_draw_at_sennichite_recurrence() {
         // The sennichite fixture is a four-ply king shuffle: the root recurs
         // every four plies. The reference reports NONE until the first
@@ -2419,6 +2422,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn gives_check_matches_stored_history_flag_over_playouts() {
         // The oracle: `Position::gives_check(m)` must equal the post-`do_move`
         // `gives_check` flag the move-history machinery records.
@@ -2461,6 +2465,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn is_repetition_survives_do_undo_round_trip() {
         // Record is_repetition at every ply on the way down the sennichite
         // line, then unwind and assert each restored depth reports the same
@@ -2558,6 +2563,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn do_undo_round_trip_is_identity_over_playouts() {
         // The playout leg: from every parity fixture, walk a deterministic
         // >= 40-ply line and, at each position, prove that `do_move` then the

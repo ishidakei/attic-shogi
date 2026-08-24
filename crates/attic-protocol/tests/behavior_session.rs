@@ -78,6 +78,7 @@ fn last_score_cp(text: &str) -> Option<i64> {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn draw_value_black_shifts_the_root_side_adjudicated_score() {
     // Black to move at ply 100 with MaxMovesToDraw 50: every child adjudicates a
     // draw, so the root reports the Black-side draw contempt. The default
@@ -132,6 +133,7 @@ fn draw_value_black_shifts_the_root_side_adjudicated_score() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn draw_value_white_shifts_a_white_to_move_root() {
     // The mirror: White to move at ply 100. DrawValueWhite 500 lifts the reported
     // score by `+500 * Pawn / 100`; the default reports a small non-positive cp.
@@ -171,6 +173,7 @@ fn draw_value_white_shifts_a_white_to_move_root() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn resign_value_resigns_a_lost_position_but_default_plays() {
     // A forced mated-in-2 for the side to move. With ResignValue 100 the real
     // search's decisive negative score drops below `-100 cp`, so the reply is
@@ -238,6 +241,7 @@ fn resign_value_resigns_a_lost_position_but_default_plays() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn go_mate_finds_the_mate_and_terminates_on_quiet() {
     // `go mate 5000` on a mate-in-1 replies the mating move within the budget
     // (the mate-found stop fires at depth 1); `go mate 2000` on a quiet position
@@ -278,6 +282,7 @@ fn go_mate_finds_the_mate_and_terminates_on_quiet() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn go_mate_infinite_releases_on_stop() {
     // `go mate infinite` has no time bound, so it emits no bestmove until `stop`;
     // `stop` then releases a single bestmove promptly.
@@ -304,6 +309,7 @@ fn go_mate_infinite_releases_on_stop() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn go_mate_threads2_smoke_completes() {
     // A `Threads=2` `go mate` smoke completes with a bestmove (the vote is off
     // under `limits.mate`, so the main worker reports).
@@ -322,6 +328,7 @@ fn go_mate_threads2_smoke_completes() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn time_managed_threads2_smoke_completes() {
     // A `Threads=2` time-managed search (a real clock, so `use_time_management`)
     // exercises the Lazy-SMP best-move-change aggregation (every worker's slot

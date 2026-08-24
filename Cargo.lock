@@ -74,6 +74,7 @@ version = "9.70.0"
 dependencies = [
  "attic-state",
  "attic-storage",
+ "proptest",
  "serde_json",
 ]
 

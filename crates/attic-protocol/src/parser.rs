@@ -571,6 +571,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn line_at_max_size_is_parsed_normally() {
         // 64 KB exactly — still parses (becomes Unknown since it's not a command).
         let line = "x".repeat(MAX_LINE_BYTES);

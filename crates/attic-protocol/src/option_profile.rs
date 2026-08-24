@@ -108,6 +108,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn empty_or_absent_input_is_v1() {
         assert_eq!(parse_engine_option_profile(""), BookOptionsVersion::V1);
         assert_eq!(
@@ -226,6 +227,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn reads_a_real_file() {
         let dir =
             std::env::temp_dir().join(format!("engine-option-profile-{}", std::process::id()));

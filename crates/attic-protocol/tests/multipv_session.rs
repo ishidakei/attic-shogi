@@ -112,6 +112,7 @@ fn last_multipv_block(out: &str) -> Vec<&str> {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn multipv_three_emits_three_ranked_lines_per_iteration() {
     let dir = TempDir::new("multipv3");
     write_synthetic_nn_bin(dir.path());
@@ -166,6 +167,7 @@ fn multipv_three_emits_three_ranked_lines_per_iteration() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn multipv_clamps_to_legal_move_count() {
     let dir = TempDir::new("multipv-clamp");
     write_synthetic_nn_bin(dir.path());
@@ -200,6 +202,7 @@ fn multipv_clamps_to_legal_move_count() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn multipv_single_legal_move_works() {
     let dir = TempDir::new("multipv-single");
     write_synthetic_nn_bin(dir.path());
@@ -235,6 +238,7 @@ fn multipv_single_legal_move_works() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn threads2_multipv2_completes_with_both_lines_and_a_legal_bestmove() {
     // Voting is off under MultiPV > 1 (the reference `MultiPV == 1` guard). The
     // search still completes, emits both PV lines, and returns a legal bestmove.
@@ -270,6 +274,7 @@ fn threads2_multipv2_completes_with_both_lines_and_a_legal_bestmove() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn pv_interval_zero_prints_every_iteration() {
     let dir = TempDir::new("pvinterval0");
     write_synthetic_nn_bin(dir.path());
@@ -292,6 +297,7 @@ fn pv_interval_zero_prints_every_iteration() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn pv_interval_default_still_emits_a_final_pv_before_bestmove() {
     // With the default PvInterval 300 a fast fixed-depth search may suppress the
     // intermediate lines, but the final PV always precedes `bestmove`.
@@ -326,6 +332,7 @@ fn pv_interval_default_still_emits_a_final_pv_before_bestmove() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn consideration_mode_pv_replays_as_a_legal_sequence() {
     let dir = TempDir::new("consideration");
     write_synthetic_nn_bin(dir.path());

@@ -74,6 +74,7 @@ fn assert_fixture_depth(name: &str, depth: u32) {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn perft_parity_default_depths() {
     for name in FIXTURES {
         let fixture = load_fixture(name);

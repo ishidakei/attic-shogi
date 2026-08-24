@@ -115,7 +115,12 @@ pub(crate) fn alloc_zeroed_large(min_bytes: usize) -> (NonNull<u8>, Layout) {
         None => handle_alloc_error(layout),
     };
 
-    #[cfg(target_os = "linux")]
+    // `not(miri)`: miri has no kernel to hint, and refuses the `libc` call as an
+    // unsupported foreign function. Dropping the hint under miri is not a
+    // behavioural difference — the call's return value is already discarded and
+    // it cannot affect the allocation's contents or address — so the miri gate
+    // still exercises the real allocation path below and above this block.
+    #[cfg(all(target_os = "linux", not(miri)))]
     {
         // SAFETY: `ptr`/`size` describe the live allocation just returned.
         // `madvise` only adjusts kernel paging policy for that range; it neither
@@ -351,6 +356,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn array_is_aligned_zeroed_and_correct_length() {
         // A length that does not divide the alignment (exercises the round-up)
         // and one that spans several alignment units.

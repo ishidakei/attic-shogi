@@ -1271,6 +1271,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn qsearch_captures_are_ordered_by_victim_value_descending() {
         let p = pos("9/9/9/9/b3R3g/9/4p4/9/K7k b - 1");
         let h = init_histories();
@@ -1282,6 +1283,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn qsearch_equal_value_victims_keep_reference_generation_order() {
         let p = pos("9/9/9/2p1p4/2S1G4/9/9/9/K7k b - 1");
         let h = init_histories();
@@ -1292,6 +1294,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn qsearch_tt_move_is_yielded_first_and_not_duplicated() {
         let p = pos("9/9/9/9/b3R3g/9/4p4/9/K7k b - 1");
         let h = init_histories();
@@ -1308,6 +1311,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn qsearch_not_in_check_yields_only_captures_no_quiet_checks() {
         let p = pos("k8/9/9/9/4R4/9/4p4/9/8K b - 1");
         let h = init_histories();
@@ -1317,6 +1321,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn qsearch_generate_all_legal_moves_adds_capture_nonpromotion() {
         // A Black lance on 5d capturing a White pawn on 5b (rank 1, enemy second
         // rank). The default qsearch picker yields only the promotion; with
@@ -1346,6 +1351,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn qsearch_evasions_are_exactly_the_legal_set_with_captures_first() {
         let p = pos("4r4/5G3/9/9/9/9/9/9/4K3k b - 1");
         let h = init_histories();
@@ -1396,6 +1402,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn main_capture_order_is_mvv_with_initial_histories() {
         let p = pos("9/9/9/9/b3R3g/9/4p4/9/K7k b - 1");
         let h = init_histories();
@@ -1413,6 +1420,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn main_tt_move_leads_and_is_never_duplicated() {
         let p = pos("9/9/9/9/b3R3g/9/4p4/9/K7k b - 1");
         let h = init_histories();
@@ -1426,6 +1434,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn main_emits_every_legal_move_exactly_once_not_in_check() {
         let p =
             pos("l7l/1r1sg2k1/2nppgsp1/p1p3p1p/1p2N4/2P1P1P2/PPSP1PB1P/3GG1SR1/LN2K3L b BNPp 1");
@@ -1441,6 +1450,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn main_emits_every_legal_move_exactly_once_with_tt() {
         let p =
             pos("l7l/1r1sg2k1/2nppgsp1/p1p3p1p/1p2N4/2P1P1P2/PPSP1PB1P/3GG1SR1/LN2K3L b BNPp 1");
@@ -1463,6 +1473,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn main_good_bad_capture_split_respects_see_boundary() {
         let p = pos("6rkg/8G/9/9/9/9/9/9/K8 b - 1");
         let h = init_histories();
@@ -1501,6 +1512,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn main_skip_quiet_moves_drops_quiets_but_keeps_bad_captures() {
         let p =
             pos("l7l/1r1sg2k1/2nppgsp1/p1p3p1p/1p2N4/2P1P1P2/PPSP1PB1P/3GG1SR1/LN2K3L b BNPp 1");
@@ -1529,6 +1541,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn main_skip_mid_iteration_still_replays_bad_captures() {
         let p =
             pos("l7l/1r1sg2k1/2nppgsp1/p1p3p1p/1p2N4/2P1P1P2/PPSP1PB1P/3GG1SR1/LN2K3L b BNPp 1");
@@ -1560,6 +1573,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn main_in_check_emits_exactly_the_legal_evasions() {
         let p = pos("4r4/5G3/9/9/9/9/9/9/4K3k b - 1");
         let h = init_histories();
@@ -1576,6 +1590,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn main_quiet_direct_check_bonus_orders_a_checking_move_first() {
         let p = pos("4k4/9/R8/9/9/9/9/9/8K b - 1");
         let h = init_histories();
@@ -1616,6 +1631,7 @@ mod tests {
     /// captures and entering `QUIET_INIT`, the eager (construction-time) design
     /// would miss it, but the staged design must surface the bumped quiet first.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn quiet_scoring_reads_table_update_made_after_captures() {
         // Rook on 5e: one good capture (the pawn on 5g) then many quiet rook /
         // king moves. No quiet gives check, so on untouched tables every quiet
@@ -1678,6 +1694,7 @@ mod tests {
     /// picker (TT emitted) and the first non-TT `next_move` must reorder the
     /// good captures — the property the eager snapshot could not honour.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn capture_scoring_reads_table_update_made_after_tt() {
         // Two equal-victim captures so the tie-break is decided by captureHistory:
         // silver 7e x 7d(pawn) and gold 5e x 5d(pawn).
@@ -1742,6 +1759,7 @@ mod tests {
     /// only score difference is one continuation plane cell must reorder when
     /// that cell is bumped between construction and `QUIET_INIT`.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn quiet_scoring_reads_live_continuation_plane() {
         let p = pos("9/9/9/9/4R4/9/9/9/K7k b - 1");
         // Point cont plane index 0 at a real (non-sentinel) plane so the update
@@ -1779,6 +1797,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn illegal_quiet_in_buffer_reorders_the_legal_quiets() {
         // Hand-computed partial-sort tail swap driven purely by a
         // pseudo-legal-but-illegal quiet's presence in the scored buffer.
@@ -2054,6 +2073,7 @@ mod tests {
     ];
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn gate_main_pickers_match_twin_across_histories_and_skip_schedules() {
         // Distinct history profiles: fresh, and several signed fills that push
         // quiets above / below the `-14000` split and reshape the capture order.
@@ -2077,6 +2097,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn gate_qsearch_pickers_match_twin() {
         let cases: &[(&str, Option<&str>)] = &[
             ("9/9/9/9/b3R3g/9/4p4/9/K7k b - 1", None),
@@ -2103,6 +2124,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn gate_probcut_pickers_match_twin() {
         let sfens = [
             "9/9/9/9/b3R3g/9/4p4/9/K7k b - 1",

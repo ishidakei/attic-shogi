@@ -42,6 +42,7 @@ fn bench_summary_positions(out: &str) -> u64 {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn bare_bench_runs_the_four_default_positions() {
     // No network loaded → each of the four default positions resigns instantly,
     // and the summary reports positions=4, nodes=0. This proves the default
@@ -66,6 +67,7 @@ fn bare_bench_runs_the_four_default_positions() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn garbage_argument_fails_loudly_without_panicking() {
     // A non-integer TT size is a loud parse error, not a panic and not a search.
     let out = drive("bench notanumber\nquit\n");
@@ -80,6 +82,7 @@ fn garbage_argument_fails_loudly_without_panicking() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn unsupported_limit_type_fails_loudly() {
     // `perft` / `eval` are out of NPS-bench scope; they are reported, not run.
     let out = drive("bench 16 1 5 default perft\nquit\n");
@@ -90,6 +93,7 @@ fn unsupported_limit_type_fails_loudly() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn current_source_benches_the_set_position() {
     // `current` benches exactly one position (the session position). With no
     // network it resigns, but the summary must report positions=1.
@@ -124,6 +128,7 @@ fn bench_session(evaldir: &str, bench_line: &str) -> String {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn two_runs_in_one_process_report_identical_nodes() {
     let dir = TempDir::new("bench-determinism-1proc");
     write_synthetic_nn_bin(dir.path());
@@ -161,6 +166,7 @@ fn two_runs_in_one_process_report_identical_nodes() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn two_process_launches_report_identical_nodes() {
     let dir = TempDir::new("bench-determinism-2proc");
     write_synthetic_nn_bin(dir.path());
@@ -185,6 +191,7 @@ fn two_process_launches_report_identical_nodes() {
 // -------------------------------------------------------------------------
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn threads_two_bench_completes_and_reports() {
     let dir = TempDir::new("bench-threads2");
     write_synthetic_nn_bin(dir.path());

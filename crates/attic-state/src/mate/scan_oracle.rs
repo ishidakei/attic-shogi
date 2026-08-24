@@ -525,6 +525,7 @@ const FILTER_SEEDS: &[&str] = &[
 /// slider equals its scalar oracle over occupancies sampled from fixture
 /// playouts plus deterministic random board masks.
 #[test]
+#[cfg_attr(miri, ignore)]
 fn effect_primitives_match_scalar_oracle() {
     // -- Occupancy-free step / ray effects: square × colour, exhaustive.
     for sq in all_squares() {
@@ -637,6 +638,7 @@ fn effect_primitives_match_scalar_oracle() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn filtered_mate_matches_unfiltered_twin_over_playouts() {
     const MIN_PLIES: usize = 120;
 
@@ -670,6 +672,7 @@ fn filtered_mate_matches_unfiltered_twin_over_playouts() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn bitboard_helpers_match_scan_oracle_on_fixture_playouts() {
     const MIN_PLIES: usize = 60;
 

@@ -1614,6 +1614,7 @@ mod tests {
     /// mismatch the test fails outright (do not tune to pass — the algorithm is
     /// wrong).
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn qugiy_slides_equal_ray_walk_oracle() {
         // Deterministic xorshift-128; no `rand` dependency in tests.
         let mut state: u128 = 0xDEAD_BEEF_CAFE_F00D_0123_4567_89AB_CDEF;
@@ -1722,6 +1723,7 @@ mod tests {
     /// oracle over the structural + pseudo-random corpus (issue Part B.6). This
     /// is independent of the ray-walk oracle above.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn lane_native_equals_packed_qugiy_oracle() {
         for occ in sample_occupancies() {
             let occ_bb = Bitboard::from_raw(occ);
@@ -1861,6 +1863,7 @@ mod tests {
     /// corpus plus a 100k deterministic pseudo-random occupancy gate. Any mismatch
     /// fails outright.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn bishop_matches_four_ray_and_scalar256_oracles() {
         let mut state: u128 = 0xF00D_CAFE_1234_5678_9ABC_DEF0_0FED_CBA9;
         let mut rng = move || {
@@ -2140,6 +2143,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn aligned_equals_reference_all_triples() {
         // 81^3 ≈ 531k combinations — exhaustive over every king/anchor triple.
         for king in all_squares() {
@@ -2247,6 +2251,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn slider_queries_equal_scalar_walk() {
         let bishop_dirs = [(1, -1), (-1, -1), (1, 1), (-1, 1)];
         let rook_dirs = [(0, -1), (0, 1), (1, 0), (-1, 0)];
@@ -2501,6 +2506,7 @@ mod twin {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn every_value_matches_twin() {
         for bits in corpus() {
             assert_unary_same(Bitboard::from_raw(bits), Twin::from_raw(bits));
@@ -2508,6 +2514,7 @@ mod twin {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn set_clear_and_without_index_match_twin() {
         for bits in corpus() {
             for i in 0..N {
@@ -2528,6 +2535,7 @@ mod twin {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn binary_ops_match_twin() {
         let c = corpus();
         // A representative fixed subset paired against the whole corpus keeps the
@@ -2560,6 +2568,7 @@ mod twin {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn chained_compositions_match_twin() {
         let c = corpus();
         for w in c.windows(3) {

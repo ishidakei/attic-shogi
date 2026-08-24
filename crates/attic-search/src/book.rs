@@ -584,6 +584,7 @@ mod tests {
     // Two independently constructed entropy-seeded streams differ (the time /
     // address / counter mix), mirroring the reference's per-process `PRNG()` seed.
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn entropy_seeds_differ_across_constructions() {
         let a = Prng::random_seed();
         let b = Prng::random_seed();

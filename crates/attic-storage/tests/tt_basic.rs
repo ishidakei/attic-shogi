@@ -47,6 +47,7 @@ fn store(
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn store_probe_round_trip_every_field() {
     let mut tt = TranspositionTable::new();
     tt.resize(1);
@@ -81,6 +82,7 @@ fn store_probe_round_trip_every_field() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn every_bound_and_pv_combination_round_trips() {
     let mut tt = TranspositionTable::new();
     tt.resize(1);
@@ -105,6 +107,7 @@ fn every_bound_and_pv_combination_round_trips() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn miss_on_wrong_key() {
     let mut tt = TranspositionTable::new();
     tt.resize(1);
@@ -138,6 +141,7 @@ fn miss_on_wrong_key() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn replacement_evicts_lowest_priority_entry() {
     // Fill one three-entry cluster, all written at generation 0 so every
     // relative_age is 0 and replace_priority == depth8 == depth − DEPTH_NONE.
@@ -175,6 +179,7 @@ fn replacement_evicts_lowest_priority_entry() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn generation_aging_lowers_replacement_priority() {
     // A deep-but-old entry loses to a shallow-but-fresh one once enough
     // generations pass, because replace_priority = depth8 − 8·relative_age.
@@ -222,6 +227,7 @@ fn generation_aging_lowers_replacement_priority() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn save_preserves_move_when_new_move_absent() {
     // The reference keeps the old move if the incoming move is none (0) and the
     // key still matches. A second write to the same key with mv = 0 must keep
@@ -246,6 +252,7 @@ fn save_preserves_move_when_new_move_absent() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn resize_sizes_by_formula_and_clears() {
     let mut tt = TranspositionTable::new();
     assert_eq!(tt.cluster_count(), 0, "fresh table is empty");
@@ -271,6 +278,7 @@ fn resize_sizes_by_formula_and_clears() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn resize_to_same_size_is_a_no_op() {
     let mut tt = TranspositionTable::new();
     tt.resize(1);
@@ -291,6 +299,7 @@ fn resize_to_same_size_is_a_no_op() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn clear_zeroes_entries_and_generation() {
     let mut tt = TranspositionTable::new();
     tt.resize(1);
@@ -318,6 +327,7 @@ fn new_search_wraps_within_five_bits() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn determinism_identical_sequences_yield_identical_tables() {
     // Two tables driven by byte-identical operation sequences must end in the
     // same state, verified by a checksum over all entries.
@@ -357,6 +367,7 @@ const EXPECTED_TT_ALIGN: usize = if cfg!(target_os = "linux") {
 };
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn resized_table_base_pointer_is_page_aligned() {
     let mut tt = TranspositionTable::new();
     assert_eq!(tt.backing_ptr_addr(), 0, "unsized table reports no address");
@@ -374,6 +385,7 @@ fn resized_table_base_pointer_is_page_aligned() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn fresh_resize_reads_back_all_misses() {
     // The huge-page allocation is `alloc_zeroed`, so a freshly resized table is
     // fully unoccupied — every probe across the sampled clusters is a miss with
@@ -393,6 +405,7 @@ fn fresh_resize_reads_back_all_misses() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn resize_grow_shrink_same_cycles_preserve_semantics() {
     // Walk grow → shrink → same across several sizes; after each *change* the
     // table is a valid, cleared allocation, and a same-size request is a
@@ -421,6 +434,7 @@ fn resize_grow_shrink_same_cycles_preserve_semantics() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn many_resizes_do_not_leak_or_corrupt() {
     // Repeatedly reallocate under the new aligned layout; each drop frees with
     // the matching layout. A double free / bad layout would trip the allocator
@@ -442,6 +456,7 @@ fn many_resizes_do_not_leak_or_corrupt() {
 /// disabled (`AnonHugePages: 0 kB`) it simply reports zero.
 #[test]
 #[cfg(target_os = "linux")]
+#[cfg_attr(miri, ignore)]
 fn thp_uptake_diagnostic_over_64mib() {
     use std::fs;
 

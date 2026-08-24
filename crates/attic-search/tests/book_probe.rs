@@ -70,6 +70,7 @@ fn to_book_moves(moves: &[ExpectedMove]) -> Vec<BookMove> {
 const STARTPOS: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn probe_matches_expected_in_both_modes() {
     let path = fixture("tests/fixtures/book/sample.ybb");
     let memory = Book::open_in_memory(&path).expect("open in-memory");
@@ -101,6 +102,7 @@ fn probe_matches_expected_in_both_modes() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn probe_misses_in_both_modes() {
     let path = fixture("tests/fixtures/book/sample.ybb");
     let memory = Book::open_in_memory(&path).expect("open in-memory");
@@ -131,6 +133,7 @@ fn probe_misses_in_both_modes() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn truncated_or_corrupt_files_never_panic() {
     let path = fixture("tests/fixtures/book/sample.ybb");
     let full = std::fs::read(&path).expect("read sample.ybb");

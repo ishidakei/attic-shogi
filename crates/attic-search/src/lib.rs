@@ -395,6 +395,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn one_capture_is_chosen() {
         let p = pos(ONE_CAPTURE_SFEN);
         // Sanity: exactly one legal capture is available.
@@ -423,6 +424,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn tie_break_is_first_in_generation_order() {
         // The zero network scores every child 0, so all legal moves tie; the
         // strict-`>` tie-break must keep the first move in generation order.
@@ -438,6 +440,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn choice_is_deterministic_across_runs() {
         let p = pos(ONE_CAPTURE_SFEN);
         let search = Search::new(net_with_ft(patterned_ft()));
@@ -449,6 +452,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn greedy_choice_equals_full_refresh_argmax() {
         // Several positions, including drops (hand pieces) and promotion-zone
         // moves, exercised against the incremental path inside `go`.
@@ -473,6 +477,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn emits_one_info_report_with_expected_fields() {
         let p = pos(ONE_CAPTURE_SFEN);
         let search = Search::new(net_with_ft(material_ft(40)));

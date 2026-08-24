@@ -219,6 +219,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn missing_file_errors() {
         let tokens = ["16", "1", "5", "/no/such/bench/file", "depth"].map(String::from);
         assert!(parse_bench(&tokens, "x").is_err());

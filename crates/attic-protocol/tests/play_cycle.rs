@@ -47,6 +47,7 @@ fn is_well_formed_usi_move(s: &str) -> bool {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn multi_cycle_without_network_survives_and_resigns() {
     let session = "usi\n\
                    isready\n\
@@ -83,6 +84,7 @@ fn multi_cycle_without_network_survives_and_resigns() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn position_then_go_after_sfen_without_network_resigns() {
     let sfen = attic_state::STARTPOS_SFEN;
     let session = format!(
@@ -103,6 +105,7 @@ fn position_then_go_after_sfen_without_network_resigns() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore)]
 fn usinewgame_between_cycles_without_network_resigns() {
     let session = "usi\n\
                    isready\n\

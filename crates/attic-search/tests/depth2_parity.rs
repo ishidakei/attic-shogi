@@ -115,6 +115,7 @@ fn format_score(v: i32) -> ScoreJson {
 
 /// `position startpos moves 7g7f`, `go depth 2`: bestmove / score / nodes exact.
 #[test]
+#[cfg_attr(miri, ignore)]
 fn depth2_startpos_7g7f_matches_reference() {
     let path = nn_bin_path();
     if !path.exists() {
