@@ -25,9 +25,10 @@ use crate::parser::{Command, GoLimits, MATE_UNLIMITED_MS, PositionSfen, parse_li
 
 /// The `id name` value. Its version tracks how far upstream YaneuraOu has been
 /// ported and nothing else — it moves only on an upstream catch-up, never for a
-/// divergence, fix, or addition. The `git` suffix marks a build past the last
-/// tagged release; a tagged release snapshot carries the plain `Attic 9.70`.
-pub const ENGINE_NAME: &str = "Attic 9.70git";
+/// divergence, fix, or addition. This is a tagged release snapshot, so the name
+/// is the plain `Attic 9.80`; a build past the last tagged release adds a `git`
+/// suffix and reads `Attic 9.80git`.
+pub const ENGINE_NAME: &str = "Attic 9.80";
 pub const ENGINE_AUTHOR: &str = "Kei Ishida <ishida.kei@gmail.com>";
 
 /// The largest iterative-deepening depth a `go` ever requests: one below

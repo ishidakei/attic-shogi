@@ -60,7 +60,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "attic"
-version = "9.70.0"
+version = "9.80.0"
 dependencies = [
  "attic-protocol",
  "attic-state",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "attic-eval"
-version = "9.70.0"
+version = "9.80.0"
 dependencies = [
  "attic-state",
  "attic-storage",
@@ -81,14 +81,14 @@ dependencies = [
 
 [[package]]
 name = "attic-numa"
-version = "9.70.0"
+version = "9.80.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "attic-protocol"
-version = "9.70.0"
+version = "9.80.0"
 dependencies = [
  "attic-numa",
  "attic-search",
@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "attic-search"
-version = "9.70.0"
+version = "9.80.0"
 dependencies = [
  "attic-eval",
  "attic-state",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "attic-state"
-version = "9.70.0"
+version = "9.80.0"
 dependencies = [
  "proptest",
  "serde_json",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "attic-storage"
-version = "9.70.0"
+version = "9.80.0"
 dependencies = [
  "libc",
 ]
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "9.70.0"
+version = "9.80.0"
 dependencies = [
  "attic-state",
  "clap",

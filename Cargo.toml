@@ -7,7 +7,7 @@ edition = "2024"
 # One version for every workspace member. It expresses how far upstream
 # YaneuraOu has been tracked and nothing else — never bumped for a divergence,
 # fix, or addition. The USI `id name` derives from it.
-version = "9.70.0"
+version = "9.80.0"
 
 # Fat LTO and a single codegen unit trade link time for run-time speed (~+7% NPS
 # together with the `-C target-cpu=native` in `.cargo/config.toml`).
