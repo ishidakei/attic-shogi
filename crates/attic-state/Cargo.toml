@@ -6,13 +6,11 @@ publish = false
 
 [dependencies]
 
-# `quick-draw` mirrors upstream's `ENABLE_QUICK_DRAW` (`config.h`), which the
-# reference's `FOR_TOURNAMENT` build defines. It selects the query-time
-# repetition walk in `Position::is_repetition` (2nd occurrence adjudicates, no
-# `repetition < ply` root gate) over the incremental `do_move` precompute. The
-# engine plays tournaments, so it is the default; clearing it
-# (`--no-default-features`) restores the non-QUICK_DRAW variant, which the
-# pre-existing parity fixtures were gated against.
+# `quick-draw` mirrors upstream's `ENABLE_QUICK_DRAW` (`config.h`), which
+# the reference's `FOR_TOURNAMENT` build defines: the query-time repetition walk
+# in `Position::is_repetition` — second occurrence adjudicates, no
+# `repetition < ply` root gate — rather than the incremental `do_move`
+# precompute. `--no-default-features` restores the other variant.
 [features]
 default = ["quick-draw"]
 quick-draw = []

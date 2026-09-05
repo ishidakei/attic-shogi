@@ -1,17 +1,11 @@
-//! NPS scaling measurement (Lazy SMP).
+//! Aggregate nodes-per-second at `Threads=1` and `Threads=2` over three
+//! positions. This prints a table and never asserts a scaling factor: on a host
+//! whose two logical CPUs are SMT siblings a ratio well under 2× is normal, so
+//! a threshold would encode the machine rather than the engine.
 //!
-//! Measures aggregate nodes-per-second at `Threads=1` and `Threads=2` for three
-//! positions, running `go movetime 5000` in a release build and reading the
-//! aggregated `nodes` off the final `info` line. This is a **measurement, not a
-//! hard threshold**: it prints a table (position × threads, plus the ratio) and
-//! never asserts a scaling factor: on a host whose two logical CPUs are SMT
-//! siblings, a `Threads=2 / Threads=1` ratio well under 2× is expected and
-//! normal, so any threshold would encode the machine rather than the engine.
-//!
-//! `#[ignore]`-gated (it spends 5 s × 3 positions × 2 thread counts × 3 runs =
-//! ~90 s) and needs the real SFNN-1536 network (staged locally at
-//! `eval/nn.bin`, never committed). When the network
-//! is absent it prints a notice and passes.
+//! `#[ignore]`-gated, since it spends about 90 s, and it needs the real network,
+//! staged locally and never committed; when that is absent it prints a notice
+//! and passes.
 //!
 //! Run it in a release build:
 //!
@@ -26,8 +20,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 const MOVETIME_MS: u64 = 5000;
 const RUNS: usize = 3;
 
-/// (label, SFEN). Startpos plus two positions from the existing depth-5 parity
-/// fixtures.
+/// `(label, SFEN)`: startpos plus two positions from the depth-5 fixtures.
 const POSITIONS: &[(&str, &str)] = &[
     (
         "startpos",
@@ -65,7 +58,6 @@ fn read_until<F: Fn(&str) -> bool>(reader: &mut BufReader<ChildStdout>, pred: F)
     }
 }
 
-/// Parse the `nodes <N>` field out of an `info` line.
 fn parse_nodes(info: &str) -> Option<u64> {
     let mut toks = info.split_whitespace();
     while let Some(t) = toks.next() {
@@ -84,8 +76,6 @@ fn measure_nodes(stdin: &mut ChildStdin, reader: &mut BufReader<ChildStdout>, sf
     send(stdin, &format!("position sfen {sfen}"));
     send(stdin, &format!("go movetime {MOVETIME_MS}"));
 
-    // Capture the last `info` line that carries a `nodes` field before the
-    // `bestmove` (a normal search emits exactly one such line).
     let mut nodes = 0u64;
     let mut line = String::new();
     loop {
@@ -146,18 +136,17 @@ fn start_engine(threads: u32) -> (Child, ChildStdin, BufReader<ChildStdout>) {
 }
 
 #[test]
-#[ignore = "spawns the engine and searches ~90s; run explicitly on the dev VM"]
+#[ignore = "spawns the engine and searches about 90 s; run explicitly"]
 fn nps_threads1_vs_threads2() {
     let dir = eval_dir();
     if !dir.join("nn.bin").exists() {
         eprintln!(
-            "skipping nps_threads1_vs_threads2: {} is not present (staged only on the dev VM)",
+            "skipping nps_threads1_vs_threads2: {} is not present (obtained out-of-band)",
             dir.join("nn.bin").display()
         );
         return;
     }
 
-    // median NPS per (position index, threads-1 or threads-2).
     let mut medians: Vec<(&str, f64, f64)> = Vec::new();
 
     for &(label, sfen) in POSITIONS {
@@ -187,7 +176,7 @@ fn nps_threads1_vs_threads2() {
         eprintln!("{label:<20} {nps1:>14.0} {nps2:>14.0} {ratio:>8.2}");
     }
 
-    // Measurement only — assert we actually got numbers, never a scaling factor.
+    // Measurement only: never a scaling factor.
     assert!(
         medians.iter().all(|(_, n1, n2)| *n1 > 0.0 && *n2 > 0.0),
         "every measurement must produce a positive node count"

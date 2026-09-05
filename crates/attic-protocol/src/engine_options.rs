@@ -1,34 +1,25 @@
 //! Parser for `engine_options.txt` / `eval_options.txt` override lines, ported
 //! from the reference `OptionsMap::build_option` (`usioption.cpp`).
 //!
-//! `read_engine_options` (the reference `usioption.cpp`) is driven from
-//! the USI layer on every `isready`, before the engine's own `isready` work; it
-//! opens a file (silent no-op when absent), emits one
-//! `info string read engine options, path = <path>`, then feeds each line here.
-//!
-//! This module owns only the *pure* line → [`OverrideLine`] parse; applying the
-//! result against the live [`crate::options::OptionStore`] (unknown-name errors,
-//! the value set, the FIXED lock, and the override info string) lives in the
-//! driver, which owns the output sink and the option store.
+//! Only the pure line → [`OverrideLine`] parse lives here; applying the result
+//! against the live option store is the driver's, which owns the output sink.
 
-/// The parse of one override line.
-///
-/// The reference first replaces every `'='` with `' '` (so `Name=Value`
-/// collapses to `Name Value`), then splits on whitespace. A leading `option`
-/// token selects the full form; anything else is the plain `<Name> <Value>`
-/// form; an all-whitespace line is empty.
+/// The parse of one override line. The reference first replaces every `'='`
+/// with `' '`, then splits on whitespace; a leading `option` token selects the
+/// full form.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OverrideLine {
-    /// Blank / all-whitespace line — skip silently.
     Empty,
-    /// A `<Name> <Value>` override (also the collapsed `Name=Value` form).
-    /// `value` is `""` when the line names an option but no value.
-    Plain { name: String, value: String },
+    /// A `<Name> <Value>` override. `value` is `""` when the line names an
+    /// option but no value.
+    Plain {
+        name: String,
+        value: String,
+    },
     /// The full `option name <N> type <T> default <V> [min .. max .. var ..]`
-    /// form. `value` is taken from the `default` token. `invalid_tokens` holds
-    /// any token the reference scan loop did not recognise, each of which the
-    /// driver reports as `Error : invalid command: <token>` (the reference still
-    /// applies the override afterwards).
+    /// form; `value` comes from the `default` token. `invalid_tokens` holds the
+    /// tokens the reference scan loop did not recognise, which the driver
+    /// reports without aborting the override.
     Full {
         name: String,
         value: String,
@@ -37,30 +28,24 @@ pub enum OverrideLine {
 }
 
 /// Parse one raw line into an [`OverrideLine`], mirroring the reference
-/// `build_option` scan (`usioption.cpp`): `'='` → `' '` first, then a
-/// whitespace tokeniser (`Parser::LineScanner`) whose `get_text` yields `""`
-/// past end-of-line.
+/// `build_option` scan (`usioption.cpp`).
 pub fn parse_override_line(line: &str) -> OverrideLine {
-    // 1. Replace every '=' with ' ' so `Name=Value` becomes `Name Value`.
     let replaced: String = line.replace('=', " ");
     let mut tokens = replaced.split_whitespace();
 
     let first = match tokens.next() {
-        // Empty line (or an all-`=`/whitespace line) is skipped.
         None => return OverrideLine::Empty,
         Some(t) => t,
     };
 
     if first != "option" {
-        // Plain `<Name> <Value>` form. `get_text` past EOL is `""`.
         let name = first.to_string();
         let value = tokens.next().unwrap_or("").to_string();
         return OverrideLine::Plain { name, value };
     }
 
-    // Full `option name <N> type <T> default <V> [min .. max .. var ..]` form.
-    // The reference reads a keyword then its argument; an unrecognised keyword is
-    // reported as an invalid command but does not abort the scan.
+    // The reference reads a keyword then its argument; an unrecognised keyword
+    // is reported as an invalid command but does not abort the scan.
     let mut name = String::new();
     let mut value = String::new();
     let mut invalid_tokens = Vec::new();
@@ -95,7 +80,6 @@ mod tests {
     fn empty_line_is_empty() {
         assert_eq!(parse_override_line(""), OverrideLine::Empty);
         assert_eq!(parse_override_line("   "), OverrideLine::Empty);
-        // A lone `=` collapses to a space → all-whitespace → empty.
         assert_eq!(parse_override_line("="), OverrideLine::Empty);
     }
 
@@ -119,7 +103,6 @@ mod tests {
                 value: "24".to_string(),
             }
         );
-        // Spaces around '=' are equivalent.
         assert_eq!(
             parse_override_line("FV_SCALE = 24"),
             OverrideLine::Plain {

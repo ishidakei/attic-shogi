@@ -20,14 +20,9 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# claude
-.claude/settings.local.json
-
-# Terraform crash dumps, wherever they land.
-crash.log
-
-# Byte-code caches from the repository's Python helpers.
-__pycache__/
+# Per-machine local tool settings, written by the developer's environment and
+# never committed.
+**/settings.local.json
 
 # Evaluation network files placed at the repository root. `nn.bin` is obtained
 # out-of-band and must never be committed.

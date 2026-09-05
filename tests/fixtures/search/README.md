@@ -3,7 +3,7 @@
 Captured fixed-depth alpha-beta search ground truth for `search(sfen, depth)`.
 Each file pins the reference engine's search result for a single starting `sfen`
 at a fixed depth with deterministic parameters. The result serves as a parity
-gate: future Rust search implementations must match this reference output.
+reference: the Rust search must match this output.
 
 ## Schema
 
@@ -64,7 +64,7 @@ parameters, which must not change between capture runs for a given position:
 | `Threads` | 1 | Single thread eliminates scheduling non-determinism |
 | `BookFile` | `no_book` | Disables opening book so alpha-beta always runs |
 | `usinewgame` | sent before `position` | Clears TT for a fresh hash state |
-| `USI_Hash` | 1024 (MB) | Engine default — `capture-search` does not set it; TT size affects node counts, so a Rust TT must default to the same size for the `nodes` gate to be meaningful |
+| `USI_Hash` | 1024 (MB) | Engine default — `capture-search` does not set it; TT size affects node counts, so a Rust TT must default to the same size for the `nodes` comparison to be meaningful |
 | `go depth` | 3 (default) | Fixed depth; no time management involved |
 
 The engine's `StandardInput::input()` (misc.cpp) converts stdin EOF
@@ -75,7 +75,7 @@ requested depth rather than terminating at depth 1.
 
 ## Determinism
 
-Running `cargo xtask capture-search` twice against the same submodule pin and
+Running `cargo xtask capture-search` twice against the same reference build and
 the same `nn.bin` produces a byte-identical file. This was verified by running
 three successive captures and confirming all three outputs are identical.
 

@@ -1,14 +1,11 @@
 //! End-to-end USI session tests for depth wiring, asynchronous stop, and time
-//! management, driving the built `attic` binary as a subprocess.
+//! management, driving the built `attic` binary as a subprocess: `go depth 2` /
+//! `go depth 3` must reproduce the reference fixtures through the real driver,
+//! and the time-managed forms must each terminate promptly with exactly one
+//! `bestmove`.
 //!
-//! These pin the USI layer to the already-gated search: `go depth 2` / `go
-//! depth 3` must reproduce the reference fixtures through the real driver, and
-//! the time-managed forms (`go infinite` + `stop`, `go movetime`, a Fischer
-//! mini-game) must each terminate promptly with exactly one `bestmove`.
-//!
-//! Like the other real-network tests, the whole file is skipped with a notice
-//! when `nn.bin` is absent (a checkout without it staged), so the default
-//! `cargo test` run stays green everywhere.
+//! The network file is staged locally and never committed, so when it is absent
+//! the whole file is skipped with a notice.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -25,9 +22,8 @@ fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
 
-/// The gated subset of a search fixture. The depth-2/3 test asserts `bestmove`
-/// plus the `nodes` count and the centipawn `score` parsed from the final `info`
-/// line — the class of drift a transposition-table refactor could introduce.
+/// The asserted subset of a search fixture: `bestmove`, plus the `nodes` count and
+/// centipawn `score` from the final `info` line.
 #[derive(Debug, Deserialize)]
 struct Fixture {
     #[serde(default)]
@@ -37,8 +33,7 @@ struct Fixture {
     score: Score,
 }
 
-/// The `score` object of a fixture. Every gated fixture is a non-mate centipawn
-/// score, so only the `cp` arm is modelled.
+/// Every asserted fixture is a non-mate centipawn score, so only `cp` is modelled.
 #[derive(Debug, Deserialize)]
 struct Score {
     cp: i64,
@@ -60,13 +55,12 @@ struct Engine {
 
 impl Engine {
     /// Spawn the engine, load the real network via `EvalDir`, and complete the
-    /// `usi` / `isready` handshake. Returns `None` (with a printed notice) when
-    /// the network is absent, so callers can skip.
+    /// handshake. `None` with a printed notice when the network is absent.
     fn start() -> Option<Self> {
         let dir = eval_dir();
         if !dir.join("nn.bin").exists() {
             eprintln!(
-                "skipping usi_time_management: {} is not present (staged only on the dev VM)",
+                "skipping usi_time_management: {} is not present (obtained out-of-band)",
                 dir.join("nn.bin").display()
             );
             return None;
@@ -107,8 +101,7 @@ impl Engine {
         self.stdin.flush().expect("flush engine stdin");
     }
 
-    /// Read (trimmed) lines until one satisfies `pred`; returns it, or `None` on
-    /// EOF.
+    /// Read trimmed lines until one satisfies `pred`, or `None` on EOF.
     fn read_until<F: Fn(&str) -> bool>(&mut self, pred: F) -> Option<String> {
         let mut line = String::new();
         loop {
@@ -127,10 +120,9 @@ impl Engine {
         }
     }
 
-    /// Read the `info` line of the given iterative-deepening `depth` and pull out
-    /// its `nodes` count and centipawn `score cp` value. With `PvInterval 0` every
-    /// completed iteration prints a line, not just the last one, so callers must
-    /// target the depth they mean explicitly.
+    /// The `nodes` count and `score cp` value of the `info` line at the given
+    /// iterative-deepening depth. Under `PvInterval 0` every completed iteration
+    /// prints a line, so callers must name the depth they mean.
     fn read_info_nodes_cp(&mut self, depth: u32) -> (u64, i64) {
         let prefix = format!("info depth {depth} ");
         let line = self
@@ -145,19 +137,17 @@ impl Engine {
             toks.get(i + 1)
                 .unwrap_or_else(|| panic!("value after `{key}` missing in info line: {line:?}"))
         };
-        // `score cp <n>`: guard that the score is centipawns, not `mate`.
         assert_eq!(
             after("score"),
             "cp",
-            "gated fixtures are centipawn scores, got: {line:?}"
+            "asserted fixtures are centipawn scores, got: {line:?}"
         );
         let nodes = after("nodes").parse().expect("nodes is a u64");
         let cp = after("cp").parse().expect("cp is an i64");
         (nodes, cp)
     }
 
-    /// Read the next `bestmove` line and return just the move token (dropping any
-    /// ` ponder …` suffix).
+    /// The move token of the next `bestmove` line, dropping any ` ponder …`.
     fn read_bestmove(&mut self) -> String {
         let line = self
             .read_until(|l| l.starts_with("bestmove "))
@@ -184,17 +174,12 @@ fn go_depth_2_and_3_match_fixtures_via_binary() {
         return;
     };
 
-    // Pin the single-worker search: the default is 4 workers, which share and
-    // pollute the TT once helpers really search, so any fixture
-    // (nodes / cp / bestmove) assertion must run on one worker.
+    // A fixture assertion must run on one worker: helpers pollute the shared TT.
     eng.send("setoption name Threads value 1");
-    // `PvInterval 0` retains per-iteration `info` output regardless of wall-clock
-    // timing (the default 300 ms would suppress intermediate lines on a fast
-    // search and print them on a slow one). The reads target the final depth.
+    // `PvInterval 0` keeps per-iteration `info` output independent of the wall
+    // clock, which the default 300 ms would not be.
     eng.send("setoption name PvInterval value 0");
 
-    // depth 2: position startpos moves 7g7f, go depth 2. Assert the info line's
-    // nodes and cp score as well as the bestmove.
     let d2 = load_fixture("search-depth2/startpos-7g7f.json");
     eng.send("usinewgame");
     eng.send(&format!("position startpos moves {}", d2.moves.join(" ")));
@@ -214,7 +199,6 @@ fn go_depth_2_and_3_match_fixtures_via_binary() {
         "go depth 2 bestmove must match the reference fixture"
     );
 
-    // depth 3: position startpos, go depth 3.
     let d3 = load_fixture("search/startpos.json");
     eng.send("usinewgame");
     eng.send("position startpos");
@@ -240,19 +224,14 @@ fn go_depth_2_and_3_match_fixtures_via_binary() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn threads_cycle_single_thread_matches_fixture_multi_thread_is_legal() {
-    // The Lazy-SMP re-scope of the Threads-cycle gate. Cycling `setoption name
-    // Threads value N` resizes the worker pool; on the `Threads=1` leg the same
-    // `position` + `go depth 2` must still reproduce the reference fixture
-    // exactly (nodes / cp / bestmove), but once helpers really search the
-    // `Threads>1` legs are nondeterministic (the workers share and pollute the
-    // TT), so those legs assert only exactly one legal bestmove and clean
-    // termination — a leaked helper would hang the `quit` `wait` below.
+    // Cycling `Threads` resizes the worker pool. The `Threads=1` leg must still
+    // reproduce the reference fixture exactly; the multi-worker legs are
+    // nondeterministic, so they assert only one legal bestmove and clean
+    // termination — a leaked helper would hang the `quit` below.
     let Some(mut eng) = Engine::start() else {
         return;
     };
 
-    // `PvInterval 0` keeps per-iteration `info` output deterministic across the
-    // Threads legs (see `go_depth_2_and_3_match_fixtures_via_binary`).
     eng.send("setoption name PvInterval value 0");
     let d2 = load_fixture("search-depth2/startpos-7g7f.json");
     for threads in [1u32, 4, 2] {
@@ -262,8 +241,8 @@ fn threads_cycle_single_thread_matches_fixture_multi_thread_is_legal() {
         eng.send("go depth 2");
         let best = eng.read_bestmove();
         if threads == 1 {
-            // Single worker: bit-identical to the reference fixture. The info
-            // line is read before the bestmove, so re-drive that leg to read it.
+            // The info line is read before the bestmove, so this leg is
+            // re-driven to read it.
             eng.send("usinewgame");
             eng.send(&format!("position startpos moves {}", d2.moves.join(" ")));
             eng.send("go depth 2");
@@ -276,7 +255,6 @@ fn threads_cycle_single_thread_matches_fixture_multi_thread_is_legal() {
                 "Threads=1: bestmove must match fixture"
             );
         } else {
-            // Multi worker: assert legality, not equality.
             assert_legal_move_after(&d2.moves, &best);
         }
     }
@@ -284,9 +262,9 @@ fn threads_cycle_single_thread_matches_fixture_multi_thread_is_legal() {
     eng.quit();
 }
 
-/// Multi-thread session smoke tests, all at `Threads=2`.
-/// Each drives the spawned binary; each asserts exactly one *legal* bestmove and
-/// prompt termination (the search results are nondeterministic under Lazy SMP).
+/// Multi-thread session smoke tests at `Threads=2`. Search results are
+/// nondeterministic under Lazy SMP, so each asserts one legal bestmove and
+/// prompt termination rather than a value.
 #[test]
 #[cfg_attr(miri, ignore)]
 fn threads2_go_movetime_and_depth_and_infinite_and_fischer() {
@@ -295,15 +273,13 @@ fn threads2_go_movetime_and_depth_and_infinite_and_fischer() {
     };
     eng.send("setoption name Threads value 2");
 
-    // The deadline is polled only at ~512-node `check_time` checkpoints on the
-    // main worker; with two workers contending for cores in an *unoptimised test
-    // build*, a single checkpoint can be several seconds. These bounds are
-    // therefore deliberately loose — they prove the search self-terminates near
-    // its budget (never running to the depth-245 ceiling, which would take far
-    // longer than the bound) and returns exactly one legal bestmove per move.
+    // The deadline is polled only at ~512-node `check_time` checkpoints, and in
+    // an unoptimised build with two workers contending for cores a single
+    // checkpoint can take seconds. The bounds are therefore loose: they prove
+    // the search self-terminates near its budget rather than running to the
+    // depth ceiling, which would take far longer than the bound.
     let bound = Duration::from_secs(10);
 
-    // (a) go movetime 300 → one legal bestmove within a generous bound.
     eng.send("usinewgame");
     eng.send("position startpos");
     let t = Instant::now();
@@ -315,14 +291,12 @@ fn threads2_go_movetime_and_depth_and_infinite_and_fischer() {
     );
     assert_legal_move_after(&[], &best);
 
-    // (c) go depth 3 → a legal bestmove (result nondeterministic under SMP).
     eng.send("usinewgame");
     eng.send("position startpos");
     eng.send("go depth 3");
     let best = eng.read_bestmove();
     assert_legal_move_after(&[], &best);
 
-    // (d) go infinite + stop → one prompt bestmove.
     eng.send("usinewgame");
     eng.send("position startpos");
     eng.send("go infinite");
@@ -336,7 +310,6 @@ fn threads2_go_movetime_and_depth_and_infinite_and_fischer() {
     );
     assert_legal_move_after(&[], &best);
 
-    // (b) Fischer mini-game → every move meets its deadline with one bestmove.
     const CLOCK: u64 = 300;
     const INC: u64 = 200;
     eng.send("usinewgame");
@@ -367,11 +340,9 @@ fn threads2_go_movetime_and_depth_and_infinite_and_fischer() {
     eng.quit();
 }
 
-/// Assert `best` is a legal move in the position reached by applying `setup`
-/// (USI move strings) from startpos. `resign` / `win` are *rejected* here: every
-/// call site breaks out of its loop on a terminal reply before reaching this
-/// guard, so a `resign` / `win` arriving here is an unexpected result and fails
-/// the assertion below.
+/// Assert `best` is a legal move in the position `setup` reaches from startpos.
+/// `resign` and `win` are rejected: every call site breaks out on a terminal
+/// reply before reaching here, so one arriving is itself the failure.
 fn assert_legal_move_after(setup: &[String], best: &str) {
     assert!(
         !best.is_empty() && best != "resign" && best != "win",
@@ -396,15 +367,13 @@ fn go_infinite_then_stop_yields_one_prompt_bestmove() {
         return;
     };
 
-    // Single-worker timing test: pin Threads=1 so the ~512-node `check_time`
-    // cadence is not slowed by helper CPU contention. The
-    // multi-thread timing coverage lives in `threads2_*`.
+    // `Threads=1` so the ~512-node `check_time` cadence is not slowed by helper
+    // CPU contention.
     eng.send("setoption name Threads value 1");
     eng.send("usinewgame");
     eng.send("position startpos");
     eng.send("go infinite");
 
-    // Let the search run, then ask it to stop and time how long bestmove takes.
     std::thread::sleep(Duration::from_millis(250));
     let t = Instant::now();
     eng.send("stop");
@@ -415,8 +384,7 @@ fn go_infinite_then_stop_yields_one_prompt_bestmove() {
         !best.is_empty() && best != "resign",
         "go infinite on startpos must return a real move, got {best:?}"
     );
-    // Bounded by the ~512-node check granularity, not by an iteration boundary.
-    // Generous for a debug build under load.
+    // Bounded by the ~512-node check granularity, not an iteration boundary.
     assert!(
         elapsed < Duration::from_secs(3),
         "bestmove after stop took too long: {elapsed:?}"
@@ -432,7 +400,6 @@ fn go_movetime_returns_within_a_generous_bound() {
         return;
     };
 
-    // Single-worker timing test (see the note in the go-infinite test above).
     eng.send("setoption name Threads value 1");
     eng.send("usinewgame");
     eng.send("position startpos");
@@ -445,7 +412,6 @@ fn go_movetime_returns_within_a_generous_bound() {
         !best.is_empty() && best != "resign",
         "go movetime on startpos must return a real move, got {best:?}"
     );
-    // 300 ms budget; allow ample slack for process scheduling in a debug build.
     assert!(
         elapsed < Duration::from_secs(3),
         "go movetime 300 took too long: {elapsed:?}"
@@ -461,24 +427,17 @@ fn fischer_mini_game_makes_every_deadline_with_one_bestmove_each() {
         return;
     };
 
-    // Small Fischer budgets: each move's hard deadline is remaining + increment,
-    // so a bestmove must arrive well within that. We replay the engine's own
-    // choices to walk a short game.
+    // Each move's hard deadline is the remaining clock plus the increment, and
+    // the engine's own choices are replayed to walk a short game.
     const BTIME: u64 = 300;
     const WTIME: u64 = 300;
     const INC: u64 = 200;
-    // A generous ceiling on the per-move wall clock. The engine's hard deadline
-    // is (clock + increment - margin) ≈ 460 ms, but the deadline is polled only
-    // at ~512-node `check_time` checkpoints; in an *unoptimised test build* a
-    // checkpoint is ~0.5 s of compute (~1000 nodes/s), so a move can overshoot
-    // the nominal budget by up to one checkpoint. In a release build a checkpoint
-    // is sub-millisecond and the budget is met to the millisecond. This bound is
-    // therefore deliberately loose — it proves the engine self-terminates near
-    // its budget (never running to the depth ceiling) and always returns exactly
-    // one bestmove, which is what "no missed deadline" means for a debug run.
+    // A move can overshoot its ~460 ms deadline by up to one ~512-node
+    // `check_time` checkpoint, which in an unoptimised build is ~0.5 s of
+    // compute. In a release build a checkpoint is sub-millisecond and the budget
+    // is met to the millisecond.
     let per_move_bound = Duration::from_secs(3);
 
-    // Single-worker timing test (see the note in the go-infinite test above).
     eng.send("setoption name Threads value 1");
     eng.send("usinewgame");
     let mut moves: Vec<String> = Vec::new();
@@ -507,7 +466,6 @@ fn fischer_mini_game_makes_every_deadline_with_one_bestmove_each() {
         moves.push(best);
     }
 
-    // At least a couple of real plies were played under the clock.
     assert!(
         moves.len() >= 2,
         "expected the mini-game to play several moves, got {moves:?}"
@@ -523,23 +481,14 @@ fn byoyomi_mini_game_makes_every_deadline_with_one_bestmove_each() {
         return;
     };
 
-    // A byoyomi game with the main clock exhausted (`btime 0 wtime 0`): every move
-    // has only the byoyomi period. This is the reference "final push" shape
-    // (`timeman.cpp`) — with `time[us] < byoyomi * 1.2` the manager spends
-    // the byoyomi. The nominal per-move deadline is `time + byoyomi == 1000 ms`.
-    //
-    // The per-move wall bound is deliberately loose for the same reason as the
-    // Fischer test above: in an *unoptimised test build* the deadline is polled
-    // only at ~512-node `check_time` checkpoints (~0.5 s of compute each), so a
-    // move can overshoot its nominal budget by roughly one checkpoint. The bound
-    // proves the engine self-terminates on the byoyomi clock (never running to the
-    // depth ceiling) and always returns exactly one bestmove — "no missed
-    // deadline" for a debug run. In a release build the byoyomi is met to the
-    // millisecond (the `TimeManagement` maths is unit-tested in `attic_search::timeman`).
+    // With the main clock exhausted every move has only the byoyomi period —
+    // the reference "final push" shape (`timeman.cpp`), where
+    // `time[us] < byoyomi * 1.2` makes the manager spend it. The per-move wall
+    // bound is loose for the same checkpoint-granularity reason as the Fischer
+    // test above.
     const BYOYOMI: u64 = 1000;
     let per_move_bound = Duration::from_secs(3);
 
-    // Single-worker timing test (see the note in the go-infinite test above).
     eng.send("setoption name Threads value 1");
     eng.send("usinewgame");
     let mut moves: Vec<String> = Vec::new();

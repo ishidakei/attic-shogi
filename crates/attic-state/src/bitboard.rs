@@ -4,43 +4,16 @@
 //! # Bit convention
 //!
 //! Internally a [`Bitboard`] is the reference's two-lane layout
-//! (`source/bitboard.h`): a 16-byte-aligned pair of `u64`
-//! lanes `p[0]`/`p[1]`. Contiguous square index `k` maps to lane `p[0]` bit `k`
-//! for `k = 0..=62` (files 1..7) and lane `p[1]` bit `k - 63` for `k = 63..=80`
-//! (files 8..9). **Bit 63 of `p[0]` is deliberately unused** (the reference
-//! reserves it so lance / pawn-drop borrow tricks cannot carry across the lane
-//! boundary); `p[1]` bits `18..` are
-//! likewise unused. Every value a public constructor or operator returns keeps
-//! those spare bits clear.
-//!
-//! The set operations run through `__m128i` SSE2 intrinsics on x86_64 (one
-//! instruction per and/or/xor), with a scalar two-`u64` fallback elsewhere.
+//! (`bitboard.h`): a 16-byte-aligned pair of `u64` lanes `p[0]`/`p[1]`.
+//! Contiguous square index `k` maps to lane `p[0]` bit `k` for `k = 0..=62` and
+//! lane `p[1]` bit `k - 63` for `k = 63..=80`. **Bit 63 of `p[0]` is unused**:
+//! the reference reserves it so that the lance / pawn-drop borrow tricks cannot
+//! carry across the lane boundary. `p[1]` bits `18..` are likewise unused.
+//! Every value a constructor or operator returns keeps those spare bits clear.
 //!
 //! [`Bitboard::raw`] / [`Bitboard::from_raw`] present a *logical* contiguous
-//! 81-bit `u128` view (bit `i` = square `i`, closing the `p[0]` bit-63 gap) —
-//! the exact `1u128 << sq.index()` convention the SEE / mate oracles compare
-//! against. They are test / oracle conversion helpers; hot paths must not call
-//! them (they cross the lane gap on every call).
-//!
-//! # Tables
-//!
-//! All tables are `const` (baked into the binary — no runtime initialization,
-//! no per-call recomputation):
-//!
-//! * Per-color STEP-attack tables for pawn, knight, silver, gold, king. The
-//!   gold table also serves the four promoted minors (`+P`/`+L`/`+N`/`+S`),
-//!   the same pattern-collapse [`crate::search_movegen::check_pattern`] uses.
-//! * Eight directional RAY tables ([`ray`]): `RAY[dir][sq]` is the squares
-//!   from `sq` to the board edge in direction [`DIRECTIONS`]`[dir]`, excluding
-//!   `sq`.
-//! * [`between`] `[a][b]`: the squares strictly between `a` and `b` on a
-//!   queen-line, else empty. [`ray_dir`] gives the unit direction from one
-//!   square to another on a queen-line (the alignment primitive).
-//! * File / rank masks and per-color promotion-zone masks.
-//!
-//! The table *contents* are defined by this repo's own movement rules
-//! ([`crate::movegen`]'s step data and [`crate::movegen::step_signed`] walk);
-//! the exhaustive equivalence tests below pin every table against that walk.
+//! 81-bit `u128` view (bit `i` = square `i`, closing the `p[0]` bit-63 gap).
+//! They cross the lane gap on every call, so hot paths must not use them.
 
 use crate::color::Color;
 use crate::movegen::{GOLD_STEPS, KING_STEPS, KNIGHT_STEPS, PAWN_STEPS, SILVER_STEPS};
@@ -70,20 +43,17 @@ const P0_MASK: u64 = 0x7FFF_FFFF_FFFF_FFFF;
 /// `0x000000000003FFFF` half.
 const P1_MASK: u64 = 0x0000_0000_0003_FFFF;
 
-/// An 81-square bit set stored in the reference's two-lane layout: a
-/// 16-byte-aligned `[u64; 2]` (`p[0]`/`p[1]`, see the module bit convention).
-/// The alignment lets the runtime set operators load each value as one
-/// `__m128i`; the layout stays trivially `const`-constructible (scalar lane
-/// ops) for the compile-time geometry / candidate tables.
+/// An 81-square bit set in the two-lane layout described at the module head.
+/// The 16-byte alignment lets the set operators load each value as one
+/// `__m128i`.
 #[derive(Clone, Copy, Eq, Default)]
 #[repr(C, align(16))]
 pub struct Bitboard {
     p: [u64; 2],
 }
 
-/// Per-square single-bit table (pin `SquareBB`, bitboard.cpp). A `const`
-/// baked into `.rodata`; [`Bitboard::from_square`] / [`Bitboard::single`] become
-/// a table load instead of the `part()` lane branch (pin bitboard.cpp).
+/// Per-square single-bit table (`SquareBB`, bitboard.cpp), so that
+/// [`Bitboard::from_square`] is a table load rather than a `part()` lane branch.
 const SQUARE_BB: [Bitboard; N] = {
     let mut t = [Bitboard::EMPTY; N];
     let mut idx = 0;
@@ -116,16 +86,14 @@ impl Bitboard {
         Bitboard { p: [0, 0] }
     }
 
-    /// The single-square set `{sq}`. A [`SQUARE_BB`] table load (pin
-    /// bitboard.cpp — `SquareBB[sq]`, no lane branch).
+    /// The single-square set `{sq}`.
     pub const fn from_square(sq: Square) -> Bitboard {
         SQUARE_BB[sq.index() as usize]
     }
 
     /// Split a contiguous 81-bit `u128` into the two lanes, closing the `p[0]`
-    /// bit-63 gap. Masks off any bits outside the board so the spare-bit
-    /// invariant always holds. Shared by [`Self::from_raw`] and the const table
-    /// builders / slider bridge in this module.
+    /// bit-63 gap. Masks off out-of-board bits, so the spare-bit invariant
+    /// always holds.
     const fn from_contiguous(bits: u128) -> Bitboard {
         let bits = bits & BOARD_MASK;
         Bitboard {
@@ -133,23 +101,19 @@ impl Bitboard {
         }
     }
 
-    /// Pack the two lanes back into a contiguous 81-bit `u128` (bit `i` =
-    /// square `i`), closing the `p[0]` bit-63 gap. The inverse of
-    /// [`Self::from_contiguous`]; the slider bridge's `pack` step.
+    /// The inverse of [`Self::from_contiguous`].
     const fn to_contiguous(self) -> u128 {
         (self.p[0] as u128) | ((self.p[1] as u128) << LANE0_SPAN)
     }
 
-    /// Wrap a *logical* contiguous 81-bit pattern (bit `i` = square `i`),
-    /// masking off out-of-board bits. A test / oracle conversion helper —
-    /// crosses the lane gap on every call, so hot paths must not use it.
+    /// Wrap a logical contiguous 81-bit pattern, masking off out-of-board bits.
+    /// Crosses the lane gap; not for hot paths.
     pub const fn from_raw(bits: u128) -> Bitboard {
         Bitboard::from_contiguous(bits)
     }
 
-    /// The *logical* contiguous 81-bit pattern (bit `i` = square `i`). A test /
-    /// oracle conversion helper — crosses the lane gap on every call, so hot
-    /// paths must not use it.
+    /// The logical contiguous 81-bit pattern (bit `i` = square `i`). Crosses the
+    /// lane gap; not for hot paths.
     pub const fn raw(self) -> u128 {
         self.to_contiguous()
     }
@@ -159,9 +123,7 @@ impl Bitboard {
         self.p[0] == 0 && self.p[1] == 0
     }
 
-    /// Does the set contain `sq`? On x86_64 an SSE4.1 overlap test against
-    /// [`SQUARE_BB`] (pin bitboard.h / cpp:538-545 — `_mm_testz_si128`);
-    /// the scalar lane branch on the fallback path.
+    /// Does the set contain `sq`?
     pub fn test(self, sq: Square) -> bool {
         #[cfg(target_arch = "x86_64")]
         {
@@ -183,15 +145,14 @@ impl Bitboard {
         *self = self.without_index(sq.index() as usize);
     }
 
-    /// The number of squares in the set (two 64-bit popcounts summed).
+    /// The number of squares in the set.
     pub const fn popcount(self) -> u32 {
         self.p[0].count_ones() + self.p[1].count_ones()
     }
 
-    /// Iterate the member squares in **ascending index order** (per-lane
-    /// pop-LSB, lane 0 exhausted first, lane-1 hits offset by 63) — the same
-    /// order the reference's `bb.pop()` / `foreach` iteration yields, which the
-    /// generation-order fixtures depend on.
+    /// Iterate the member squares in **ascending index order** — the order the
+    /// reference's `bb.pop()` yields, which the generation-order fixtures
+    /// depend on.
     pub const fn squares(self) -> BitboardIter {
         BitboardIter {
             p0: self.p[0],
@@ -199,15 +160,11 @@ impl Bitboard {
         }
     }
 
-    // -- `const`-context helpers for the compile-time candidate tables ------
-    //
     // The bitwise operator traits are not `const`-callable, so the const table
-    // builders in `crate::mate::check_cand` reach for these index-addressed
-    // primitives instead. They construct / combine lanes with scalar ops so
-    // those tables stay `[Bitboard; …]` and `const`.
+    // builders reach for these index-addressed primitives instead.
 
-    /// The single-square set for a raw board index `0..81` (indices `>= 81`
-    /// yield the empty set, as an `& BOARD_MASK` would).
+    /// The single-square set for a raw board index `0..81`; indices `>= 81`
+    /// yield the empty set.
     pub(crate) const fn single(index: usize) -> Bitboard {
         if index > N - 1 {
             Bitboard::EMPTY
@@ -254,8 +211,8 @@ impl Bitboard {
         }
     }
 
-    /// The least set square's raw index (lane-0 tzcnt, else lane-1 tzcnt + 63;
-    /// `128` when empty — callers guard with [`Self::is_empty`] first).
+    /// The least set square's raw index, or `128` when empty — callers guard
+    /// with [`Self::is_empty`] first.
     pub(crate) const fn lowest_index(self) -> u32 {
         if self.p[0] != 0 {
             self.p[0].trailing_zeros()
@@ -267,10 +224,8 @@ impl Bitboard {
     }
 }
 
-/// Debug-only guard: every value returned by a constructor or operator keeps
-/// the spare lane bits (`p[0]` bit 63, `p[1]` bits 18..) clear. (No `#[inline]`
-/// hint — trivial private helpers are inlined without it, and the file's policy
-/// is to add no new inline hints.)
+/// Debug-only guard on the spare-bit invariant: `p[0]` bit 63 and `p[1]` bits
+/// `18..` stay clear.
 fn debug_assert_canonical(bb: Bitboard) {
     debug_assert!(
         bb.p[0] & !P0_MASK == 0 && bb.p[1] & !P1_MASK == 0,
@@ -280,9 +235,7 @@ fn debug_assert_canonical(bb: Bitboard) {
     );
 }
 
-// -- Lane set operations: one `__m128i` SSE2 op on x86_64, scalar elsewhere.
-//    No `#[inline]` hint (the file adds none); these trivial private helpers
-//    are inlined by the optimizer regardless. --
+// Lane set operations: one `__m128i` SSE2 op on x86_64, scalar elsewhere.
 
 /// SSE2 lane `OR`.
 ///
@@ -324,8 +277,8 @@ fn lane_xor(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
     }
 }
 
-/// SSE4.1 zero-overlap test: `(a & b) == 0` (pin `_mm_testz_si128`,
-/// bitboard.cpp). Used by [`Bitboard::test`] and the SSE equality.
+/// SSE4.1 zero-overlap test: `(a & b) == 0` (`_mm_testz_si128`,
+/// bitboard.cpp).
 ///
 /// SAFETY: SSE4.1 is part of the target's assumed base (this repo builds with
 /// `-C target-cpu`/`target-feature` covering it, as the rest of the SSE helpers
@@ -353,8 +306,7 @@ fn lane_eq(a: [u64; 2], b: [u64; 2]) -> bool {
     }
 }
 
-/// Byte-reverse the 128-bit value: one `_mm_shuffle_epi8` (pin
-/// bitboard.cpp). Used by the lane-native rook-rank / bishop slides.
+/// Byte-reverse the 128-bit value (bitboard.cpp).
 /// SAFETY: as [`lane_testz`]; the shuffle mask reverses all 16 bytes.
 #[cfg(target_arch = "x86_64")]
 fn lane_byte_reverse(a: [u64; 2]) -> [u64; 2] {
@@ -366,7 +318,7 @@ fn lane_byte_reverse(a: [u64; 2]) -> [u64; 2] {
     }
 }
 
-/// SSE unpack (pin bitboard.cpp): returns `(hi_out, lo_out)` where
+/// SSE unpack (bitboard.cpp): returns `(hi_out, lo_out)` where
 /// `hi_out = unpackhi(lo_in, hi_in)`, `lo_out = unpacklo(lo_in, hi_in)`.
 /// SAFETY: as [`lane_testz`].
 #[cfg(target_arch = "x86_64")]
@@ -381,9 +333,8 @@ fn lane_unpack(hi_in: [u64; 2], lo_in: [u64; 2]) -> ([u64; 2], [u64; 2]) {
     }
 }
 
-/// SSE 128-bit decrement of the whole register (pin `Bitboard::decrement`,
-/// bitboard.cpp). SAFETY: as [`lane_testz`]. Consumed only by the
-/// demoted four-ray bishop oracle, so it is test-only now.
+/// SSE 128-bit decrement of the whole register (`Bitboard::decrement`,
+/// bitboard.cpp). SAFETY: as [`lane_testz`].
 #[cfg(all(test, target_arch = "x86_64"))]
 fn lane_decrement(a: [u64; 2]) -> [u64; 2] {
     use core::arch::x86_64::{
@@ -398,7 +349,7 @@ fn lane_decrement(a: [u64; 2]) -> [u64; 2] {
     }
 }
 
-/// SSE pairwise 128-bit decrement (pin `Bitboard::decrement(hi,lo,...)`,
+/// SSE pairwise 128-bit decrement (`Bitboard::decrement(hi,lo,...)`,
 /// bitboard.cpp): each lane index `i` decrements the 128-bit pair
 /// `[lo_in[i], hi_in[i]]`. Returns `(hi_out, lo_out)`. SAFETY: as [`lane_testz`].
 #[cfg(target_arch = "x86_64")]
@@ -416,7 +367,7 @@ fn lane_pair_decrement(hi_in: [u64; 2], lo_in: [u64; 2]) -> ([u64; 2], [u64; 2])
     }
 }
 
-// -- Scalar fallbacks for the non-x86_64 path (algorithms identical). --
+// Scalar fallbacks for the non-x86_64 path.
 
 #[cfg(not(target_arch = "x86_64"))]
 fn lane_eq(a: [u64; 2], b: [u64; 2]) -> bool {
@@ -457,18 +408,16 @@ fn lane_pair_decrement(hi_in: [u64; 2], lo_in: [u64; 2]) -> ([u64; 2], [u64; 2])
 }
 
 impl PartialEq for Bitboard {
-    /// SSE `pxor` + `ptest` on x86_64 (pin bitboard.cpp), scalar lane
-    /// compare on the fallback. Equivalent to the derived field compare because
-    /// every canonical value keeps its spare lane bits clear.
+    /// Equivalent to the derived field compare, because every canonical value
+    /// keeps its spare lane bits clear.
     fn eq(&self, other: &Bitboard) -> bool {
         lane_eq(self.p, other.p)
     }
 }
 
 impl core::hash::Hash for Bitboard {
-    /// Hashes the two lanes directly. Consistent with the manual [`PartialEq`]:
-    /// canonical values keep the spare lane bits clear, so equal boards hash
-    /// equal.
+    /// Consistent with the manual [`PartialEq`]: canonical values keep the
+    /// spare lane bits clear, so equal boards hash equal.
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.p.hash(state);
     }
@@ -489,8 +438,7 @@ fn lane_xor(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
     [a[0] ^ b[0], a[1] ^ b[1]]
 }
 
-/// Ascending-index (per-lane pop-LSB) iterator over a [`Bitboard`]'s member
-/// squares: lane 0 (squares 0..=62) first, then lane 1 (squares 63..=80).
+/// Ascending-index iterator over a [`Bitboard`]'s member squares.
 #[derive(Clone, Copy)]
 pub struct BitboardIter {
     p0: u64,
@@ -503,7 +451,7 @@ impl Iterator for BitboardIter {
     fn next(&mut self) -> Option<Square> {
         if self.p0 != 0 {
             let i = self.p0.trailing_zeros();
-            self.p0 &= self.p0 - 1; // clear the lowest set bit
+            self.p0 &= self.p0 - 1;
             return Some(Square::from_index(i as u8).expect("lane-0 bit index < 63"));
         }
         if self.p1 != 0 {
@@ -566,9 +514,8 @@ impl core::ops::BitXor for Bitboard {
 
 impl core::ops::Not for Bitboard {
     type Output = Bitboard;
-    /// Complement within the 81-square board. Implemented as `XOR` with
-    /// [`Bitboard::FULL`] (pin-faithful, bitboard.cpp) so the spare lane
-    /// bits stay clear rather than being flipped on.
+    /// Complement within the 81-square board: `XOR` with [`Bitboard::FULL`],
+    /// so the spare lane bits stay clear rather than being flipped on.
     fn not(self) -> Bitboard {
         self ^ Bitboard::FULL
     }
@@ -594,7 +541,7 @@ impl core::ops::BitXorAssign for Bitboard {
 
 impl core::fmt::Debug for Bitboard {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Rank-major 9x9 grid (rank 0 top), `*` = set. Compact and greppable.
+        // Rank-major 9x9 grid, rank 0 at the top, `*` = set.
         writeln!(f, "Bitboard(0x{:021x}):", self.to_contiguous())?;
         for rank in 0..RANKS {
             for file in (0..FILES).rev() {
@@ -607,9 +554,7 @@ impl core::fmt::Debug for Bitboard {
     }
 }
 
-// ===========================================================================
-// const geometry helpers (index math; the `step_signed` walk in const form)
-// ===========================================================================
+// The `step_signed` walk in `const` form.
 
 const fn file_of(idx: usize) -> i8 {
     (idx / RANKS) as i8
@@ -641,14 +586,9 @@ const fn iabs(x: i8) -> i8 {
     if x < 0 { -x } else { x }
 }
 
-// ===========================================================================
-// STEP-attack tables (pawn, knight, silver, gold, king), per color
-// ===========================================================================
-
-/// Build a step-attack table for one color from a step-delta list. Each delta
-/// `(df, dr)` is applied as `(df, dr * dr_sign)` — the `dr_sign` the movement
-/// walk applies for the color (Black `+1`, White `-1`) — mirroring
-/// [`crate::movegen::step_signed`] exactly.
+/// Build a step-attack table for one color. Each delta `(df, dr)` is applied as
+/// `(df, dr * dr_sign)` — Black `+1`, White `-1` — mirroring
+/// [`crate::movegen::step_signed`].
 const fn build_step_table(deltas: &[(i8, i8)], dr_sign: i8) -> [Bitboard; N] {
     let mut table = [Bitboard::EMPTY; N];
     let mut idx = 0;
@@ -683,36 +623,32 @@ const SILVER_ATTACKS: [[Bitboard; N]; Color::COUNT] = build_colored(SILVER_STEPS
 const GOLD_ATTACKS: [[Bitboard; N]; Color::COUNT] = build_colored(GOLD_STEPS);
 const KING_ATTACKS: [[Bitboard; N]; Color::COUNT] = build_colored(KING_STEPS);
 
-/// Squares a pawn of `color` on `sq` attacks (step effect).
+/// Squares a pawn of `color` on `sq` attacks.
 pub fn pawn_attacks(color: Color, sq: Square) -> Bitboard {
     PAWN_ATTACKS[color.index()][sq.index() as usize]
 }
 
-/// Squares a knight of `color` on `sq` attacks (step effect).
+/// Squares a knight of `color` on `sq` attacks.
 pub fn knight_attacks(color: Color, sq: Square) -> Bitboard {
     KNIGHT_ATTACKS[color.index()][sq.index() as usize]
 }
 
-/// Squares a silver of `color` on `sq` attacks (step effect).
+/// Squares a silver of `color` on `sq` attacks.
 pub fn silver_attacks(color: Color, sq: Square) -> Bitboard {
     SILVER_ATTACKS[color.index()][sq.index() as usize]
 }
 
-/// Squares a gold of `color` on `sq` attacks (step effect). Also the effect of
-/// the four promoted minors (`+P`/`+L`/`+N`/`+S`), which move as gold.
+/// Squares a gold of `color` on `sq` attacks — also the effect of the four
+/// promoted minors, which move as gold.
 pub fn gold_attacks(color: Color, sq: Square) -> Bitboard {
     GOLD_ATTACKS[color.index()][sq.index() as usize]
 }
 
-/// Squares a king of `color` on `sq` attacks (step effect). Color-independent
-/// in value (the king ring is symmetric), but kept per-color for a uniform API.
+/// Squares a king of `color` on `sq` attacks. The king ring is symmetric, so
+/// the value does not depend on `color`.
 pub fn king_attacks(color: Color, sq: Square) -> Bitboard {
     KING_ATTACKS[color.index()][sq.index() as usize]
 }
-
-// ===========================================================================
-// Directional RAY tables and the direction primitive
-// ===========================================================================
 
 /// The eight queen-line directions as `(df, dr)` unit vectors. `RAY[dir]` and
 /// [`ray_dir`] both index this array; the order is arbitrary but fixed.
@@ -732,8 +668,7 @@ pub const DIR_COUNT: usize = DIRECTIONS.len();
 
 /// Build one direction's ray table in the contiguous-`u128` domain: entry
 /// `[sq]` = every square from `sq` toward the board edge along `(df, dr)`,
-/// excluding `sq`. Contiguous form because the Qugiy slider bridge reads it
-/// directly (raw `u128` inside this module is allowed).
+/// excluding `sq`.
 const fn build_ray_bits_table(df: i8, dr: i8) -> [u128; N] {
     let mut table = [0u128; N];
     let mut idx = 0;
@@ -766,9 +701,8 @@ const fn build_ray_bits() -> [[u128; N]; DIR_COUNT] {
     rays
 }
 
-/// Contiguous-`u128` ray masks, consumed by the Qugiy slider bridge, by
-/// [`build_rev_rays`], and by [`build_rays`]. A `const` (not `static`) so the
-/// `const fn` builders can read it. Private; raw `u128` here is intentional.
+/// Contiguous-`u128` ray masks. A `const` rather than a `static`, so the
+/// `const fn` table builders below can read it.
 const RAY_BITS: [[u128; N]; DIR_COUNT] = build_ray_bits();
 
 const fn build_rays() -> [[Bitboard; N]; DIR_COUNT] {
@@ -788,18 +722,14 @@ const fn build_rays() -> [[Bitboard; N]; DIR_COUNT] {
 static RAY: [[Bitboard; N]; DIR_COUNT] = build_rays();
 
 /// The ray from `sq` to the board edge in direction `dir` (index into
-/// [`DIRECTIONS`]), excluding `sq`. The slider substrate the next children
-/// consume.
+/// [`DIRECTIONS`]), excluding `sq`.
 pub fn ray(dir: usize, sq: Square) -> Bitboard {
     RAY[dir][sq.index() as usize]
 }
 
-/// The occupancy-free forward-file ray of a `color` lance on `sq` — every square
-/// the lance would reach on an empty board (the reference `lanceStepEffect<C>`).
-/// Black points toward rank 0, White toward rank 8. Used to fold each side's
-/// lances into the shared rook ray when collecting both colours' attackers of a
-/// square in one pass (SEE's fused attacker set), so a dedicated lance walk is
-/// never computed.
+/// The occupancy-free forward-file ray of a `color` lance on `sq` (the
+/// reference `lanceStepEffect<C>`). Black points toward rank 0, White toward
+/// rank 8.
 pub fn lance_step_effect(color: Color, sq: Square) -> Bitboard {
     match color {
         Color::Black => RAY[0][sq.index() as usize], // toward rank 0
@@ -807,19 +737,12 @@ pub fn lance_step_effect(color: Color, sq: Square) -> Bitboard {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Occupancy-free composite step/ray effects (mate-detector substrate)
-// ---------------------------------------------------------------------------
-
-/// Diagonal step neighbours — the four 45° adjacent squares. Colour-symmetric
-/// (the pattern is its own mirror), so a single table suffices. The reference
-/// `cross45StepEffect`.
+/// The four 45° adjacent squares (`cross45StepEffect`). The pattern is its own
+/// mirror, so a single table serves both colours.
 const CROSS45_STEPS: &[(i8, i8)] = &[(-1, -1), (1, -1), (-1, 1), (1, 1)];
 static CROSS45: [Bitboard; N] = build_step_table(CROSS45_STEPS, 1);
 
-/// Build one composite ray table: entry `[sq]` = the union of the four
-/// [`RAY_BITS`] rays named in `dirs` (excluding `sq`), for the occupancy-free
-/// slider "step" effects.
+/// Entry `[sq]` = the union of the four [`RAY_BITS`] rays named in `dirs`.
 const fn build_multi_ray(dirs: [usize; 4]) -> [Bitboard; N] {
     let mut table = [Bitboard::EMPTY; N];
     let mut s = 0;
@@ -840,29 +763,26 @@ const fn build_multi_ray(dirs: [usize; 4]) -> [Bitboard; N] {
 static ROOK_STEP: [Bitboard; N] = build_multi_ray([0, 1, 2, 3]);
 static BISHOP_STEP: [Bitboard; N] = build_multi_ray([4, 5, 6, 7]);
 
-/// The four diagonal step neighbours of `sq` (occupancy-free) — the reference
-/// `cross45StepEffect`.
+/// The four diagonal step neighbours of `sq` (`cross45StepEffect`).
 pub fn cross45_step_effect(sq: Square) -> Bitboard {
     CROSS45[sq.index() as usize]
 }
 
-/// The full orthogonal cross through `sq` to the board edges (occupancy-free) —
-/// the reference `rookStepEffect`.
+/// The full orthogonal cross through `sq` to the board edges
+/// (`rookStepEffect`).
 pub fn rook_step_effect(sq: Square) -> Bitboard {
     ROOK_STEP[sq.index() as usize]
 }
 
-/// The full diagonal cross through `sq` to the board edges (occupancy-free) —
-/// the reference `bishopStepEffect`.
+/// The full diagonal cross through `sq` to the board edges
+/// (`bishopStepEffect`).
 pub fn bishop_step_effect(sq: Square) -> Bitboard {
     BISHOP_STEP[sq.index() as usize]
 }
 
 /// The ray from `from` toward `to`, extended to the board edge and excluding
 /// `from`; [`Bitboard::EMPTY`] when the two do not share one of the eight
-/// queen-lines. `ray_toward(a, b)` includes `b` itself (and every square beyond
-/// it on the same ray). The differential discovered-check reconstruction uses
-/// it to isolate the single enemy-king→from ray the revealed slider lies on.
+/// queen-lines. The result includes `to` itself and every square beyond it.
 pub fn ray_toward(from: Square, to: Square) -> Bitboard {
     let d = DIR_OF[from.index() as usize][to.index() as usize];
     if (d as usize) < DIR_COUNT {
@@ -918,9 +838,7 @@ const fn build_dir_of() -> [[u8; N]; N] {
 const DIR_OF: [[u8; N]; N] = build_dir_of();
 
 /// The unit ray direction from `from` to `to` when the two lie on one of the
-/// eight queen-lines, else `None` — the reference `Effect8::directions_of`.
-/// Backed by the `DIR_OF` table; `ray_dir(a, b).is_some()` iff `b` is on some
-/// [`ray`] emanating from `a`.
+/// eight queen-lines, else `None` (`Effect8::directions_of`).
 pub fn ray_dir(from: Square, to: Square) -> Option<(i8, i8)> {
     let d = DIR_OF[from.index() as usize][to.index() as usize];
     if (d as usize) < DIR_COUNT {
@@ -929,10 +847,6 @@ pub fn ray_dir(from: Square, to: Square) -> Option<(i8, i8)> {
         None
     }
 }
-
-// ===========================================================================
-// BETWEEN table
-// ===========================================================================
 
 /// The squares strictly between `a` and `b` along their shared queen-line,
 /// excluding both endpoints; empty if they are not aligned.
@@ -949,7 +863,7 @@ const fn between_pair(a: usize, b: usize) -> u128 {
         file += df;
         rank += dr;
         if !on_board(file, rank) {
-            // Unreachable for an aligned pair (the walk hits `b` first), but
+            // Unreachable for an aligned pair — the walk hits `b` first — but
             // keeps the loop total.
             break;
         }
@@ -976,19 +890,15 @@ const fn build_between() -> [[Bitboard; N]; N] {
     table
 }
 
-// A `static` rather than `const`: the 81×81 table is ~105 KB, so it lives once
-// in `.rodata` instead of being materialized at each use site.
+// A `static` rather than a `const`: the 81×81 table is ~105 KB, and a `const`
+// would be materialised at every use site.
 static BETWEEN: [[Bitboard; N]; N] = build_between();
 
-/// The squares strictly between `a` and `b` on a queen-line (endpoints
-/// excluded), else the empty set — the reference `between_bb(a, b)`.
+/// The squares strictly between `a` and `b` on a queen-line, else the empty
+/// set (`between_bb`).
 pub fn between(a: Square, b: Square) -> Bitboard {
     BETWEEN[a.index() as usize][b.index() as usize]
 }
-
-// ===========================================================================
-// File / rank / promotion-zone masks
-// ===========================================================================
 
 const fn build_file_masks() -> [Bitboard; FILES] {
     let mut masks = [Bitboard::EMPTY; FILES];
@@ -1035,10 +945,9 @@ pub fn rank_mask(rank: u8) -> Bitboard {
     RANK_MASKS[rank as usize]
 }
 
-/// Per-color promotion zone: Black ranks 0..=2, White ranks 6..=8 — matching
+/// Per-color promotion zone, matching
 /// [`crate::movegen::is_in_promotion_zone`].
 const fn build_promo_zones() -> [Bitboard; Color::COUNT] {
-    // Black: ranks 0,1,2. White: ranks 6,7,8.
     let black = RANK_MASKS[0].or(RANK_MASKS[1]).or(RANK_MASKS[2]);
     let white = RANK_MASKS[6].or(RANK_MASKS[7]).or(RANK_MASKS[8]);
     [black, white]
@@ -1051,48 +960,33 @@ pub fn promotion_zone(color: Color) -> Bitboard {
     PROMO_ZONES[color.index()]
 }
 
-// ===========================================================================
-// Occupancy-limited slider attack queries — lane-native Qugiy (2021)
-// ===========================================================================
+// Occupancy-limited slider attack queries — lane-native Qugiy (2021). Each cuts
+// every ray at (and including) the first occupied square, branchlessly, in two
+// shapes:
 //
-// Each query cuts every ray at (and including) the first occupied square,
-// branchlessly, in the reference's two-lane domain (pin 76d58ef). No pack /
-// expand to a contiguous `u128` — the whole dataflow stays in the `[u64; 2]`
-// lanes (and, on x86_64, in the `__m128i` register the set helpers already use).
-//
-// Two shapes, mirroring the pin:
-//
-// * **File rays (lance, rook file)** live entirely inside one lane (a file never
-//   straddles the `part()` split), so the pin computes them per-lane with plain
-//   `u64` borrow arithmetic (bitboard.h): the increasing (White) ray via
-//   `(em ^ (em-1)) & mask`, the decreasing (Black) ray via an MSB fill.
-// * **Rank / diagonal rays** cross the lane boundary, so the pin uses the
+// * **File rays (lance, rook file)** never straddle the `part()` split, so they
+//   are computed inside one lane with plain `u64` borrow arithmetic
+//   (bitboard.h).
+// * **Rank / diagonal rays** cross the lane boundary, so they use the
 //   `byte_reverse` + `unpack` + 128-bit `decrement` scheme (bitboard.cpp,
-//   bitboard.h): reverse the byte order so the decreasing direction's
-//   nearest blocker becomes the lowest bit, subtract 1 to propagate the borrow to
-//   the first blocker, xor out the changed bits, and reverse back. The direction
-//   masks whose rays run toward *decreasing* square index are stored already
-//   byte-reversed ([`QUGIY_ROOK_MASK`] hi lane, [`QUGIY_BISHOP_MASK`] reverse
-//   entries), exactly as the pin's `Bitboards::init` bakes them.
-//
-// The bishop uses the reference's `Bitboard256`/AVX2 form (pin `bishopEffect`,
-// bitboard.cpp): all four diagonals in one two-board pass — `occ` and
-// its `byte_reverse` unpacked into the hi/lo 64-bit pairs, one 256-bit pairwise
-// decrement, then merged back. See [`Bitboard256`] and [`bishop_attacks`].
+//   bitboard.h): reversing the byte order makes the decreasing
+//   direction's nearest blocker the lowest bit, subtracting 1 propagates the
+//   borrow up to it, xor isolates the changed bits, and a second reverse undoes
+//   the first. Masks for rays running toward *decreasing* square index are baked
+//   already byte-reversed, as `Bitboards::init` does.
 
-/// `part(sq)`: which lane a square belongs to (pin bitboard.h —
-/// `SQ_79 < sq`). Lane 0 holds squares `0..=62`, lane 1 holds `63..=80`.
+/// `part(sq)`: which lane a square belongs to (bitboard.h).
 const fn part(idx: usize) -> usize {
     (idx > LANE_SPLIT) as usize
 }
 
-/// Index of the highest set bit (pin `MSB64`). Callers pass `x | 1`, so `x != 0`.
+/// Index of the highest set bit (`MSB64`). Callers pass `x | 1`, so `x != 0`.
 const fn msb64(x: u64) -> u32 {
     63 - x.leading_zeros()
 }
 
-// -- `const` scalar twins of the lane byte-reverse / unpack, for the compile-
-//    time mask tables (SSE intrinsics are not `const`-callable). --
+// `const` scalar twins of the lane byte-reverse / unpack, for the compile-time
+// mask tables; SSE intrinsics are not `const`-callable.
 
 const fn cbyte_reverse(p: [u64; 2]) -> [u64; 2] {
     [p[1].swap_bytes(), p[0].swap_bytes()]
@@ -1103,15 +997,13 @@ const fn cunpack(hi_in: [u64; 2], lo_in: [u64; 2]) -> ([u64; 2], [u64; 2]) {
 }
 
 /// `QUGIY_ROOK_MASK[sq][0]` = the rank ray toward file 0 packed as the `lo`
-/// unpack lane; `[sq][1]` = the byte-reversed ray toward file 8 as the `hi` lane
-/// (pin bitboard.cpp). Built from the [`RAY_BITS`] rank geometry through
-/// the same `byte_reverse` + `unpack` the query reverses.
+/// unpack lane; `[sq][1]` = the byte-reversed ray toward file 8 as the `hi`
+/// lane (bitboard.cpp).
 const fn build_qugiy_rook_mask() -> [[Bitboard; 2]; N] {
     let mut t = [[Bitboard::EMPTY; 2]; N];
     let mut s = 0;
     while s < N {
-        // left = toward file 8 (increasing index, dir 2); right = toward file 0
-        // (decreasing index, dir 3).
+        // Dir 2 runs toward file 8 (increasing index), dir 3 toward file 0.
         let left = Bitboard::from_contiguous(RAY_BITS[2][s]).p;
         let right = Bitboard::from_contiguous(RAY_BITS[3][s]).p;
         let right_rev = cbyte_reverse(right);
@@ -1126,30 +1018,16 @@ const fn build_qugiy_rook_mask() -> [[Bitboard; 2]; N] {
 static QUGIY_ROOK_MASK: [[Bitboard; 2]; N] = build_qugiy_rook_mask();
 
 /// The four bishop diagonals in [`DIRECTIONS`] order, and whether each runs
-/// toward *decreasing* square index (so its mask is byte-reversed and the query
-/// byte-reverses the occupancy). 4=(1,-1) +8, 5=(-1,-1) -10, 6=(1,1) +10,
-/// 7=(-1,1) -8. The reference's `bishopEffect` (pin bitboard.cpp) calls
-/// the increasing pair LU/LD and the decreasing (byte-reversed) pair RU/RD; the
-/// `Bitboard256` mask packs them as `[LU, RU, LD, RD]` per 64-bit lane so the
-/// unpacked hi/lo pairs feed `occ` to the non-reversed diagonals (lanes 0, 2)
-/// and `rocc` to the reversed ones (lanes 1, 3).
+/// toward *decreasing* square index — those get a byte-reversed mask and the
+/// byte-reversed occupancy. The reference calls the increasing pair LU/LD and
+/// the decreasing pair RU/RD (`bishopEffect`, bitboard.cpp).
 const BISHOP_DIAG_DIRS: [usize; 4] = [4, 5, 6, 7];
 const BISHOP_DIAG_REV: [bool; 4] = [false, true, false, true];
 
-// ---------------------------------------------------------------------------
-//  Bitboard256 — two boards in one 256-bit value (pin bitboard.h)
-// ---------------------------------------------------------------------------
-//
-// A 32-byte-aligned `u64 p[4]` holding two [`Bitboard`]s (the low pair `p[0..2]`
-// and the high pair `p[2..4]`). On the AVX2 build every op is one `__m256i`
-// instruction; elsewhere the identical scalar `u64[4]` form runs. Only the
-// pieces `bishop_attacks` consumes are ported (broadcast ctor, and/or/xor,
-// byte_reverse, unpack, pairwise 128-bit decrement, merge) — no speculative API.
-// The two-Bitboard ctor exists only as the `const` lane assembly the mask table
-// below builds with; there is no runtime AVX2 form of it because nothing calls
-// it at runtime (pin bishopEffect only broadcasts).
-
-/// Two [`Bitboard`]s packed into one 256-bit value (pin `Bitboard256`).
+/// Two [`Bitboard`]s packed into one 256-bit value (`Bitboard256`,
+/// bitboard.h): the low pair `p[0..2]` and the high pair `p[2..4]`. On
+/// the AVX2 build every op below is one `__m256i` instruction; elsewhere the
+/// identical scalar `u64[4]` form runs.
 #[derive(Clone, Copy)]
 #[repr(C, align(32))]
 struct Bitboard256 {
@@ -1157,8 +1035,7 @@ struct Bitboard256 {
 }
 
 impl Bitboard256 {
-    /// The two-Bitboard `const` ctor (pin bitboard.h scalar form): low pair
-    /// = `b1`, high pair = `b2`. Used only by the const mask-table builder.
+    /// Low pair = `b1`, high pair = `b2` (bitboard.h, the scalar form).
     const fn from_pair(b1: Bitboard, b2: Bitboard) -> Bitboard256 {
         Bitboard256 {
             p: [b1.p[0], b1.p[1], b2.p[0], b2.p[1]],
@@ -1166,12 +1043,7 @@ impl Bitboard256 {
     }
 }
 
-// -- Bitboard256 set ops: one `__m256i` instruction on the AVX2 build, scalar
-//    `u64[4]` elsewhere. The `broadcast` / `merge` bridges cross the 128↔256
-//    boundary; the rest are elementwise. Mirrors the `lane_*` SSE helpers. --
-
-/// Broadcast one [`Bitboard`]'s lanes into both halves (pin bitboard.h —
-/// `_mm256_broadcastsi128_si256`).
+/// Broadcast one [`Bitboard`]'s lanes into both halves (bitboard.h).
 ///
 /// SAFETY: gated on `target_feature = "avx2"` (statically enabled by the
 /// release `target-cpu=native`); the `transmute`s only bit-cast between
@@ -1185,7 +1057,7 @@ fn bb256_broadcast(a: [u64; 2]) -> [u64; 4] {
     }
 }
 
-/// Bitboard256 `AND` (pin `_mm256_and_si256`). SAFETY: as [`bb256_broadcast`].
+/// Bitboard256 `AND`. SAFETY: as [`bb256_broadcast`].
 #[cfg(target_feature = "avx2")]
 fn bb256_and(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
     use core::arch::x86_64::{__m256i, _mm256_and_si256};
@@ -1196,7 +1068,7 @@ fn bb256_and(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
     }
 }
 
-/// Bitboard256 `OR` (pin `_mm256_or_si256`). SAFETY: as [`bb256_broadcast`].
+/// Bitboard256 `OR`. SAFETY: as [`bb256_broadcast`].
 #[cfg(target_feature = "avx2")]
 fn bb256_or(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
     use core::arch::x86_64::{__m256i, _mm256_or_si256};
@@ -1207,7 +1079,7 @@ fn bb256_or(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
     }
 }
 
-/// Bitboard256 `XOR` (pin `_mm256_xor_si256`). SAFETY: as [`bb256_broadcast`].
+/// Bitboard256 `XOR`. SAFETY: as [`bb256_broadcast`].
 #[cfg(target_feature = "avx2")]
 fn bb256_xor(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
     use core::arch::x86_64::{__m256i, _mm256_xor_si256};
@@ -1218,9 +1090,8 @@ fn bb256_xor(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
     }
 }
 
-/// Byte-reverse each 128-bit half (pin bitboard.cpp — one
-/// `_mm256_shuffle_epi8` per half). SAFETY: as [`bb256_broadcast`]; the shuffle
-/// mask reverses all 16 bytes within each half.
+/// Byte-reverse each 128-bit half (bitboard.cpp). SAFETY: as
+/// [`bb256_broadcast`]; the shuffle mask reverses all 16 bytes within a half.
 #[cfg(target_feature = "avx2")]
 fn bb256_byte_reverse(a: [u64; 4]) -> [u64; 4] {
     use core::arch::x86_64::{__m256i, _mm256_set_epi8, _mm256_shuffle_epi8};
@@ -1234,7 +1105,7 @@ fn bb256_byte_reverse(a: [u64; 4]) -> [u64; 4] {
     }
 }
 
-/// Bitboard256 `unpack` (pin bitboard.cpp): returns `(hi_out, lo_out)`
+/// Bitboard256 `unpack` (bitboard.cpp): returns `(hi_out, lo_out)`
 /// with `hi_out = unpackhi_epi64(lo_in, hi_in)`, `lo_out = unpacklo_epi64(lo_in,
 /// hi_in)` per 128-bit lane. SAFETY: as [`bb256_broadcast`].
 #[cfg(target_feature = "avx2")]
@@ -1249,7 +1120,7 @@ fn bb256_unpack(hi_in: [u64; 4], lo_in: [u64; 4]) -> ([u64; 4], [u64; 4]) {
     }
 }
 
-/// Bitboard256 pairwise 128-bit decrement (pin bitboard.cpp): each lane
+/// Bitboard256 pairwise 128-bit decrement (bitboard.cpp): each lane
 /// index `i` decrements the 128-bit pair `[lo_in[i], hi_in[i]]`. Returns
 /// `(hi_out, lo_out)`. SAFETY: as [`bb256_broadcast`].
 #[cfg(target_feature = "avx2")]
@@ -1270,9 +1141,8 @@ fn bb256_pair_decrement(hi_in: [u64; 4], lo_in: [u64; 4]) -> ([u64; 4], [u64; 4]
     }
 }
 
-/// Merge the two halves into one [`Bitboard`] by OR (pin bitboard.cpp —
-/// `_mm_or_si128` of the low and high 128-bit lanes). SAFETY: as
-/// [`bb256_broadcast`].
+/// Merge the two halves into one [`Bitboard`] by OR (bitboard.cpp).
+/// SAFETY: as [`bb256_broadcast`].
 #[cfg(target_feature = "avx2")]
 fn bb256_merge(a: [u64; 4]) -> [u64; 2] {
     use core::arch::x86_64::{
@@ -1286,10 +1156,9 @@ fn bb256_merge(a: [u64; 4]) -> [u64; 2] {
     }
 }
 
-// -- Scalar `u64[4]` twins: the pin's no-AVX2 path (bitboard.h,
-//    cpp:716-722 / 735-743 / 762-770 / 783-785). Present on the non-AVX2 build
-//    (where they *are* the `bb256_*` ops) and in test builds (where the
-//    `bishop256_scalar` gate exercises them against the AVX2 path's oracles). --
+// Scalar `u64[4]` twins — the reference's no-AVX2 path (bitboard.h).
+// They *are* the `bb256_*` ops on a non-AVX2 build; test builds compile them
+// too, so that an AVX2 host still exercises them against the same oracles.
 
 #[cfg(any(test, not(target_feature = "avx2")))]
 fn bb256_broadcast_scalar(a: [u64; 2]) -> [u64; 4] {
@@ -1366,17 +1235,13 @@ use bb256_unpack_scalar as bb256_unpack;
 use bb256_xor_scalar as bb256_xor;
 
 /// `QUGIY_BISHOP_MASK[sq][i]` = the four diagonal step effects packed as the
-/// `Bitboard256` pair `[LU, RU, LD, RD]` in 64-bit lane `i` (pin
-/// bitboard.cpp): `mask[sq][i] = Bitboard256(Bitboard(LU[i], RU[i]),
-/// Bitboard(LD[i], RD[i]))`, with the decreasing-index diagonals RU/RD stored
-/// byte-reversed. Built as `const` through the same scalar lane helpers the
-/// other tables use.
+/// `Bitboard256` pair `[LU, RU, LD, RD]` in 64-bit lane `i`
+/// (bitboard.cpp), with the decreasing-index diagonals RU/RD stored
+/// byte-reversed.
 const fn build_qugiy_bishop_mask() -> [[Bitboard256; 2]; N] {
     let mut t = [[Bitboard256 { p: [0; 4] }; 2]; N];
     let mut s = 0;
     while s < N {
-        // The four diagonal step effects, byte-reversed for the decreasing
-        // (RU/RD) directions, matching `BISHOP_DIAG_DIRS` / `BISHOP_DIAG_REV`.
         let mut diag = [[0u64; 2]; 4];
         let mut d = 0;
         while d < 4 {
@@ -1388,8 +1253,6 @@ const fn build_qugiy_bishop_mask() -> [[Bitboard256; 2]; N] {
             };
             d += 1;
         }
-        // LU=diag[0], RU=diag[1], LD=diag[2], RD=diag[3]. Pair i:
-        //   low  half = Bitboard(LU[i], RU[i]); high half = Bitboard(LD[i], RD[i]).
         let mut i = 0;
         while i < 2 {
             t[s][i] = Bitboard256::from_pair(
@@ -1409,17 +1272,16 @@ const fn build_qugiy_bishop_mask() -> [[Bitboard256; 2]; N] {
 
 static QUGIY_BISHOP_MASK: [[Bitboard256; 2]; N] = build_qugiy_bishop_mask();
 
-/// The increasing-index (White) file ray cut at the first blocker, per lane:
-/// `(em ^ (em-1)) & mask` (pin bitboard.h).
+/// The increasing-index (White) file ray cut at the first blocker, per lane
+/// (bitboard.h).
 fn file_up(occ_lane: u64, mask: u64) -> u64 {
     let em = occ_lane & mask;
     let t = em.wrapping_sub(1);
     (em ^ t) & mask
 }
 
-/// The decreasing-index (Black) file ray cut at the first blocker, per lane: fill
-/// every bit above the nearest blocker with 0 via an MSB shift (pin
-/// bitboard.h).
+/// The decreasing-index (Black) file ray cut at the first blocker, per lane:
+/// an MSB shift clears every bit above the nearest blocker (bitboard.h).
 fn file_down(occ_lane: u64, se: u64) -> u64 {
     let mocc = se & occ_lane;
     let filled = (!0u64) << msb64(mocc | 1);
@@ -1427,24 +1289,21 @@ fn file_down(occ_lane: u64, se: u64) -> u64 {
 }
 
 /// Squares a lance of `color` on `sq` attacks under occupancy `occ` — the
-/// single forward ray (Black toward rank 0, White toward rank 8), cut at the
-/// first blocker. Computed in `sq`'s lane only (pin bitboard.h).
+/// single forward ray, cut at the first blocker (bitboard.h).
 pub fn lance_attacks(color: Color, sq: Square, occ: Bitboard) -> Bitboard {
     let s = sq.index() as usize;
     let pt = part(s);
     let occ_lane = occ.p[pt];
     let mut out = [0u64; 2];
     out[pt] = match color {
-        // White: dir 1 (0,1), increasing index.
         Color::White => file_up(occ_lane, RAY[1][s].p[pt]),
-        // Black: dir 0 (0,-1), decreasing index.
         Color::Black => file_down(occ_lane, RAY[0][s].p[pt]),
     };
     Bitboard { p: out }
 }
 
 /// The rook's vertical (file) effect — the two lance forms fused on the shared
-/// lane (pin bitboard.h).
+/// lane (bitboard.h).
 fn rook_file(s: usize, occ: Bitboard) -> Bitboard {
     let pt = part(s);
     let occ_lane = occ.p[pt];
@@ -1455,9 +1314,8 @@ fn rook_file(s: usize, occ: Bitboard) -> Bitboard {
     Bitboard { p: out }
 }
 
-/// The rook's horizontal (rank) effect — crosses the lane boundary, so the pin's
-/// `byte_reverse` + `unpack` + pairwise 128-bit `decrement` scheme
-/// (bitboard.cpp).
+/// The rook's horizontal (rank) effect — crosses the lane boundary, so it uses
+/// the `byte_reverse` scheme (bitboard.cpp).
 fn rook_rank(s: usize, occ: Bitboard) -> Bitboard {
     let mask_lo = QUGIY_ROOK_MASK[s][0].p;
     let mask_hi = QUGIY_ROOK_MASK[s][1].p;
@@ -1478,10 +1336,7 @@ fn rook_rank(s: usize, occ: Bitboard) -> Bitboard {
 }
 
 /// Squares a bishop on `sq` attacks under occupancy `occ` — all four diagonals
-/// in one `Bitboard256` two-board pass (pin `bishopEffect`, bitboard.cpp):
-/// broadcast `occ` and its byte-reverse into the two halves, unpack into the
-/// hi/lo 64-bit pairs, one pairwise 128-bit decrement, xor + mask, unpack back,
-/// then `(hi.byte_reverse() | lo).merge()`.
+/// in one `Bitboard256` two-board pass (`bishopEffect`, bitboard.cpp).
 pub fn bishop_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     let s = sq.index() as usize;
     let mask_lo = QUGIY_BISHOP_MASK[s][0].p;
@@ -1504,23 +1359,21 @@ pub fn bishop_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     }
 }
 
-/// Squares a rook on `sq` attacks under occupancy `occ`: file effect | rank
-/// effect (pin bitboard.h).
+/// Squares a rook on `sq` attacks under occupancy `occ` (bitboard.h).
 pub fn rook_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     let s = sq.index() as usize;
     rook_rank(s, occ) | rook_file(s, occ)
 }
 
 /// Squares a horse (promoted bishop) on `sq` attacks under occupancy `occ`:
-/// bishop rays plus the king ring (`HORSE = BISHOP | king ring`). The ring's
-/// orthogonal neighbours are the promoted-bishop's extra steps; its diagonal
-/// neighbours already lie on the bishop rays.
+/// bishop rays plus the king ring, whose orthogonal neighbours are the
+/// promotion's extra steps.
 pub fn horse_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     bishop_attacks(sq, occ) | KING_ATTACKS[0][sq.index() as usize]
 }
 
 /// Squares a dragon (promoted rook) on `sq` attacks under occupancy `occ`:
-/// rook rays plus the king ring (`DRAGON = ROOK | king ring`).
+/// rook rays plus the king ring.
 pub fn dragon_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     rook_attacks(sq, occ) | KING_ATTACKS[0][sq.index() as usize]
 }
@@ -1535,11 +1388,8 @@ mod tests {
         (0..Square::COUNT as u8).map(|i| Square::from_index(i).unwrap())
     }
 
-    // -- Retained ray-walk oracles (the pre-Qugiy implementations) ----------
-    //
-    // The exact table-driven `ray_attacks` slide and its lance/rook/bishop
-    // compositions, kept verbatim as the equivalence oracle the branchless
-    // Qugiy production forms are gated against.
+    // A table-driven slide and its lance/rook/bishop compositions: the
+    // equivalence oracle the branchless production forms are gated against.
 
     const ORACLE_DIR_POSITIVE: [bool; DIR_COUNT] = {
         let mut t = [false; DIR_COUNT];
@@ -1556,8 +1406,7 @@ mod tests {
     const ORACLE_ROOK_DIRS: [usize; 4] = [0, 1, 2, 3];
 
     /// The occupancy-limited attack ray of `sq` in direction `dir`: every square
-    /// from `sq` toward the edge up to **and including** the first occupied
-    /// square (the pre-Qugiy table walk, verbatim).
+    /// from `sq` toward the edge up to **and including** the first occupied one.
     fn ray_attacks(dir: usize, sq: Square, occ: Bitboard) -> Bitboard {
         let full = RAY_BITS[dir][sq.index() as usize];
         let blockers = full & occ.raw();
@@ -1608,15 +1457,11 @@ mod tests {
         rook_attacks_oracle(sq, occ) | KING_ATTACKS[0][sq.index() as usize]
     }
 
-    /// Exhaustive equivalence of the branchless Qugiy production slides against
-    /// the retained ray-walk oracles: every origin square, every slider form,
-    /// over empty / all-ones / 100_000 deterministic random occupancies. On any
-    /// mismatch the test fails outright (do not tune to pass — the algorithm is
-    /// wrong).
+    /// Every origin square and slider form, over empty, all-ones and 100_000
+    /// deterministic random occupancies.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn qugiy_slides_equal_ray_walk_oracle() {
-        // Deterministic xorshift-128; no `rand` dependency in tests.
         let mut state: u128 = 0xDEAD_BEEF_CAFE_F00D_0123_4567_89AB_CDEF;
         let mut rng = move || {
             state ^= state << 13;
@@ -1662,15 +1507,9 @@ mod tests {
         }
     }
 
-    // -- Retained packed-u128 Qugiy oracle (the pre-lane production cores) ---
-    //
-    // The previous child's contiguous-u128 Qugiy slides, demoted here verbatim
-    // as a second, independent oracle for the lane-native production forms (issue
-    // Part B.6). `pos_ray` cuts an increasing-index ray with the borrow trick;
-    // `neg_ray_rev` cuts a decreasing-index ray in the `reverse_bits` domain
-    // (this port's contiguous 81-bit layout is not byte-aligned per file, so the
-    // pin's `swap_bytes` does not invert bit order there — the lane form uses
-    // `byte_reverse`, which does, because a lane *is* the reference's layout).
+    // A second, independent oracle: the same cuts in the contiguous-`u128`
+    // domain. It has to reverse whole bits rather than bytes, because the
+    // contiguous 81-bit layout is not byte-aligned per file — only a lane is.
 
     fn oracle_rev_ray(dir: usize, s: usize) -> u128 {
         RAY_BITS[dir][s].reverse_bits()
@@ -1719,9 +1558,7 @@ mod tests {
         Bitboard::from_raw(pos | neg)
     }
 
-    /// The lane-native production slides equal the retained packed-u128 Qugiy
-    /// oracle over the structural + pseudo-random corpus (issue Part B.6). This
-    /// is independent of the ray-walk oracle above.
+    /// A check independent of the ray-walk oracle above.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn lane_native_equals_packed_qugiy_oracle() {
@@ -1759,14 +1596,11 @@ mod tests {
         }
     }
 
-    /// The baked lane-format mask tables equal a straightforward in-test
-    /// recomputation that mirrors the pin's `Bitboards::init` (issue Part B.7):
-    /// build each ray as a Bitboard, byte-reverse / unpack with the same scalar
-    /// helpers, and compare lane for lane.
+    /// The baked mask tables equal an in-test recomputation mirroring
+    /// `Bitboards::init`.
     #[test]
     fn qugiy_mask_tables_match_recomputation() {
         for s in 0..N {
-            // Rook rank masks (pin bitboard.cpp).
             let left = Bitboard::from_raw(RAY_BITS[2][s]).p;
             let right = Bitboard::from_raw(RAY_BITS[3][s]).p;
             let right_rev = cbyte_reverse(right);
@@ -1774,12 +1608,6 @@ mod tests {
             assert_eq!(QUGIY_ROOK_MASK[s][0].p, lo, "rook mask lo at {s}");
             assert_eq!(QUGIY_ROOK_MASK[s][1].p, hi, "rook mask hi at {s}");
 
-            // Bishop diagonal masks in the `Bitboard256` pair format (pin
-            // bitboard.cpp): each of the four diagonal step effects,
-            // byte-reversed for the decreasing (RU/RD) directions, then packed as
-            // `mask[sq][i].p = [LU[i], RU[i], LD[i], RD[i]]` for i = 0, 1 — the
-            // reference's `Bitboard256(Bitboard(LU[i], RU[i]), Bitboard(LD[i],
-            // RD[i]))`.
             let mut diag = [[0u64; 2]; 4];
             for d in 0..4 {
                 let step = Bitboard::from_raw(RAY_BITS[BISHOP_DIAG_DIRS[d]][s]).p;
@@ -1799,16 +1627,9 @@ mod tests {
         }
     }
 
-    // -- Demoted four-ray bishop oracle (the pre-Bitboard256 production form) -
-    //
-    // A Bitboard-level `rayEffect` per diagonal, kept as a third bishop oracle
-    // for the `Bitboard256`/AVX2 production form. Its per-diagonal masks are
-    // rebuilt in-test, because the production table is the packed
-    // `Bitboard256` pair form.
-
-    /// One diagonal's occupancy-limited ray via the pin's Bitboard-level
-    /// `rayEffect` (bitboard.h): optional byte-reverse, mask, 128-bit
-    /// decrement, xor, mask, reverse back.
+    /// A third bishop oracle: one diagonal's occupancy-limited ray via the
+    /// Bitboard-level `rayEffect` (bitboard.h). Its per-diagonal masks
+    /// are rebuilt in-test, the production table being the packed pair form.
     fn diag_ray_oracle(mask: [u64; 2], occ: [u64; 2], reverse: bool) -> [u64; 2] {
         let mut bb = if reverse { lane_byte_reverse(occ) } else { occ };
         bb = lane_and(bb, mask);
@@ -1832,10 +1653,8 @@ mod tests {
         Bitboard { p: r }
     }
 
-    /// The `Bitboard256` `bishopEffect` (pin bitboard.cpp) evaluated
-    /// purely through the scalar `u64[4]` twins — the pin's no-AVX2 path. On an
-    /// AVX2 host this is the only exercise of the fallback ops, so it doubles as
-    /// the scalar-fallback parity gate.
+    /// `bishopEffect` evaluated purely through the scalar `u64[4]` twins. On an
+    /// AVX2 host this is the only exercise the fallback ops get.
     fn bishop_attacks_scalar256_oracle(sq: Square, occ: Bitboard) -> Bitboard {
         let s = sq.index() as usize;
         let mask_lo = QUGIY_BISHOP_MASK[s][0].p;
@@ -1858,10 +1677,8 @@ mod tests {
         }
     }
 
-    /// The production `Bitboard256`/AVX2 bishop (and horse) equal both the demoted
-    /// four-ray oracle and the scalar-`Bitboard256` oracle over the structural
-    /// corpus plus a 100k deterministic pseudo-random occupancy gate. Any mismatch
-    /// fails outright.
+    /// The production bishop and horse against both other oracles, over the
+    /// structural corpus plus 100k deterministic pseudo-random occupancies.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn bishop_matches_four_ray_and_scalar256_oracles() {
@@ -1890,7 +1707,6 @@ mod tests {
                     bishop_attacks_scalar256_oracle(from, occ_bb),
                     "bishop vs scalar256 oracle from {from:?} occ {occ:#x}",
                 );
-                // Horse is bishop | king ring; the ring is independent of occ.
                 assert_eq!(
                     horse_attacks(from, occ_bb),
                     prod | KING_ATTACKS[0][from.index() as usize],
@@ -1899,8 +1715,6 @@ mod tests {
             }
         }
     }
-
-    // -- Bitboard type ------------------------------------------------------
 
     #[test]
     fn empty_and_single_square() {
@@ -1931,7 +1745,6 @@ mod tests {
 
     #[test]
     fn from_raw_masks_high_bits() {
-        // Bits 81 and above must be dropped.
         let bb = Bitboard::from_raw(u128::MAX);
         assert_eq!(bb.raw(), BOARD_MASK);
         assert_eq!(bb.popcount(), Square::COUNT as u32);
@@ -1945,7 +1758,6 @@ mod tests {
         assert_eq!((a & b).popcount(), 0);
         assert_eq!((a ^ b).popcount(), 2);
         assert_eq!(((a | b) & a), a);
-        // Complement stays within the board and round-trips.
         let full = !Bitboard::empty();
         assert_eq!(full.raw(), BOARD_MASK);
         assert_eq!((!a).popcount(), Square::COUNT as u32 - 1);
@@ -1977,11 +1789,8 @@ mod tests {
         assert_eq!(bb.squares().len(), squares.len());
     }
 
-    // -- step tables == movement()+step_signed walk -------------------------
-
-    /// The step-only attack set (no slides) of `piece` on `from`, via the
-    /// movement data and the `step_signed` walk — the oracle the step tables
-    /// are pinned against.
+    /// The step-only attack set of `piece` on `from`, walked from the movement
+    /// data — the oracle the step tables are pinned against.
     fn step_walk(piece: Piece, from: Square) -> u128 {
         let dr_sign = dr_sign_for(piece.color);
         let (steps, _slides) = movement(piece);
@@ -2020,8 +1829,6 @@ mod tests {
 
     #[test]
     fn gold_table_serves_promoted_minors() {
-        // The four promoted minors move as gold; their movement walk must equal
-        // the gold table for both colors.
         for color in [Color::Black, Color::White] {
             for kind in [
                 PieceKind::Pawn,
@@ -2040,8 +1847,6 @@ mod tests {
             }
         }
     }
-
-    // -- ray tables == step_signed walk to the edge -------------------------
 
     #[test]
     fn ray_tables_equal_step_walk_to_edge() {
@@ -2062,10 +1867,8 @@ mod tests {
         }
     }
 
-    // -- BETWEEN == the scalar between_set; aligned likewise ----------------
-
-    /// The scalar `ray_dir` (arithmetic form), kept here as the
-    /// equivalence oracle for the table-backed [`ray_dir`] and [`between`].
+    /// The arithmetic form of `ray_dir`, as the equivalence oracle for the
+    /// table-backed [`ray_dir`] and [`between`].
     fn ray_dir_reference(king: Square, sq: Square) -> Option<(i8, i8)> {
         let df = sq.file() as i8 - king.file() as i8;
         let dr = sq.rank() as i8 - king.rank() as i8;
@@ -2082,7 +1885,7 @@ mod tests {
         }
     }
 
-    /// The pre-table scalar `between_set` (the `step_signed` walk).
+    /// The `step_signed` walk form of [`between`].
     fn between_reference(a: Square, b: Square) -> u128 {
         let Some((df, dr)) = ray_dir_reference(a, b) else {
             return 0;
@@ -2145,7 +1948,6 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn aligned_equals_reference_all_triples() {
-        // 81^3 ≈ 531k combinations — exhaustive over every king/anchor triple.
         for king in all_squares() {
             for s1 in all_squares() {
                 for s2 in all_squares() {
@@ -2161,7 +1963,6 @@ mod tests {
 
     #[test]
     fn ray_and_dir_of_are_consistent() {
-        // b is on ray[dir][a] iff dir_of(a, b) == dir.
         for a in all_squares() {
             for (dir, &delta) in DIRECTIONS.iter().enumerate() {
                 for b in ray(dir, a).squares() {
@@ -2174,8 +1975,6 @@ mod tests {
             }
         }
     }
-
-    // -- Masks --------------------------------------------------------------
 
     #[test]
     fn file_and_rank_masks() {
@@ -2193,7 +1992,6 @@ mod tests {
                 assert_eq!(sq.rank(), rank);
             }
         }
-        // Files and ranks each partition the board.
         let mut u = Bitboard::empty();
         for file in 0..Square::FILES {
             u |= file_mask(file);
@@ -2201,11 +1999,8 @@ mod tests {
         assert_eq!(u.popcount(), Square::COUNT as u32);
     }
 
-    // -- Slider attack queries == scalar ray walk ---------------------------
-
     /// The scalar oracle for an occupancy-limited slide: walk each direction
-    /// from `from`, including the first occupied square, then stop. Exactly the
-    /// "up to and including the first blocker" convention the queries promise.
+    /// from `from`, including the first occupied square, then stop.
     fn slider_walk(dirs: &[(i8, i8)], from: Square, occ: u128) -> u128 {
         let mut set = 0u128;
         for &(df, dr) in dirs {
@@ -2231,15 +2026,12 @@ mod tests {
         set
     }
 
-    /// A deterministic stream of board-masked occupancy patterns (no `rand`
-    /// dependency in tests): a handful of structural cases plus xorshift noise.
+    /// Structural occupancy patterns plus deterministic xorshift noise.
     fn sample_occupancies() -> Vec<u128> {
         let mut out = vec![0u128, BOARD_MASK];
-        // Each single-square occupancy (nearest-blocker edge cases).
         for i in 0..N {
             out.push(1u128 << i);
         }
-        // Deterministic xorshift noise, masked to the board.
         let mut state: u128 = 0x9E37_79B9_7F4A_7C15_1234_5678_9ABC_DEF1;
         for _ in 0..64 {
             state ^= state << 13;
@@ -2258,7 +2050,6 @@ mod tests {
         for occ in sample_occupancies() {
             let occ_bb = Bitboard::from_raw(occ);
             for from in all_squares() {
-                // Lance (per colour): the single forward ray.
                 assert_eq!(
                     lance_attacks(Color::Black, from, occ_bb).raw(),
                     slider_walk(&[(0, -1)], from, occ),
@@ -2310,16 +2101,9 @@ mod tests {
     }
 }
 
-// ===========================================================================
-// u128 equivalence twin + property tests
-// ===========================================================================
-
-/// The pre-lane `u128` [`Bitboard`] implementation, demoted to a test-only
-/// equivalence twin. It preserves the whole op surface verbatim; the property
-/// tests below assert the production two-lane representation agrees with it on
-/// every public op, `const` helper, and the iterator (values *and* yield order)
-/// through the [`Bitboard::raw`] / [`Bitboard::from_raw`] gap conversion, over a
-/// deterministic corpus.
+/// A single-`u128` [`Bitboard`] twin: the tests below assert the production
+/// two-lane representation agrees with it on every op, `const` helper, and the
+/// iterator — values *and* yield order — through the gap conversion.
 #[cfg(test)]
 mod twin {
     use super::*;
@@ -2442,7 +2226,7 @@ mod twin {
         Square::from_index(i as u8).unwrap()
     }
 
-    /// Every unary observation of the lane representation agrees with the twin.
+    /// Every unary observation agrees with the twin.
     fn assert_unary_same(bb: Bitboard, tw: Twin) {
         assert_eq!(bb.raw(), tw.raw(), "raw");
         assert_eq!(bb.is_empty(), tw.is_empty(), "is_empty");
@@ -2452,24 +2236,21 @@ mod twin {
             assert_eq!(bb.test(sq(i)), tw.test(sq(i)), "test {i}");
             assert_eq!(bb.contains_index(i), tw.contains_index(i), "contains {i}");
         }
-        // Iterator: identical values in identical (ascending) order.
         let got: Vec<u8> = bb.squares().map(|s| s.index()).collect();
         let want: Vec<u8> = tw.squares().map(|s| s.index()).collect();
         assert_eq!(got, want, "squares order/values for {:#x}", tw.raw());
         assert_eq!(bb.squares().len(), tw.squares().len(), "ExactSize len");
-        // Complement agrees (and stays on-board).
         assert_eq!((!bb).raw(), (!tw).raw(), "not");
     }
 
-    /// A deterministic corpus of contiguous 81-bit patterns: EMPTY, FULL, every
-    /// single square, the lane-boundary squares, file/rank masks, and fixed-seed
-    /// xorshift noise. No runtime entropy.
+    /// EMPTY, FULL, every single square, the lane-boundary squares, file/rank
+    /// masks, and fixed-seed xorshift noise.
     fn corpus() -> Vec<u128> {
         let mut out = vec![0u128, MASK];
         for i in 0..N {
             out.push(1u128 << i);
         }
-        // Lane-boundary squares (62 = last lane-0, 63 = first lane-1, 80 = last).
+        // 62 is the last lane-0 square, 63 the first lane-1 one.
         for &i in &[62usize, 63, 80] {
             out.push(1u128 << i);
             out.push(MASK & !(1u128 << i));
@@ -2499,7 +2280,6 @@ mod twin {
             assert_unary_same(Bitboard::from_square(sq(i)), Twin::from_square(sq(i)));
             assert_unary_same(Bitboard::single(i), Twin::single(i));
         }
-        // `single` past the board degenerates to EMPTY, same as the twin's mask.
         for i in N..(N + 4) {
             assert_unary_same(Bitboard::single(i), Twin::single(i));
         }
@@ -2538,8 +2318,8 @@ mod twin {
     #[cfg_attr(miri, ignore)]
     fn binary_ops_match_twin() {
         let c = corpus();
-        // A representative fixed subset paired against the whole corpus keeps the
-        // cross product bounded while covering every structural pattern.
+        // A fixed subset paired against the whole corpus keeps the cross
+        // product bounded.
         let anchors = [0usize, 1, 2, 65, 83, c.len() - 1];
         for &ai in &anchors {
             let a_bits = c[ai];
@@ -2550,7 +2330,6 @@ mod twin {
                 assert_unary_same(abb & bbb, atw & btw);
                 assert_unary_same(abb ^ bbb, atw ^ btw);
                 assert_unary_same(abb.or(bbb), atw.or(btw));
-                // Assign forms.
                 let (mut abo, mut ato) = (abb, atw);
                 abo |= bbb;
                 ato |= btw;

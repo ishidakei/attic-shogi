@@ -1,20 +1,15 @@
-//! Parity gate: static NNUE evaluation must match the reference engine exactly.
+//! Parity test: static NNUE evaluation must match the reference engine
+//! **exactly** on every `tests/fixtures/eval/*.json` fixture.
 //!
-//! For every `tests/fixtures/eval/*.json` fixture this test parses the `sfen`,
-//! plays the optional `moves` prefix, evaluates with the real SFNN-1536 network,
-//! and asserts **exact** equality (TOLERANCE = 0) with the fixture's `eval`.
-//!
-//! The network file is staged locally at
-//! `eval/nn.bin` and is never committed. When it is
-//! absent (a checkout without it staged) the test prints a notice and passes, so
-//! the default `cargo test` run stays green everywhere.
+//! The network file is staged locally and never committed, so when it is absent
+//! the test prints a notice and passes and the default `cargo test` run stays
+//! green everywhere.
 
 use std::path::{Path, PathBuf};
 
 use attic_eval::{Backend, NnueNetwork, active_backend, evaluate, load_network};
 use attic_state::{Position, parse_sfen, parse_usi_move};
 
-/// Exact-match gate: a single point of divergence is a failure, not a warning.
 const TOLERANCE: i32 = 0;
 
 fn workspace_relative(rel: &str) -> PathBuf {
@@ -31,8 +26,7 @@ fn fixtures_dir() -> PathBuf {
     workspace_relative("tests/fixtures/eval")
 }
 
-/// One eval fixture: an SFEN, an optional `moves` prefix, and the expected
-/// reference evaluation.
+/// An SFEN, an optional `moves` prefix, and the expected evaluation.
 struct EvalFixture {
     name: String,
     sfen: String,
@@ -92,8 +86,7 @@ fn load_fixtures(dir: &Path) -> Vec<EvalFixture> {
         .collect()
 }
 
-/// Parse the SFEN and play the `moves` prefix, mirroring
-/// `position sfen <SFEN> moves <m1> ...`.
+/// Parse the SFEN and play the `moves` prefix.
 fn position_for(fixture: &EvalFixture) -> Position {
     let mut pos = parse_sfen(&fixture.sfen).unwrap_or_else(|e| {
         panic!(
@@ -109,12 +102,9 @@ fn position_for(fixture: &EvalFixture) -> Position {
     pos
 }
 
-/// Assert that when the running CPU advertises AVX-512 VNNI, this build
-/// compiled the SIMD backend — i.e. that it was built for its host
-/// (`-C target-cpu=native`), since backend selection is a compile-time decision.
-/// On CPUs without VNNI it only logs the scalar path (the parity gate is still
-/// meaningful there). Run-time feature detection lives here, in test code, and
-/// nowhere else.
+/// Backend selection is a compile-time decision, so a VNNI-capable CPU running
+/// a scalar build means the build was not made for its host. On a CPU without
+/// VNNI this only logs the scalar path.
 fn assert_simd_path_selected() {
     #[cfg(target_arch = "x86_64")]
     {
@@ -148,7 +138,7 @@ fn eval_fixtures_match_reference_exactly() {
     let nn_bin = nn_bin_path();
     if !nn_bin.exists() {
         eprintln!(
-            "skipping eval_fixtures_match_reference_exactly: {} is not present (staged only on the dev VM)",
+            "skipping eval_fixtures_match_reference_exactly: {} is not present (obtained out-of-band)",
             nn_bin.display()
         );
         return;
@@ -156,10 +146,8 @@ fn eval_fixtures_match_reference_exactly() {
 
     let net: NnueNetwork = load_network(&nn_bin).expect("real nn.bin should load and validate");
 
-    // Guard against silently exercising only the scalar path: on a CPU that
-    // reports AVX-512 VNNI, this build must have compiled
-    // the SIMD backend, so this exact-parity gate is proving the SIMD forward
-    // pass — not scalar — matches the reference engine.
+    // Without this, the test could silently be proving only the scalar path
+    // matches the reference.
     assert_simd_path_selected();
 
     let fixtures = load_fixtures(&fixtures_dir());

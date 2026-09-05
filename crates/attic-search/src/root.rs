@@ -1,34 +1,19 @@
-//! Root search data types and helpers — the `go depth 1..3` path of the
-//! reference `Search::YaneuraOuWorker::start_searching` /
-//! `iterative_deepening` / `search<Root>`
-//! (`source/engine/yaneuraou-engine/yaneuraou-search.cpp`
-//! and `source/thread.cpp` at the pinned submodule commit `76d58ef`).
+//! Root search data types and helpers, ported from the reference's
+//! `start_searching` / `iterative_deepening` / `search<Root>`.
 //!
-//! This module holds the *pure* pieces: the [`RootMove`] / [`RootOutcome`]
-//! value types, the [`generate_root_moves`] root-move list builder, and the
-//! [`declaration_win`] nyugyoku predicate. The search glue that drives the
-//! iterative-deepening loop, the aspiration windows, and the `nodeType == Root`
-//! entry into the shared [`crate::qsearch`] search body lives on
-//! [`crate::qsearch::QSearch`] (method `run_root`) so that it shares the same
-//! node counter, transposition table, search stack, worker history tables, and
-//! NNUE network as the interior search and quiescence search it recurses into.
-//!
-//! The root is searched through the same shared body as the interior PV / NonPV
-//! nodes (`QSearch::search` with `root_node == true`), so from iteration 2 the
-//! main-search pruning steps and the post-loop `update_all_stats` /
-//! `update_correction_history` updates all run at the root exactly as the
-//! reference guards make them. `MultiPV > 1` is not modelled.
+//! This module holds the *pure* pieces: the value types, the root-move list
+//! builder and the nyugyoku predicate. The glue that drives iterative deepening
+//! lives on [`crate::qsearch::QSearch`], so that it shares one node counter,
+//! transposition table, search stack, history bundle and network with the
+//! interior and quiescence searches it recurses into.
 
 use attic_state::{Color, ExtMove, Move, PieceKind, Position, Square};
 use attic_storage::Value;
 
-/// `VALUE_INFINITE` (`types.h`), duplicated from [`crate::qsearch`] so the
-/// pure root-move initialisation does not reach into that module's private
-/// constants.
+/// `VALUE_INFINITE` (`types.h`).
 const VALUE_INFINITE: Value = 32001;
 
-/// `MAX_PLY` (`config.h` → `types.h`), used by the proven-win / proven-
-/// loss thresholds below.
+/// `MAX_PLY` (`config.h` → `types.h`).
 const MAX_PLY: Value = 246;
 /// `VALUE_MATE` (`types.h`).
 const VALUE_MATE: Value = 32000;
@@ -46,33 +31,28 @@ fn is_loss(v: Value) -> bool {
     v <= -VALUE_TB_WIN_IN_MAX_PLY
 }
 
-/// `RootMove::meanSquaredScore` initial value (`search.h`):
-/// `-VALUE_INFINITE * VALUE_INFINITE`. The reference stores this in an `int`
-/// (`Value`); it is held here as `i64` so the `value * abs(value)` moving
-/// average cannot overflow. Only the first iteration's `delta` reads it, and
-/// there is a single iteration at depth 1, so the widening is unobservable.
+/// `RootMove::meanSquaredScore` initial value (`search.h`). The reference
+/// stores it in an `int`; here it is `i64`, so that the `value * abs(value)`
+/// moving average cannot overflow.
 const MEAN_SQUARED_INIT: i64 = -(VALUE_INFINITE as i64 * VALUE_INFINITE as i64);
 
 /// One root move and the per-iteration statistics `search<Root>` maintains for
-/// it (`source/search.h`). Only the fields the depth-1
-/// path reads or writes are kept.
+/// it (`search.h`).
 #[derive(Clone, Debug)]
 pub struct RootMove {
     /// `pv[0]` — the move itself.
     pub mv: Move,
     /// Principal variation: `mv` followed by the searched child PV.
     pub pv: Vec<Move>,
-    /// This iteration's search score (`-VALUE_INFINITE` when not the PV / not
-    /// alpha-improving; the stable sort keeps such moves in place).
+    /// This iteration's search score, `-VALUE_INFINITE` when the move neither
+    /// is the PV nor improved alpha; the stable sort keeps those in place.
     pub score: Value,
     /// The USI-reported score (equals `score`, or the clamped window bound on a
     /// fail high/low).
     pub uci_score: Value,
-    /// Previous iteration's `score` (the sort tie-break). All `-VALUE_INFINITE`
-    /// in the single depth-1 iteration.
+    /// The previous iteration's `score`, the sort tie-break.
     pub previous_score: Value,
-    /// Moving average of `score` (aspiration input; not gate-relevant at
-    /// depth 1).
+    /// Moving average of `score`, an aspiration input.
     pub average_score: Value,
     /// Moving average of `score * |score|` (aspiration `delta` input).
     pub mean_squared_score: i64,
@@ -87,8 +67,7 @@ pub struct RootMove {
 }
 
 impl RootMove {
-    /// A fresh root move (`RootMove(Move)` — `search.h`): `pv == [m]`, every
-    /// score at its `-VALUE_INFINITE` / `MEAN_SQUARED_INIT` sentinel.
+    /// A fresh root move (`search.h`), every score at its sentinel.
     pub fn new(m: Move) -> Self {
         Self {
             mv: m,
@@ -118,8 +97,8 @@ pub enum RootKind {
     DeclarationWin,
 }
 
-/// Outcome of a depth-1 root search — the fields the USI `info` / `bestmove`
-/// output (and the parity gate) consume.
+/// Outcome of a root search — the fields the USI `info` / `bestmove` output
+/// consumes.
 #[derive(Clone, Debug)]
 pub struct RootOutcome {
     /// The chosen move. A real move for [`RootKind::Normal`]; the
@@ -132,12 +111,10 @@ pub struct RootOutcome {
     pub nodes: u64,
     /// Principal variation (`rootMoves[0].pv`, possibly ponder-extended).
     pub pv: Vec<Move>,
-    /// Iterative-deepening depth the reported result was completed at — what the
-    /// USI `info depth` field carries. The last fully-completed iteration's
-    /// `rootDepth` for a normal search (so a time-aborted search reports the
-    /// depth it actually finished, not the one it was cut off in); `0` for the
-    /// resign / declaration-win pre-search exits, whose USI reply is a bare
-    /// `bestmove` with no `info` line.
+    /// The depth the reported result was completed at: the last fully-completed
+    /// iteration's, so that a time-aborted search reports the depth it actually
+    /// finished rather than the one it was cut off in. `0` for the pre-search
+    /// exits, whose reply is a bare `bestmove`.
     pub depth: i32,
     /// Maximum selective depth reached.
     pub sel_depth: i32,
@@ -145,10 +122,8 @@ pub struct RootOutcome {
     pub kind: RootKind,
 }
 
-/// The per-worker facts the Lazy-SMP thread vote consumes: the last iteration's
-/// raw `rootMoves[0].score` (NOT the USI-clamped `uciScore`), the first PV move
-/// it votes for, the PV length (the truncated-PV guard reads `pv.len() > 2`),
-/// and the worker's `completedDepth` (`0` if it never completed an iteration).
+/// The per-worker facts the thread vote consumes. Note the **raw**
+/// `rootMoves[0].score`, not the USI-clamped one.
 #[derive(Clone, Debug)]
 pub struct WorkerVote {
     /// `rootMoves[0].score` — the raw search score the vote weights by.
@@ -161,27 +136,22 @@ pub struct WorkerVote {
     pub completed_depth: i32,
 }
 
-/// `YaneuraOuWorker::get_best_thread` (`yaneuraou-search.cpp`): pick the
-/// index of the worker whose result the engine reports, given every worker's
-/// [`WorkerVote`]. `workers[0]` must be the main worker (the reference seeds
-/// `bestThread = threads.front()`), and the slice is never empty.
+/// `get_best_thread` (`yaneuraou-search.cpp`): the index of the worker
+/// whose result the engine reports. `workers[0]` must be the main worker, and
+/// the slice is never empty.
 ///
-/// Reproduces the reference decision procedure verbatim: vote each worker's
-/// `pv[0]` by `(score - minScore + 14) * completedDepth`, then scan keeping the
-/// best — a proven-win incumbent only yields to a shorter mate, a proven-loss
-/// incumbent only to a lower proven loss (a longer defence), and otherwise the
-/// challenger wins on a proven decisive score or a strictly-higher (or
-/// tied-with-longer-PV) vote total.
+/// Each worker's `pv[0]` is voted by `(score - minScore + 14) * completedDepth`;
+/// then a proven-win incumbent only yields to a shorter mate, a proven-loss one
+/// only to a longer defence, and otherwise the challenger wins on a proven
+/// decisive score or a higher vote total.
 pub fn select_best_worker(workers: &[WorkerVote]) -> usize {
     debug_assert!(!workers.is_empty());
 
-    // `minScore = min over workers of rootMoves[0].score` (609-611). Seeded from
-    // VALUE_NONE like the reference, but every worker has a valid score so the
-    // seed is always superseded.
+    // Seeded from `VALUE_NONE` as the reference does (609-611), though every
+    // worker has a valid score so the seed is always superseded.
     let min_score = workers.iter().map(|w| w.score).min().unwrap_or(0);
 
-    // `voting_value(w) = (score - minScore + 14) * completedDepth` (614-619),
-    // widened to i64 so the product cannot overflow `Value`'s i32 range.
+    // Widened to `i64` (614-619), so that the product cannot overflow.
     let voting_value = |w: &WorkerVote| -> i64 {
         (w.score as i64 - min_score as i64 + 14) * w.completed_depth as i64
     };
@@ -192,8 +162,7 @@ pub fn select_best_worker(workers: &[WorkerVote]) -> usize {
         *votes.entry(w.pv0).or_insert(0) += voting_value(w);
     }
 
-    // Scan all workers keeping the best (621-665). `best` starts at the main
-    // worker (index 0); comparing it against itself is a no-op.
+    // `best` starts at the main worker, so its first comparison is a no-op.
     let mut best = 0usize;
     for i in 0..workers.len() {
         let cur = &workers[best];
@@ -210,8 +179,7 @@ pub fn select_best_worker(workers: &[WorkerVote]) -> usize {
         let best_in_loss = best_score != -VALUE_INFINITE && is_loss(best_score);
         let new_in_loss = new_score != -VALUE_INFINITE && is_loss(new_score);
 
-        // The truncated-PV guard: a vote total only counts when the PV has more
-        // than two moves (`pv.size() > 2`).
+        // A vote total only counts when the PV has more than two moves.
         let better_voting_value =
             voting_value(th) * (th.pv_len > 2) as i64 > voting_value(cur) * (cur.pv_len > 2) as i64;
 
@@ -237,26 +205,14 @@ pub fn select_best_worker(workers: &[WorkerVote]) -> usize {
     best
 }
 
-/// Build the root-move list in `MoveList<LEGAL>` order — the reference's
-/// `ThreadPool::start_thinking` (`thread.cpp`).
+/// Build the root-move list in `MoveList<LEGAL>` order (`thread.cpp`).
 ///
-/// The pseudo-legal candidates are generated in the reference `generateMoves`
-/// order ([`Position::generate_non_evasions`] when not in check,
-/// [`Position::generate_evasions`] when in check — `movegen.cpp`), then the
-/// **swap-with-tail** legality compaction of `generateMoves<LEGAL>`
-/// (`movegen.cpp`) removes king-unsafe moves: an illegal move at the
-/// cursor is overwritten by the current last move and the list shrinks. This is
-/// *not* an order-preserving filter, and reproducing it exactly is what fixes
-/// `rootMoves[0]` — the move the root search treats as its TT move — to the
-/// reference.
-///
-/// `all` is the `GenerateAllLegalMoves` option: the reference builds the root
-/// list from `MoveList<LEGAL_ALL>` when it is on and `MoveList<LEGAL>` when off
-/// (`thread.cpp`), so it is threaded into the pseudo-legal generation
-/// here. With `all == false` this is the exact fixed-depth parity path.
+/// The legality pass is the reference's **swap-with-tail** compaction
+/// (`movegen.cpp`): an illegal move at the cursor is overwritten by the
+/// current last move and the list shrinks. That is *not* an order-preserving
+/// filter, and reproducing it exactly is what fixes `rootMoves[0]` — the move
+/// the root search treats as its TT move — to the reference.
 pub fn generate_root_moves(pos: &Position, all: bool) -> Vec<RootMove> {
-    // The generators emit `ExtMove`; the root list only needs the
-    // `Move`, read via `.mv` in the legality compaction and `RootMove::new`.
     let mut pseudo: Vec<ExtMove> = Vec::new();
     if pos.in_check() {
         pos.generate_evasions(all, &mut pseudo);
@@ -280,10 +236,7 @@ pub fn generate_root_moves(pos: &Position, all: bool) -> Vec<RootMove> {
     pseudo.into_iter().map(|e| RootMove::new(e.mv)).collect()
 }
 
-/// The entering-king (nyugyoku) declaration rule, selected by the
-/// `EnteringKingRule` USI option. Order and semantics mirror the reference
-/// `enum EnteringKingRule` (`types.h`); the option-string spellings
-/// are `EKR_STRINGS` (`types.cpp`).
+/// The entering-king (nyugyoku) declaration rule (`types.h`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnteringKingRule {
     /// `EKR_NONE` / `NoEnteringKing` — declaration disabled everywhere.
@@ -312,11 +265,9 @@ impl EnteringKingRule {
         "TryRule",
     ];
 
-    /// Map an option string to its rule (`to_entering_king_rule`,
-    /// `types.cpp`). An unrecognised string falls back to
-    /// [`EnteringKingRule::None`], mirroring the reference's post-assert return
-    /// (the option layer only ever hands over a declared `var`, so the fallback
-    /// is unreachable in practice).
+    /// Map an option string to its rule (`types.cpp`). An unrecognised
+    /// string falls back to [`EnteringKingRule::None`], as the reference's
+    /// post-assert return does.
     pub fn from_option(s: &str) -> Self {
         match s {
             "NoEnteringKing" => Self::None,
@@ -330,13 +281,12 @@ impl EnteringKingRule {
     }
 }
 
-/// The entering-king rule plus the per-side point thresholds, precomputed once
-/// per `go` from the root position — the reference `set_ekr` state
-/// (`enteringKingRule` + `enteringKingPoint[COLOR_NB]`, `position.h`,
-/// `1081-1082`). The total material on the board and in both hands is invariant
-/// across a game (captures only move pieces to hands), so a snapshot taken from
-/// the root is exact for every node of that search — matching the reference's
-/// per-search `set_ekr` timing (`yaneuraou-search.cpp`).
+/// The entering-king rule plus its per-side point thresholds, precomputed once
+/// per `go` from the root position (the reference's `set_ekr` state).
+///
+/// The total material across board and hands is invariant over a game — a
+/// capture only moves a piece to a hand — so a root snapshot is exact for every
+/// node of the search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnteringKingConfig {
     rule: EnteringKingRule,
@@ -361,10 +311,8 @@ impl EnteringKingConfig {
 }
 
 impl Default for EnteringKingConfig {
-    /// The option default `CSARule27` with its fixed thresholds (Black 28,
-    /// White 27). The non-`_H` point rules never adjust for material, so the
-    /// default needs no position and is bit-identical to the pre-option
-    /// hardcode — the parity path (`QSearch::run_root`) relies on this.
+    /// The option default with its fixed thresholds. The non-`_H` point rules
+    /// never adjust for material, so this needs no position.
     fn default() -> Self {
         Self {
             rule: EnteringKingRule::Point27,
@@ -387,10 +335,8 @@ fn entering_king_points(rule: EnteringKingRule, pos: &Position) -> [i32; Color::
         rule,
         EnteringKingRule::Point24H | EnteringKingRule::Point27H
     ) {
-        // Total material points: every piece on the board scores 1 (kings
-        // included in this popcount), big pieces (bishop/rook family, promotions
-        // included) score 4 more; hands add small 1 / big 5 (kings never in
-        // hand). A full set is 56.
+        // Every board piece scores 1, kings included, and a big piece 4 more;
+        // hands add 1 per small piece and 5 per big one. A full set is 56.
         let mut p: i32 = 0;
         for sq in (0..Square::COUNT as u8).filter_map(Square::from_index) {
             if let Some(pc) = pos.board().get(sq) {
@@ -410,8 +356,8 @@ fn entering_king_points(rule: EnteringKingRule, pos: &Position) -> [i32; Color::
                 + c(PieceKind::Gold)
                 + (c(PieceKind::Bishop) + c(PieceKind::Rook)) * 5;
         }
-        // The deficit from a full set is charged to White only — the handicap
-        // giver is treated as White (AobaZero convention, `position.cpp`).
+        // The deficit from a full set is charged to White alone, the handicap
+        // giver being treated as White (`position.cpp`).
         if p != 56 {
             points[Color::White.index()] -= 56 - p;
         }
@@ -420,21 +366,14 @@ fn entering_king_points(rule: EnteringKingRule, pos: &Position) -> [i32; Color::
     points
 }
 
-/// `Position::DeclarationWin()` (`position.cpp`), selecting behaviour
-/// by the configured [`EnteringKingRule`]:
+/// `Position::DeclarationWin()` (`position.cpp`).
 ///
-/// * [`EnteringKingRule::None`] — always `None` (declaration disabled).
-/// * point rules — [`Move::win`] when the side to move may declare: its king is
-///   inside the enemy three ranks, it is not in check, it has at least 11 pieces
-///   (king included) in the enemy field, and its point total (big pieces 5,
-///   everything else 1, king excluded via `- 1`) reaches
-///   `config`'s per-side threshold.
-/// * [`EnteringKingRule::Try`] — the actual king move onto the opponent king's
-///   initial square when that square is adjacent to our king, holds no own
-///   piece, and is unattacked once our king vacates its square.
-///
-/// The reference evaluates this both before the search (`start_searching`) and
-/// inside `search<Root>` (`!ttData.move || PvNode`).
+/// A point rule declares when the side to move's king is inside the enemy three
+/// ranks, it is not in check, it has at least 11 pieces there counting the king,
+/// and its point total reaches `config`'s per-side threshold. The try rule
+/// instead returns the king move onto the opponent king's initial square, when
+/// that square is adjacent, holds no own piece, and is unattacked once our king
+/// vacates.
 pub fn declaration_win(pos: &Position, config: &EnteringKingConfig) -> Option<Move> {
     match config.rule {
         EnteringKingRule::None => None,
@@ -506,16 +445,12 @@ fn declaration_win_points(pos: &Position, points: [i32; Color::COUNT]) -> Option
     Some(Move::win())
 }
 
-/// The try-rule branch (`position.cpp`): return the king move onto the
-/// opponent king's initial square when the three try conditions hold.
+/// The try-rule branch (`position.cpp`).
 fn declaration_win_try(pos: &Position) -> Option<Move> {
     let us = pos.side_to_move();
 
-    // The opponent king's initial square: 5a (file 4, rank 0) for Black, 5i
-    // (file 4, rank 8) for White — SQ_51 / SQ_59 (`position.cpp`).
-    // The try square is a fixed on-board coordinate, so `Square::new` never
-    // returns `None`; `?` keeps this panic-free (an impossible `None` simply
-    // means "no try win").
+    // The opponent king's initial square (`position.cpp`). It is a fixed
+    // on-board coordinate, so the `?` is only for totality.
     let try_sq = match us {
         Color::Black => Square::new(4, 0),
         Color::White => Square::new(4, 8),
@@ -528,8 +463,7 @@ fn declaration_win_try(pos: &Position) -> Option<Move> {
         return None;
     }
 
-    // 2) no *own* piece occupies the try square (an enemy piece there is a
-    //    capture-try and does not block).
+    // An enemy piece on the try square is a capture-try and does not block.
     if matches!(pos.board().get(try_sq), Some(p) if p.color == us) {
         return None;
     }
@@ -540,11 +474,8 @@ fn declaration_win_try(pos: &Position) -> Option<Move> {
         return None;
     }
 
-    // The king move onto the try square, encoded exactly as the generator would
-    // (`make_move(king_sq, king_try_sq, us, KING)`); conditions (1)-(3) make it
-    // legal, so the driver can emit it verbatim as `bestmove`.
-    // `king_sq` came from `find_king`, so it always holds our king; `?` keeps
-    // this panic-free instead of an `expect`.
+    // Encoded exactly as the generator would, and legal by the conditions
+    // above, so the driver can emit it verbatim as `bestmove`.
     let king_piece = pos.board().get(king_sq)?;
     Some(Move::make(king_sq, try_sq, king_piece))
 }
@@ -883,7 +814,7 @@ mod tests {
     #[test]
     fn try_rule_attack_test_discounts_the_moving_king() {
         // A White rook on 5c is blocked from 5a by our own king on 5b. The attack
-        // test removes the moving king from the occupancy (the pin's
+        // test removes the moving king from the occupancy (the reference's
         // `pieces() ^ kingSq`), revealing the rook's attack on 5a → blocked. A
         // naive check that left the king in place would wrongly allow the try.
         let p = pos("9/4K4/4r4/9/9/9/9/9/8k b - 1");

@@ -1,27 +1,16 @@
-//! Time management — a faithful port of the reference `TimeManagement`
-//! (`upstream YaneuraOu @ 76d58ef`, `source/timeman.{h,cpp}` compiled under
-//! `USE_TIME_MANAGEMENT`, non-DEEP build).
+//! Time management, ported from the reference `TimeManagement`
+//! (`timeman.{h,cpp}` under `USE_TIME_MANAGEMENT`). It computes an **optimum**,
+//! **maximum** and **minimum** think time for one `go`; the search then shrinks
+//! its deadline toward the optimum as the eval stabilises, and stops at
+//! [`TimeManagement::search_end`].
 //!
-//! The reference class computes, for one `go`, an **optimum**, **maximum**, and
-//! **minimum** think time in milliseconds from the clock (`time[us]`), the
-//! Fischer increment (`inc[us]`), the byoyomi (`byoyomi[us]`), the game ply, and
-//! the engine's time options. The search then dynamically shrinks the deadline
-//! toward `optimum` based on eval stability (see [`crate::qsearch`]'s iterative
-//! deepening) and stops at [`TimeManagement::search_end`], which is filled by
-//! [`TimeManagement::set_search_end`] and enforced in `check_time`.
+//! All arithmetic is in `i64` milliseconds, and the reference's `(int)`
+//! truncation and `float` / `double` points are preserved exactly, so that the
+//! computed budgets match bit for bit on the same inputs.
 //!
-//! All internal arithmetic is in `i64` milliseconds, mirroring the reference
-//! `TimePoint`; the same `(int)` truncation / `float` (`f32`) / `double` (`f64`)
-//! points as the C++ code are preserved so the computed budgets match bit-for-bit
-//! given the same inputs. Wall-clock elapsed is measured from an [`Instant`]
-//! captured when the `go` arrived (the reference `limits.startTime`).
-//!
-//! Ponder is wired in the search / USI layers: on a `ponderhit`
-//! the search stamps [`TimeManagement::ponderhit_time`] to `now`, so the
-//! `startTime - ponderhitTime` terms in [`TimeManagement::set_search_end`] carry
-//! real (non-zero) values and the used time is counted from the ponderhit. With no
-//! ponder `ponderhitTime == startTime` and those terms vanish, exercising the same
-//! paths in their ponder-off shape.
+//! Without ponder `ponderhitTime == startTime`, so the difference terms in
+//! [`TimeManagement::set_search_end`] vanish and the same paths run in their
+//! ponder-off shape.
 
 use std::time::Instant;
 
@@ -31,10 +20,8 @@ use crate::book::Prng;
 /// still to play when planning the time budget.
 const MOVE_HORIZON: i32 = 160;
 
-/// The raw inputs [`TimeManagement::init`] needs, extracted by the USI driver
-/// from the `go` limits, the engine options, and the root position. Keeping the
-/// input primitive (rather than the protocol `GoLimits`) preserves the layering
-/// rule that Search never depends on Protocol.
+/// The raw inputs [`TimeManagement::init`] needs. Primitive rather than the
+/// protocol's own limit type, so that Search does not depend on Protocol.
 #[derive(Clone, Copy, Debug)]
 pub struct TimeInput {
     /// `limits.time[us]` — the side-to-move's remaining main clock [ms].
@@ -63,11 +50,9 @@ pub struct TimeInput {
     pub stochastic_ponder: bool,
     /// `ply` — the root's game ply (`rootPos.game_ply()`; 1 at the hirate start).
     pub ply: i32,
-    /// `max_moves_to_draw` — the game ply past which a draw is adjudicated
-    /// (already the `0 → 100000` unlimited remap).
+    /// The game ply past which a draw is adjudicated, already remapped.
     pub max_moves_to_draw: i32,
-    /// The instant the `go` arrived (`limits.startTime`), the origin for
-    /// [`TimeManagement::elapsed`].
+    /// The instant the `go` arrived (`limits.startTime`).
     pub start_time: Instant,
 }
 
@@ -76,15 +61,13 @@ pub struct TimeInput {
 pub struct TimeManagement {
     /// `startTime` — the origin for [`Self::elapsed`] (`now() - startTime`).
     pub start_time: Instant,
-    /// `ponderhitTime` — equal to `start_time` until a `ponderhit`, at which point
-    /// the search stamps it to the ponderhit instant (`set_ponderhit`,
-    /// `yaneuraou-search.cpp`). Used by [`Self::set_search_end`].
+    /// `ponderhitTime` — equal to `start_time` until a `ponderhit` stamps it
+    /// (`yaneuraou-search.cpp`).
     pub ponderhit_time: Instant,
-    /// `search_end` [ms from `start_time`]: `0` means "not yet decided"; once set,
-    /// the search stops when `search_end <= elapsed` (`timeman.h`).
+    /// `search_end`, in ms from `start_time`. `0` means not yet decided.
     pub search_end: i64,
-    /// `isFinalPush` — in byoyomi with (almost) no main clock, spend it all
-    /// (`timeman.cpp`); consumed by [`Self::set_search_end`].
+    /// `isFinalPush`: in byoyomi with almost no main clock, spend it all
+    /// (`timeman.cpp`).
     pub is_final_push: bool,
     /// True only for the `MTG <= 0` error path (`timeman.cpp`), so the
     /// driver can emit the reference `info string Error!` diagnostic.
@@ -136,18 +119,16 @@ impl TimeManagement {
             round_up_to_fullsecond,
         };
 
-        // Remaining time this move must respect, minus the worst-case network
-        // delay; floored so a spent clock cannot self-destruct
-        // (`timeman.cpp`). Byoyomi is folded in here because it is
-        // available for *this* move; the Fischer increment is deliberately NOT
-        // (`/* + limits.inc[us] */` at the pin) — it is credited only after the
-        // move has been played, so spending it now would overdraw the clock.
+        // Floored, so that a spent clock cannot self-destruct
+        // (`timeman.cpp`). Byoyomi is folded in because it is available
+        // for *this* move; the Fischer increment is **not**, being credited only
+        // after the move is played — spending it now would overdraw the clock.
         let mut remain_time = time_us + byoyomi_us - network_delay2;
         remain_time = remain_time.max(if round_up_to_fullsecond { 100 } else { 1 });
         tm.remain_time = remain_time;
 
-        // `go rtime`: a randomised minimum-think budget, decaying with ply, used
-        // for self-play variety (`timeman.cpp`).
+        // `go rtime`: a randomised minimum-think budget, decaying with ply
+        // (`timeman.cpp`).
         if rtime != 0 {
             let mut r = rtime;
             if ply != 0 {
@@ -186,8 +167,7 @@ impl TimeManagement {
         let mtg = (max_moves_to_draw - ply + 2).min(move_horizon) / 2;
 
         if mtg <= 0 {
-            // Should be unreachable given a sane MaxMovesToDraw; guard anyway
-            // (`timeman.cpp`).
+            // Unreachable given a sane `MaxMovesToDraw` (`timeman.cpp`).
             tm.mtg_error = true;
             tm.minimum_time = 500;
             tm.optimum_time = 500;
@@ -221,8 +201,8 @@ impl TimeManagement {
         // optimum candidate (`timeman.cpp`).
         let t1 = minimum_time + remain_estimate / mtg as i64;
 
-        // maximum candidate: up to `max_ratio`× the optimum, capped at 30% of the
-        // remaining estimate (`timeman.cpp`).
+        // Up to `max_ratio` times the optimum, capped at 30% of the remaining
+        // estimate (`timeman.cpp`).
         let mut max_ratio = 5.0f32;
         if time_forfeit {
             max_ratio = max_ratio.min((time_us as f32 / (60.0 * 1000.0)).max(1.0));
@@ -259,9 +239,9 @@ impl TimeManagement {
         tm
     }
 
-    /// Round `t0` up to a whole second (subtracting the network delay), floored at
-    /// `MinimumThinkingTime` and capped at `remain_time` (`timeman.cpp`).
-    /// A no-op rounding when `RoundUpToFullSecond` is off.
+    /// Round `t0` up to a whole second less the network delay, floored at
+    /// `MinimumThinkingTime` and capped at `remain_time`
+    /// (`timeman.cpp`).
     pub fn round_up(&self, t0: i64) -> i64 {
         if self.round_up_to_fullsecond {
             let mut t = (((t0 + 999) / 1000) * 1000).max(self.minimum_thinking_time);
@@ -277,12 +257,9 @@ impl TimeManagement {
         }
     }
 
-    /// Fix the search end time from the elapsed time `e` [ms] at which the search
-    /// decided to stop (`timeman.cpp`). Rounds the used time up to a full
-    /// second (honouring `isFinalPush` and the minimum think time) and stores the
-    /// result as a `search_end` offset from `startTime`. Without ponder,
-    /// `startTime == ponderhitTime`, so this reduces to
-    /// `search_end = round_up(max(e, minimum()))`.
+    /// Fix the search end time from the elapsed time at which the search decided
+    /// to stop (`timeman.cpp`), rounding the used time up to a full
+    /// second. Without ponder this reduces to `round_up(max(e, minimum()))`.
     pub fn set_search_end(&mut self, e: i64) {
         // `startTime - ponderhitTime` in ms (0 without ponder; <= 0 with).
         let start_minus_ponderhit = -(self
@@ -327,8 +304,7 @@ impl TimeManagement {
 mod tests {
     use super::*;
 
-    /// A `TimeInput` with the reference option defaults and no clock; individual
-    /// tests override the fields they exercise.
+    /// A `TimeInput` with the reference option defaults and no clock.
     fn base() -> TimeInput {
         TimeInput {
             time_us: 0,
@@ -367,8 +343,7 @@ mod tests {
 
     #[test]
     fn byoyomi_10min_plus_10s() {
-        // 10 min main + 10 s byoyomi, no increment. Hand-computed against
-        // timeman.cpp with the default options and ply 1.
+        // Hand-computed against `timeman.cpp` with the default options.
         let input = TimeInput {
             time_us: 600_000,
             byoyomi_us: 10_000,
@@ -436,7 +411,8 @@ mod tests {
     #[test]
     fn increment_is_excluded_from_remain_time() {
         // The Fischer increment is credited only *after* the move is played, so
-        // it must not enter `remain_time` (`timeman.cpp` at the pin).
+        // it must not enter `remain_time` (`timeman.cpp` in the
+        // reference).
         // A tiny main clock with a huge increment makes the difference visible:
         // `remain_time` binds both optimum and maximum, and it is computed from
         // the main clock alone.

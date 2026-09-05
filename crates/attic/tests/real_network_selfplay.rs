@@ -1,18 +1,10 @@
-//! Integration test: a real-network self-play session against the built
-//! `attic` binary.
+//! A real-network self-play session against the built `attic` binary: a ~40-ply
+//! loop over one live USI session, where every `bestmove` must be legal for the
+//! running position and the process must exit cleanly on `quit`. A `resign` or
+//! `win` reply ends the loop early.
 //!
-//! The SFNN-1536 network is staged locally at
-//! `eval/nn.bin` and is never committed. When it is
-//! absent (a checkout without it staged) the test prints a notice and passes, so
-//! the default `cargo test` run stays green everywhere — the same skip pattern
-//! `attic-eval` and `attic-search`'s integration tests use.
-//!
-//! When present, it spawns the engine, loads the network via `EvalDir`, and
-//! drives a ~40-ply self-play loop over one live USI session: `position
-//! startpos moves <accumulated>` + `go depth 1`, reusing the session. Every
-//! `bestmove` must be legal for the running position, the process must never
-//! crash, and it must exit cleanly on `quit`. A `bestmove resign` or
-//! `bestmove win` (a mate or a declaration win can happen) ends the loop early.
+//! The network file is staged locally and never committed, so when it is absent
+//! the test prints a notice and passes.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -26,8 +18,7 @@ fn eval_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../eval")
 }
 
-/// Read child stdout lines until one satisfies `pred`; returns the matched
-/// (trimmed) line, or `None` on EOF.
+/// Read child stdout lines until one satisfies `pred`, or `None` on EOF.
 fn read_until<F: Fn(&str) -> bool>(reader: &mut BufReader<ChildStdout>, pred: F) -> Option<String> {
     let mut line = String::new();
     loop {
@@ -60,7 +51,7 @@ fn real_network_self_play_stays_legal_and_exits_cleanly() {
     let dir = eval_dir();
     if !dir.join("nn.bin").exists() {
         eprintln!(
-            "skipping real_network_self_play_stays_legal_and_exits_cleanly: {} is not present (staged only on the dev VM)",
+            "skipping real_network_self_play_stays_legal_and_exits_cleanly: {} is not present (obtained out-of-band)",
             dir.join("nn.bin").display()
         );
         return;
@@ -107,7 +98,6 @@ fn real_network_self_play_stays_legal_and_exits_cleanly() {
 
         let bestmove =
             read_until(&mut stdout, |l| l.starts_with("bestmove ")).expect("bestmove before EOF");
-        // `bestmove <move> [ponder <move>]`; only the played move matters here.
         let mv_str = bestmove
             .strip_prefix("bestmove ")
             .expect("bestmove prefix")
@@ -117,8 +107,6 @@ fn real_network_self_play_stays_legal_and_exits_cleanly() {
             .to_string();
 
         if mv_str == "resign" || mv_str == "win" {
-            // A mate / no-legal-move (resign) or a declaration win ends the game
-            // early — both are valid endings.
             break;
         }
 

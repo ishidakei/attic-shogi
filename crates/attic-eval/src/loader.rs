@@ -1,32 +1,19 @@
-//! SFNN-1536 network-file (`nn.bin`) parsing and validation.
+//! SFNN-1536 network-file (`nn.bin`) parsing and validation, ported from
+//! `evaluate_nnue.cpp`'s `ReadHeader` / `ReadParameters`.
 //!
-//! Ported from the Rust NNUE reference implementation's `loader.rs`. The
-//! serialized format's C++ ground truth is
-//! `eval/nnue/evaluate_nnue.cpp`
-//! (`ReadHeader` / `ReadParameters`) plus `nnue_common.h` and the layer headers
-//! reached from `architectures/sfnn-1536.h`.
+//! Which failures are fatal follows the reference exactly:
 //!
-//! Validation is reference-faithful to `374bdd72`, which deliberately lags the
-//! submodule pin (`76d58ef`): the bucket / shard / small-FT architectures
-//! upstream added in that span are out of scope. The SFNN-1536 serialization
-//! itself is compatible across the two — the `76d58ef` reference loads the same
-//! `nn.bin` and reproduces every eval fixture bit-identically — so the rules
-//! below still describe the pin for the architecture this engine loads:
-//! - The **version word** (`ReadHeader`) is a HARD failure on mismatch — the
-//!   file is a different serialization format, so parsing cannot continue.
-//! - The **file-level hash**, the **feature-transformer hash**, and each
-//!   **layer-stack hash** are only WARNINGS on mismatch; the load continues and
-//!   the parameters are read as usual (`LoadAndShare` / `Detail::ReadParameters`).
-//!   These hashes are topology-derived, but the reference tolerates old files, so
-//!   we do too — the warnings are surfaced as `info string` lines during
-//!   `isready`.
-//! - The **architecture string** is read (length-prefixed) but NEVER compared; it
-//!   appears only inside the file-hash warning, rendered lossily so non-UTF-8
-//!   bytes never fail the load.
+//! - The **version word** is a hard failure on mismatch: the file is then a
+//!   different serialization format and parsing cannot continue.
+//! - The **file-level, feature-transformer and layer-stack hashes** are only
+//!   warnings; the load continues and the parameters are read as usual. They
+//!   are topology-derived, but the reference tolerates old files, so this does
+//!   too, surfacing the warnings as `info string` lines.
+//! - The **architecture string** is read but never compared. It appears only
+//!   inside the file-hash warning, rendered lossily so that non-UTF-8 bytes
+//!   never fail the load.
 //! - **Structural failures stay hard**: short reads, a bad LEB128 magic, an
-//!   out-of-range value, and trailing bytes after the last stack all fail the
-//!   load (`ReadHeader`/`ReadParameters` returning a read error, and the final
-//!   EOF check).
+//!   out-of-range value, and trailing bytes after the last stack.
 
 use std::path::Path;
 
@@ -39,10 +26,9 @@ const NET_HASH: u32 = 0x6333_718A;
 const ARCH_STRING: &str = "ModelType=SFNNWithoutPsqt;Features=HalfKA_hm(Friend)[73305->1536x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-15](ClippedReLU[15](AffineTransform[15<-3072](InputSlice[3072(0:3072)]))))){LayerStack=9}";
 const LEB128_MAGIC: &[u8; 17] = b"COMPRESSED_LEB128";
 
-/// Warning body emitted (via the driver's `info string` sink) when a
-/// feature-transformer or layer-stack hash does not match — mirrors the
-/// reference `Detail::ReadParameters` (`evaluate_nnue.cpp`), spacing
-/// and all.
+/// Warning body for a feature-transformer or layer-stack hash mismatch,
+/// mirroring `Detail::ReadParameters` (`evaluate_nnue.cpp`) down to the
+/// spacing.
 const SECTION_HASH_WARNING: &str = "Warning : nn.bin hash mismatch.";
 
 /// Reads and validates the SFNN-1536 network file at `path`, discarding any
@@ -51,10 +37,8 @@ pub fn load_network(path: &Path) -> Result<NnueNetwork, NnueError> {
     load_network_with_warnings(path).map(|(net, _warnings)| net)
 }
 
-/// Reads and validates the SFNN-1536 network file at `path`, returning the
-/// network together with any non-fatal warning bodies (hash mismatches). The
-/// caller surfaces each as an `info string` line; an empty vector means a clean
-/// load. Structural problems and a version mismatch still fail with an error.
+/// Reads and validates the SFNN-1536 network file at `path`, returning it with
+/// any non-fatal warning bodies; an empty vector means a clean load.
 pub fn load_network_with_warnings(path: &Path) -> Result<(NnueNetwork, Vec<String>), NnueError> {
     let bytes = std::fs::read(path).map_err(|e| NnueError::Io {
         path: path.display().to_string(),
@@ -72,14 +56,10 @@ fn parse_from_bytes(
     let mut warnings = Vec::new();
     let mut reader = ByteReader::new(bytes);
     let header = read_header(&mut reader, &mut warnings)?;
-    // The whole parameter set is filled *in place* into one large-page arena:
-    // the builder allocates it up front and hands out mutable views, so the
-    // ~215 MiB `ft_weights` is decoded straight into its final home with no big
-    // temporary, and every array shares one backing allocation.
+    // The builder allocates its arena up front and hands out mutable views, so
+    // the ~215 MiB `ft_weights` is decoded straight into its final home.
     let mut builder = NnueNetworkBuilder::with_dims(header, sha256, dims);
 
-    // The feature-transformer hash is a warning, not a hard error: the reference
-    // still reads the parameters after `Detail::ReadParameters` logs the mismatch.
     let ft_hash = reader.read_u32_le()?;
     if ft_hash != FT_HASH {
         warnings.push(SECTION_HASH_WARNING.to_string());
@@ -101,8 +81,7 @@ fn read_header(
 ) -> Result<NetHeader, NnueError> {
     let version = reader.read_u32_le()?;
     if version != NNUE_VERSION {
-        // `ReadHeader` (evaluate_nnue.cpp): a version mismatch is a HARD
-        // failure with this exact message shape.
+        // The message shape is the reference's (`evaluate_nnue.cpp`).
         return Err(NnueError::InvalidFormat {
             reason: format!(
                 "NNUE header version mismatch: expected {} got {}",
@@ -112,15 +91,12 @@ fn read_header(
     }
     let hash = reader.read_u32_le()?;
     let arch_size = reader.read_u32_le()?;
-    // The architecture string is read but NEVER compared (evaluate_nnue.cpp): it
-    // only feeds the file-hash warning below. `read_slice` already bounds the
-    // length against the file (a short file fails structurally), and non-UTF-8 is
-    // rendered lossily rather than rejected.
+    // `read_slice` already bounds the length against the file, so a short file
+    // fails structurally here rather than later.
     let arch_bytes = reader.read_slice(arch_size as usize)?;
     let arch_id = String::from_utf8_lossy(arch_bytes).into_owned();
-    // `LoadAndShare` (evaluate_nnue.cpp): a file-level hash mismatch is a
-    // WARNING; the load continues. The message names the in-file and expected
-    // architecture strings.
+    // The message names the in-file and expected architecture strings
+    // (`LoadAndShare`, `evaluate_nnue.cpp`).
     if hash != NNUE_HASH_VALUE {
         warnings.push(format!(
             "Warning: NNUE hash mismatch: expected {} got {} arch_in_file={} arch_expected={}",
@@ -134,9 +110,8 @@ fn read_header(
     })
 }
 
-/// Decode one signed-LEB128 block straight into `out` (its length is the value
-/// count). The target is a mutable view of the arena, so the ~215 MiB
-/// `ft_weights` block is filled in place with no intermediate copy.
+/// Decode one signed-LEB128 block straight into `out`, whose length is the
+/// value count.
 fn read_leb128_i16_into(reader: &mut ByteReader, out: &mut [i16]) -> Result<(), NnueError> {
     let count = out.len();
     let magic = reader.read_slice(LEB128_MAGIC.len())?;
@@ -150,7 +125,8 @@ fn read_leb128_i16_into(reader: &mut ByteReader, out: &mut [i16]) -> Result<(), 
         });
     }
     let bytes_left = reader.read_u32_le()? as usize;
-    // Worst-case signed-LEB128 for an i16 is 3 bytes; bounds the allocation against bad input.
+    // Worst-case signed-LEB128 for an `i16` is 3 bytes, which bounds the
+    // allocation against bad input.
     let upper_bound = count.saturating_mul(3);
     if bytes_left > upper_bound {
         return Err(NnueError::InvalidFormat {
@@ -232,14 +208,10 @@ fn read_network_block(
     stack: usize,
     warnings: &mut Vec<String>,
 ) -> Result<(), NnueError> {
-    // Each layer-stack hash is a warning, not a hard error (the reference
-    // `Detail::ReadParameters` logs and reads on).
     let net_hash = reader.read_u32_le()?;
     if net_hash != NET_HASH {
         warnings.push(SECTION_HASH_WARNING.to_string());
     }
-    // The six arrays are filled directly into their arena sub-slices, in the
-    // file's fc_0/fc_1/fc_2 order.
     read_i32_into(reader, builder.fc_0_biases_mut(stack))?;
     read_i8_into(reader, builder.fc_0_weights_mut(stack))?;
     read_i32_into(reader, builder.fc_1_biases_mut(stack))?;
@@ -498,8 +470,8 @@ mod tests {
         build_valid_bytes_arch(dims, arch.as_bytes())
     }
 
-    /// Like [`build_valid_bytes`] but takes the architecture field as raw bytes,
-    /// so a test can feed a non-UTF-8 arch string.
+    /// [`build_valid_bytes`] with the architecture field as raw bytes, so that a
+    /// test can feed a non-UTF-8 one.
     fn build_valid_bytes_arch(dims: &NetDims, arch: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&NNUE_VERSION.to_le_bytes());
@@ -546,7 +518,8 @@ mod tests {
     fn encode_signed_leb128(out: &mut Vec<u8>, mut value: i64) {
         loop {
             let byte = (value as u8) & 0x7F;
-            // Arithmetic shift preserves the sign bit that signed LEB128 uses to end the byte stream.
+            // An arithmetic shift preserves the sign bit signed LEB128 uses to
+            // end the byte stream.
             value >>= 7;
             let sign_bit = byte & 0x40;
             if (value == 0 && sign_bit == 0) || (value == -1 && sign_bit != 0) {
@@ -632,8 +605,8 @@ mod tests {
 
     #[test]
     fn different_arch_string_loads_without_complaint() {
-        // The architecture string is never compared; when the hashes match, a
-        // different arch loads cleanly with no warning (reference: read but unused).
+        // The architecture string is never compared, so with matching hashes a
+        // different one loads cleanly.
         let bytes = build_valid_bytes(&TEST_DIMS, "SFNNwoP1024");
         let (net, warnings) =
             parse_from_bytes(&bytes, &TEST_DIMS, [0u8; 32]).expect("should parse");
@@ -708,10 +681,8 @@ mod tests {
     #[test]
     fn wrong_top_level_hash_loads_with_warning() {
         let mut bytes = build_valid_bytes(&TEST_DIMS, ARCH_STRING);
-        // The top-level hash sits right after the 4-byte version.
         bytes[4..8].copy_from_slice(&0x1234_5678u32.to_le_bytes());
         let (net, warnings) = parse_from_bytes(&bytes, &TEST_DIMS, [0u8; 32]).expect("should load");
-        // Exactly one warning: the file-level hash mismatch, naming both arches.
         assert_eq!(
             warnings.len(),
             1,
@@ -727,7 +698,6 @@ mod tests {
             w.contains(&format!("arch_expected={ARCH_STRING}")),
             "got: {w}"
         );
-        // Parameters are still read intact.
         assert_eq!(net.ft_biases.len(), TEST_DIMS.hidden_size);
         assert_eq!(net.stacks.len(), TEST_DIMS.layer_stacks);
         assert!(net.ft_biases.iter().all(|&x| x == 0));
@@ -736,7 +706,6 @@ mod tests {
     #[test]
     fn wrong_ft_hash_loads_with_section_warning() {
         let mut bytes = build_valid_bytes(&TEST_DIMS, ARCH_STRING);
-        // ft_hash follows version(4) + hash(4) + arch_size(4) + arch bytes.
         let ft_hash_pos = 12 + ARCH_STRING.len();
         bytes[ft_hash_pos..ft_hash_pos + 4].copy_from_slice(&0x0BAD_F00Du32.to_le_bytes());
         let (net, warnings) = parse_from_bytes(&bytes, &TEST_DIMS, [0u8; 32]).expect("should load");
@@ -748,8 +717,7 @@ mod tests {
     fn wrong_net_hash_loads_with_section_warning() {
         let mut bytes = build_valid_bytes(&TEST_DIMS, ARCH_STRING);
         // The single layer-stack's net_hash is the last 4-byte word before its
-        // (all-zero) parameter blocks: version+hash+arch_size(12) + arch +
-        // ft_hash(4) + ft bias block + ft weight block, then NET_HASH.
+        // parameter blocks.
         let ft_bias_block = LEB128_MAGIC.len() + 4 + TEST_DIMS.hidden_size;
         let ft_weight_block =
             LEB128_MAGIC.len() + 4 + TEST_DIMS.hidden_size * TEST_DIMS.num_features;
@@ -821,7 +789,6 @@ mod tests {
 
     #[test]
     fn leb128_decoder_handles_boundary_values() {
-        // signed-LEB128 stream: { -1, 0, 1, 127, -128 }
         let payload = [0x7F, 0x00, 0x01, 0xFF, 0x00, 0x80, 0x7F];
         let mut pos = 0usize;
         let mut decoded = Vec::new();

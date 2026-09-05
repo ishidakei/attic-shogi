@@ -1,9 +1,7 @@
 //! Packed 32-bit move encoding.
 //!
-//! The bit layout matches the YaneuraOu reference engine exactly so that move
-//! encodings round-trip through TT entries unchanged. The reference layout is
-//! defined in `source/types.h` (lines 699–710 and 916–928);
-//! the diagram below reproduces it for offline reference.
+//! The bit layout matches the reference engine (`types.h`, `916-928`)
+//! exactly, so that move encodings round-trip through TT entries unchanged.
 //!
 //! ```text
 //! bit:  31         21 20    16 15 14 13         7 6          0
@@ -21,10 +19,10 @@
 //! Bits 21..31         : zero.
 //! ```
 //!
-//! Our `PieceKind` enum disagrees with the reference's `PieceType` ordering
-//! (we have `Gold=4` between `Silver` and `Bishop`; the reference has
-//! `BISHOP=5, ROOK=6, GOLD=7`). The translation lives in [`PIECE_KIND_TO_REF`]
-//! and its inverse [`REF_TO_PIECE_KIND`].
+//! [`PieceKind`] disagrees with the reference's `PieceType` ordering (`Gold=4`
+//! here between `Silver` and `Bishop`; `BISHOP=5, ROOK=6, GOLD=7` there), so
+//! every code crossing this boundary goes through [`PIECE_KIND_TO_REF`] or its
+//! inverse [`REF_TO_PIECE_KIND`].
 
 use core::fmt;
 
@@ -111,8 +109,7 @@ impl Move {
         Self((3 << 7) + 3)
     }
 
-    /// Construct a board move (no promotion). `piece` is the piece on `from`
-    /// before (and on `to` after) the move.
+    /// Construct a board move (no promotion). `piece` is the piece on `from`.
     pub fn make(from: Square, to: Square, piece: Piece) -> Self {
         let bits =
             (to.index() as u32) | ((from.index() as u32) << 7) | (piece_to_ref_code(piece) << 16);
@@ -130,10 +127,8 @@ impl Move {
         Self(bits)
     }
 
-    /// Construct a drop. `kind` is the piece kind dropped (Pawn..Rook in
-    /// principle; King has no legal drop in shogi but the encoding does not
-    /// enforce it). The drop flag is set; the upper-bits Piece is the
-    /// (color, kind) pair, never promoted.
+    /// Construct a drop. King has no legal drop in shogi, but the encoding does
+    /// not enforce it.
     pub fn make_drop(kind: PieceKind, color: Color, to: Square) -> Self {
         let pt = PIECE_KIND_TO_REF[kind.index()];
         let color_bit = match color {
@@ -154,10 +149,8 @@ impl Move {
         self.0
     }
 
-    /// The 16-bit move fragment — YaneuraOu's `Move16`: the low 16 bits of the
-    /// packed move (`to | from/pt << 7 | drop << 14 | promote << 15`), dropping
-    /// the upper piece-code bits. This is exactly the value the `.ybb` opening
-    /// book stores per move.
+    /// The 16-bit move fragment (`Move16`): the packed move without its upper
+    /// piece-code bits. This is the value the `.ybb` opening book stores.
     pub const fn move16(self) -> u16 {
         (self.0 & 0xFFFF) as u16
     }
@@ -179,7 +172,7 @@ impl Move {
         (self.0 >> 7) != (self.0 & 0x7f)
     }
 
-    /// Destination square. Always present.
+    /// Destination square.
     ///
     /// # Panics
     /// Panics if the encoded `to` index is out of range; this cannot happen
@@ -201,14 +194,10 @@ impl Move {
 
     /// Piece kind being dropped if `self` is a well-formed drop whose piece
     /// field is a bare droppable `PieceType` (reference codes `1..=7`); `None`
-    /// for a non-drop or for a torn fragment whose field is out of that range.
+    /// for a non-drop or an out-of-range field.
     ///
-    /// Total over every bit pattern — never panics — so it is the safe accessor
-    /// for [`Position::to_move`] to consume a possibly-torn 16-bit TT fragment.
-    /// A genuine drop always stores its field in `1..=7` (`make_drop`), so this
-    /// agrees with [`Self::dropped_piece_kind`] on every real drop and rejects
-    /// only the codes the reference trusts never to appear (`0`, `KING`, the
-    /// promoted forms, and any high-bit torn value).
+    /// Total over every bit pattern, so [`Position::to_move`] can hand it a
+    /// possibly-torn 16-bit TT fragment.
     pub fn dropped_piece_kind_checked(self) -> Option<PieceKind> {
         if !self.is_drop() {
             return None;
@@ -260,27 +249,21 @@ impl Move {
 }
 
 /// Flip a 16-bit move fragment to the one that plays the identical move on the
-/// board rotated 180° (`flip_move`, `source/types.h`).
+/// board rotated 180° (`flip_move`, `types.h`), where
+/// `Flip(sq) = 80 - sq`.
 ///
-/// `Flip(sq) = 80 - sq` is the 180° square rotation (`SQ_NB - 1 - sq`, `SQ_NB`
-/// = 81). Faithful to the reference's three cases:
-/// - a **drop** keeps its dropped-piece code, flipping only the to-square;
-/// - a **promotion** flips both from and to and keeps the promote flag;
-/// - a **normal** move flips both from and to.
-///
-/// This is the opening-book helper: a `.ybb` entry for the color-flipped
-/// position stores moves for the rotated board, and this maps each back onto
-/// the real position. The result is a raw 16-bit fragment that must still be
-/// widened against the real position's legal moves before use.
-///
-/// Fields are masked to 7 bits so a malformed input never produces bits outside
-/// the `move16` layout; such a fragment simply fails to widen and is dropped.
+/// A `.ybb` entry for the color-flipped position stores moves for the rotated
+/// board, and this maps each back onto the real position. The result is a raw
+/// fragment that must still be widened against the real position's legal moves
+/// before use; fields are masked to 7 bits, so a malformed input produces
+/// nothing outside the `move16` layout and simply fails to widen.
 pub const fn flip_move16(m: u16) -> u16 {
     const TO_MASK: u16 = 0x7f;
     let to = m & TO_MASK;
     let flip_to = (80u16.wrapping_sub(to)) & TO_MASK;
     if (m & (FLAG_DROP as u16)) != 0 {
-        // Drop: bits 7..13 hold the dropped-piece code, not a square — keep it.
+        // Bits 7..13 hold the dropped-piece code, not a square, so they survive
+        // the rotation unchanged.
         let pt = (m >> 7) & TO_MASK;
         flip_to | (pt << 7) | (FLAG_DROP as u16)
     } else {
@@ -293,15 +276,12 @@ pub const fn flip_move16(m: u16) -> u16 {
 
 /// Parse a USI move string (e.g. `7g7f`, `8h2b+`, `P*5e`) into a [`Move`].
 ///
-/// USI files are `1..=9` with file `1` on the right from Black's view; USI ranks
-/// are `a..=i` with rank `a` at the top. The mapping to internal coordinates is
-/// `internal_file = usi_file - 1` and `internal_rank = usi_rank - 1`, matching
-/// the SFEN board parser in [`crate::sfen`].
+/// USI files are `1..=9` with file `1` on the right from Black's view and ranks
+/// are `a..=i` with rank `a` at the top, so internal coordinates are
+/// `usi_file - 1` and `usi_rank - 1`.
 ///
-/// `pos` supplies the moving piece (read off `pos.board()` at the `from`
-/// square) and, for drops, the side-to-move. The function does not validate
-/// that the move is legal — it produces the encoded `Move` from a syntactically
-/// well-formed USI string. Pseudo-legality / legality is the caller's concern.
+/// The move is not checked for legality: a syntactically well-formed string
+/// always yields an encoded `Move`.
 pub fn parse_usi_move(s: &str, pos: &Position) -> Result<Move, UsiMoveParseError> {
     let bytes = s.as_bytes();
     if bytes.is_empty() {
@@ -343,14 +323,9 @@ pub fn parse_usi_move(s: &str, pos: &Position) -> Result<Move, UsiMoveParseError
 
 /// Format a [`Move`] as a USI move string. Inverse of [`parse_usi_move`].
 ///
-/// Board moves render as `<from><to>[+]` (e.g. `7g7f`, `8h2b+`); drops render as
-/// `<P>*<to>` (e.g. `P*5e`). The function reads everything it needs off the
-/// packed move bits, so no `Position` is required.
-///
-/// Behaviour on non-move sentinels (`Move::none()`, `Move::null()`,
+/// Behaviour on the non-move sentinels (`Move::none()`, `Move::null()`,
 /// `Move::resign()`, `Move::win()`) is unspecified: those values do not encode
-/// a square or piece in the layout this function decodes. Callers must hand it
-/// a move produced by movegen or by `parse_usi_move`.
+/// a square or piece in the layout this decodes.
 pub fn format_usi_move(m: Move) -> String {
     if m.is_drop() {
         let kind = m.dropped_piece_kind();
@@ -385,9 +360,8 @@ fn drop_letter(kind: PieceKind) -> char {
         PieceKind::Gold => 'G',
         PieceKind::Bishop => 'B',
         PieceKind::Rook => 'R',
-        // USI has no King-drop notation; movegen never produces one (`make_drop`
-        // accepts King in principle but no legal sequence reaches that bits
-        // pattern). Treating it as a malformed input here would mask a bug.
+        // USI has no King-drop notation, and no legal sequence reaches this
+        // bits pattern even though `make_drop` accepts King.
         PieceKind::King => panic!("format_usi_move: King drops have no USI representation"),
     }
 }
@@ -464,10 +438,7 @@ impl std::error::Error for UsiMoveParseError {}
 mod tests {
     use super::*;
 
-    /// Reference fixture: each row was computed by hand from the formulas at
-    /// `source/types.h`. To re-capture, rebuild the
-    /// reference with a debug print after `make_move*` and substitute; the bit
-    /// layout at the top of this module gives the derivations.
+    /// Each row's `bits` is derived by hand from `types.h`.
     struct Fixture {
         bits: u32,
         from: Option<(u8, u8)>,
@@ -789,7 +760,6 @@ mod tests {
 
         #[test]
         fn normal_move_flips_from_and_to() {
-            // 7g7f: black pawn (6,6)->(6,5).
             let m = Move::make(
                 sq(6, 6),
                 sq(6, 5),
@@ -806,7 +776,6 @@ mod tests {
 
         #[test]
         fn promote_move_flips_and_keeps_promote_flag() {
-            // 8h2b+: bishop (7,7)->(1,1) promoting.
             let m = Move::make_promote(
                 sq(7, 7),
                 sq(1, 1),
@@ -819,19 +788,16 @@ mod tests {
                 Piece::new(PieceKind::Bishop, Color::Black),
             );
             assert_eq!(f, expected.move16());
-            // Promote flag survives (bit 15).
             assert_ne!(f & (1 << 15), 0);
         }
 
         #[test]
         fn drop_flips_to_and_keeps_piece_code() {
-            // P*5e (black) drop at (4,4).
             let m = Move::make_drop(PieceKind::Pawn, Color::Black, sq(4, 4));
             let f = flip_move16(m.move16());
+            // The dropped-piece code and drop flag are color-independent, so the
+            // flipped fragment equals a same-kind drop on the flipped square.
             let expected = Move::make_drop(PieceKind::Pawn, Color::White, flip_sq(sq(4, 4)));
-            // The dropped-piece code and drop flag live in move16's low bits and
-            // are color-independent, so the flipped fragment equals a same-kind
-            // drop on the flipped square.
             assert_eq!(f, expected.move16());
             assert_ne!(f & (1 << 14), 0);
         }
@@ -866,7 +832,6 @@ mod tests {
 
         #[test]
         fn board_move_no_promotion_matches_make() {
-            // 7g7f from startpos: Black pawn (file 6, rank 6) → (file 6, rank 5).
             let pos = parse_sfen(STARTPOS_SFEN).unwrap();
             let parsed = parse_usi_move("7g7f", &pos).unwrap();
             let expected = Move::make(
@@ -880,7 +845,6 @@ mod tests {
 
         #[test]
         fn sennichite_king_shuffle_parses() {
-            // 5h4h: Black king at internal (4, 7) → (3, 7).
             let pos = parse_sfen(SENNICHITE_SFEN).unwrap();
             let parsed = parse_usi_move("5h4h", &pos).unwrap();
             let expected = Move::make(
@@ -893,7 +857,6 @@ mod tests {
 
         #[test]
         fn promote_parses_and_round_trips() {
-            // 8h2b+: Black bishop (7,7) → (1,1), promotes to horse.
             let pos = parse_sfen(STARTPOS_SFEN).unwrap();
             let parsed = parse_usi_move("8h2b+", &pos).unwrap();
             assert!(parsed.is_promote());
@@ -908,7 +871,6 @@ mod tests {
 
         #[test]
         fn drop_uses_side_to_move_color() {
-            // P*5e on Black-to-move sennichite SFEN → black pawn drop at (4, 4).
             let pos = parse_sfen(SENNICHITE_SFEN).unwrap();
             let parsed = parse_usi_move("P*5e", &pos).unwrap();
             assert!(parsed.is_drop());
@@ -919,7 +881,6 @@ mod tests {
 
         #[test]
         fn drop_uses_white_when_white_to_move() {
-            // Same SFEN but flip side-to-move → drop encodes as white.
             let mut pos = parse_sfen(SENNICHITE_SFEN).unwrap();
             pos.set_side_to_move(Color::White);
             let parsed = parse_usi_move("P*5e", &pos).unwrap();
@@ -969,7 +930,6 @@ mod tests {
 
         #[test]
         fn empty_from_square_errors() {
-            // 5e5d on startpos: (4, 4) is empty.
             let pos = parse_sfen(STARTPOS_SFEN).unwrap();
             assert_eq!(
                 parse_usi_move("5e5d", &pos),
@@ -979,9 +939,8 @@ mod tests {
 
         #[test]
         fn promote_already_promoted_errors() {
-            // Build a position with a promoted bishop at internal (7, 7) — i.e.
-            // USI 8h. SFEN rank reads file 8 → 0, so `1+B6K` puts +B at file 7
-            // and K at file 0. Asking to promote 8h is then invalid.
+            // An SFEN rank reads file 8 → 0, so `1+B6K` puts the promoted bishop
+            // at file 7 — USI 8h.
             let sfen = "9/9/9/9/9/9/9/1+B6K/9 b - 1";
             let pos = parse_sfen(sfen).unwrap();
             assert_eq!(
@@ -1030,9 +989,6 @@ mod tests {
 
         #[test]
         fn every_drop_letter_round_trips() {
-            // ALL_DROPS_SFEN puts one of every droppable piece kind in Black's
-            // hand at a sparse two-king position, so movegen yields drops for
-            // each kind.
             let pos = parse_sfen(ALL_DROPS_SFEN).unwrap();
             let mut moves: Vec<Move> = Vec::new();
             pos.generate_legal_all(&mut moves);
@@ -1070,8 +1026,6 @@ mod tests {
 
         #[test]
         fn corner_squares_format_correctly() {
-            // (file=0,rank=0) → "1a"; (file=8,rank=8) → "9i". Verify the
-            // mapping at both extremes.
             let pos = parse_sfen(STARTPOS_SFEN).unwrap();
             let m = Move::make(
                 Square::new(0, 0).unwrap(),
@@ -1085,8 +1039,6 @@ mod tests {
                 Piece::new(PieceKind::Pawn, Color::Black),
             );
             assert_eq!(format_usi_move(m), "9i1a");
-            // Drop at every corner-style square, to verify file_to_usi/rank_to_usi
-            // at boundaries.
             let m = Move::make_drop(PieceKind::Pawn, Color::Black, Square::new(0, 8).unwrap());
             assert_eq!(format_usi_move(m), "P*1i");
             let m = Move::make_drop(PieceKind::Rook, Color::White, Square::new(8, 0).unwrap());

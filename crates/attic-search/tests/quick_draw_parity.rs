@@ -1,7 +1,7 @@
-//! QUICK_DRAW repetition-semantics parity gate (blocking, `quick-draw` only).
+//! QUICK_DRAW repetition-semantics parity tests (`quick-draw` only).
 //!
-//! The other `depth*_parity` suites gate positions where the two repetition
-//! configurations happen to agree. This one gates the position where they do
+//! The other `depth*_parity` suites pin positions where the two repetition
+//! configurations happen to agree. This one pins the position where they do
 //! **not**: bench position 3, whose search reaches a line that repeats the root
 //! board with the side to move's hand strictly poorer.
 //!
@@ -43,18 +43,18 @@ use serde::Deserialize;
 
 /// `VALUE_MATE` (`types.h`).
 const VALUE_MATE: i32 = 32000;
-/// `VALUE_TB_WIN_IN_MAX_PLY` (`types.h`): the `is_decisive` threshold.
+/// The `is_decisive` threshold (`types.h`).
 const VALUE_TB_WIN_IN_MAX_PLY: i32 = VALUE_MATE - 246;
-/// `Eval::PawnValue` (`NormalizeToPawnValue`, `usi.cpp`).
+/// `Eval::PawnValue` (`usi.cpp`).
 const PAWN_VALUE: i32 = 90;
 
-/// Both fixtures gate `bestmove` / `score` / `nodes` hard.
+/// Both fixtures pin `bestmove` / `score` / `nodes` hard.
 const FIXTURES: &[&str] = &["bench-pos3-depth3.json", "bench-pos3-depth8.json"];
 
 #[derive(Debug, Deserialize)]
 struct FixtureJson {
     sfen: String,
-    /// Optional USI moves applied after the SFEN (USI `position ... moves ...`).
+    /// Optional USI moves applied after the SFEN.
     #[serde(default)]
     moves: Vec<String>,
     depth: i32,
@@ -66,7 +66,7 @@ struct FixtureJson {
     /// the engine's own `info string engine option override` line. Absent means
     /// the engine default. The reference reads this from the local, uncommitted
     /// `eval/eval_options.txt`, so it is not implied
-    /// by the submodule pin and has to travel with the fixture.
+    /// by the reference build and has to travel with the fixture.
     #[serde(default)]
     fv_scale: Option<i32>,
     bestmove: String,
@@ -99,8 +99,7 @@ fn load_fixture(name: &str) -> FixtureJson {
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse fixture {name}: {e}"))
 }
 
-/// Parse the SFEN and apply the optional `moves` prefix, mirroring USI
-/// `position sfen <SFEN> moves <m1> <m2> ...`.
+/// Parse the SFEN and apply the optional `moves` prefix.
 fn setup(fixture: &FixtureJson) -> Position {
     let mut pos = parse_sfen(&fixture.sfen).expect("valid fixture SFEN");
     for usi in &fixture.moves {
@@ -124,9 +123,8 @@ fn is_decisive(v: i32) -> bool {
     v.abs() >= VALUE_TB_WIN_IN_MAX_PLY
 }
 
-/// Format a search value the way the reference USI layer does (`score.cpp` /
-/// `usi.cpp` `format_score`): a mate distance for decisive scores, else
-/// `100 * v / PawnValue` centipawns (C++ truncating division).
+/// Format a search value as the reference USI layer does (`format_score`,
+/// `usi.cpp`): a mate distance for a decisive score, else centipawns.
 fn format_score(v: i32) -> ScoreJson {
     if is_decisive(v) {
         let distance = VALUE_MATE - v.abs();
@@ -181,7 +179,7 @@ fn assert_fixture(name: &str, net: &attic_eval::NnueNetwork) {
         outcome.nodes, json.nodes
     );
 
-    // pv is desirable but not gated; surface a divergence as a notice only.
+    // The PV is desirable but not gated.
     let got_pv: Vec<String> = outcome.pv.iter().map(|&m| format_usi_move(m)).collect();
     if got_pv != json.pv {
         eprintln!(
@@ -191,7 +189,7 @@ fn assert_fixture(name: &str, net: &attic_eval::NnueNetwork) {
     }
 }
 
-/// Both fixtures gate `bestmove` / `score` / `nodes` hard, each an inseparable
+/// Both fixtures pin `bestmove` / `score` / `nodes` hard, each an inseparable
 /// triple. Skipped with a notice when `nn.bin` is absent.
 #[test]
 #[cfg_attr(miri, ignore)]
@@ -199,7 +197,7 @@ fn quick_draw_search_matches_tournament_reference_fixtures() {
     let path = nn_bin_path();
     if !path.exists() {
         eprintln!(
-            "skipping quick_draw_search_matches_tournament_reference_fixtures: {} is not present (staged only on the dev VM)",
+            "skipping quick_draw_search_matches_tournament_reference_fixtures: {} is not present (obtained out-of-band)",
             path.display()
         );
         return;

@@ -63,9 +63,8 @@ impl<'w, W: Write + ?Sized> Formatter<'w, W> {
         self.line(format_args!("info string {msg}"))
     }
 
-    /// Emit a generic `info <body>` line. The caller composes everything after
-    /// the `info ` keyword (e.g. `depth 1 score cp 12 nodes 30 pv 7g7f`); the
-    /// search-progress reports the driver relays go through here.
+    /// Emit a generic `info <body>` line; the caller composes everything after
+    /// the `info ` keyword.
     pub fn info(&mut self, body: &str) -> io::Result<()> {
         self.line(format_args!("info {body}"))
     }
@@ -74,10 +73,9 @@ impl<'w, W: Write + ?Sized> Formatter<'w, W> {
         self.line(format_args!("bestmove {move_str}"))
     }
 
-    /// Emit a verbatim line with no USI keyword prefix. Used only for the
+    /// Emit a verbatim line with no USI keyword prefix — only the
     /// option-override diagnostics the reference prints to raw `std::cout`
-    /// (`Error : ...`, `usioption.cpp`); the port routes them through
-    /// its single output sink rather than a separate stream.
+    /// (`usioption.cpp`).
     pub fn raw_line(&mut self, text: &str) -> io::Result<()> {
         self.line(format_args!("{text}"))
     }

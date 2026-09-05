@@ -3,7 +3,7 @@
 Captured fixed-**depth-5** alpha-beta search ground truth for
 `search(sfen, depth)`. These are the same six positions as
 `tests/fixtures/search/` (depth 3), re-captured at `go depth 5` so the parity
-gate exercises the deeper regimes that only activate at depth ≥ 5: the ProbCut
+test exercises the deeper regimes that only activate at depth ≥ 5: the ProbCut
 reduced search (`prob_cut_depth == 1`), the deeper null-move / futility / LMR
 thresholds, and — via the cumulative node count — every depth-1..4 iteration
 transitively.
@@ -52,7 +52,7 @@ is resized to 1024 MiB and cleared per fixture). FV_SCALE is the engine default
 
 ## Determinism
 
-Running `cargo xtask capture-search` twice against the same submodule pin and the
+Running `cargo xtask capture-search` twice against the same reference build and the
 same `nn.bin` produces a byte-identical file — re-capturing on the reference
 build leaves `git diff` empty.
 

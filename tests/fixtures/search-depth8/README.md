@@ -3,7 +3,7 @@
 Captured fixed-**depth-8** alpha-beta search ground truth for
 `search(sfen, depth)`. These are the same six positions as
 `tests/fixtures/search/` (depth 3) and `tests/fixtures/search-depth5/` (depth 5),
-re-captured at `go depth 8` so the parity gate exercises the regimes that only
+re-captured at `go depth 8` so the parity test exercises the regimes that only
 activate at depth ≥ 6 — chiefly the **singular-extension family** (its guard
 `!rootNode && depth >= 6 + ss->ttPv` firing directly at interior nodes: the
 singular search, multi-cut pruning, double/triple-margin extensions, and
@@ -22,7 +22,7 @@ at depth 8 with deterministic parameters. `tests/depth8_parity.rs` asserts
 > aliased the hash-indexed
 > pawn / correction histories differently from the reference — fixed by
 > reproducing the reference Zobrist bit-for-bit
-> (`crates/attic-state/src/key.rs`), reproducible from depth 2 and gated by
+> (`crates/attic-state/src/key.rs`), reproducible from depth 2 and pinned by
 > `tests/depth2_parity.rs`; and (2) the qsearch `do_move` left the continuation /
 > continuation-correction planes stale (the reference sets them for every move),
 > which shifted a corrected eval by ~1 from depth 6 up — fixed in `qsearch.rs`.
@@ -69,7 +69,7 @@ is resized to 1024 MiB and cleared per fixture). FV_SCALE is the engine default
 
 ## Determinism
 
-Running `cargo xtask capture-search` twice against the same submodule pin and the
+Running `cargo xtask capture-search` twice against the same reference build and the
 same `nn.bin` produces a byte-identical file — re-capturing on the reference
 build leaves `git diff` empty.
 

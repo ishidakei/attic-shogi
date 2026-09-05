@@ -1,12 +1,8 @@
-//! Scalar feature-transformer accumulate/update kernels.
+//! Scalar feature-transformer accumulate/update kernels — the always-available
+//! baseline the AVX-512 ones in [`crate::simd::avx512`] must match bit for bit.
 //!
-//! Ported verbatim (modulo module paths) from the read-only Rust NNUE
-//! reference implementation's `scalar.rs`. These are the always-available
-//! baseline: the AVX-512 kernels in [`crate::simd::avx512`] must match them
-//! bit-for-bit (see that module's parity tests).
-//!
-//! `wrapping_add`/`wrapping_sub` match upstream NNUE semantics: `i16` overflow
-//! is allowed here because the downstream clipped output transform saturates.
+//! The wrapping arithmetic matches upstream NNUE semantics: `i16` overflow is
+//! allowed because the downstream clipped output transform saturates.
 
 use crate::features::FeatureIndex;
 use crate::types::HIDDEN_SIZE;

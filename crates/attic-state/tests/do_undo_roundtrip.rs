@@ -1,21 +1,8 @@
-//! Property gate: `do_move` / `undo_move` is an exact round trip.
+//! Property test: `do_move` / `undo_move` is an exact round trip, over every
+//! position on a random legal line from `startpos`.
 //!
-//! Over random reachable positions — every position on a random legal line from
-//! `startpos`, see [`common::walk_line`] — this checks two things:
-//!
-//! 1. **Per-move round trip** — for *every* legal move at *every* position on
-//!    the line, `do_move` followed by `undo_move` restores the position
-//!    exactly: board, hands, side to move, ply, move history, and the whole
-//!    incrementally maintained Zobrist family (`key` / `board_key` /
-//!    `hand_key` / `pawn_key` / `minor_piece_key` / `non_pawn_key`), plus the
-//!    derived `in_check`, `plies_from_null` and repetition-occurrence counters.
-//! 2. **Whole-line unwind** — undoing the entire generated line, move by move,
-//!    lands back on a position equal to `startpos` with the start position's
-//!    keys.
-//!
-//! The keys deserve their own assertions because [`Position`]'s `PartialEq` is
-//! deliberately blind to them (they are a recomputable cache of
-//! `(board, hands, side_to_move)`), so a broken incremental update would slip
+//! The Zobrist keys get their own assertions because [`Position`]'s `PartialEq`
+//! is deliberately blind to them, so a broken incremental update would slip
 //! straight through a bare position comparison.
 
 mod common;
@@ -58,8 +45,8 @@ fn check_do_undo(pos: &mut Position) -> Result<(), TestCaseError> {
         let usi = format_usi_move(mv);
         let undo = pos.do_move(mv);
 
-        // Guard against a vacuous round trip: a real move always changes the
-        // position, so the `undo` below has something to restore.
+        // A real move always changes the position, so the round trip below is
+        // never vacuous.
         prop_assert!(
             pos.side_to_move() != before.side_to_move(),
             "{before_sfen}: `{usi}` did not flip the side to move",
@@ -71,9 +58,8 @@ fn check_do_undo(pos: &mut Position) -> Result<(), TestCaseError> {
 
         pos.undo_move(mv, undo);
 
-        // Primary state. Compared component by component first so a failure
-        // names what diverged, then as a whole (which additionally covers the
-        // move history).
+        // Compared component by component first, so that a failure names what
+        // diverged, then as a whole, which also covers the move history.
         prop_assert!(
             pos.board() == before.board(),
             "{before_sfen}: board diverged after do/undo of `{usi}` (now {})",
@@ -101,7 +87,6 @@ fn check_do_undo(pos: &mut Position) -> Result<(), TestCaseError> {
             format_sfen(pos),
         );
 
-        // Derived state the position comparison deliberately does not look at.
         prop_assert!(
             keys(pos) == before_keys,
             "{before_sfen}: keys diverged after do/undo of `{usi}`: {:?} vs {:?}",
@@ -131,8 +116,8 @@ proptest! {
         ..ProptestConfig::default()
     })]
 
-    /// Every legal move at every position on a random line survives a do/undo
-    /// round trip with the position bit-identical afterwards.
+    /// Every legal move at every position on a random line survives the round
+    /// trip bit-identically.
     #[cfg_attr(miri, ignore)]
     #[test]
     fn do_then_undo_restores_the_position(line in arb_line()) {

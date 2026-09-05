@@ -1,18 +1,9 @@
-//! AVX-512 (F + BW + VNNI) output-transform and layer kernels.
+//! AVX-512 (F + BW + VNNI) output-transform and layer kernels, each
+//! bit-identical to its [`crate::simd::scalar_post_ft`] counterpart.
 //!
-//! Ported from the read-only Rust NNUE reference implementation's
-//! `avx512_post_ft.rs`. Every kernel is guaranteed
-//! bit-identical to its [`crate::simd::scalar_post_ft`] counterpart; the
-//! reference's whole-`Accumulator` `transformer_ewm` is replaced by the
-//! per-perspective [`ewm_one_perspective`] the caller invokes twice (mirroring
-//! the scalar factoring).
-//!
-//! Like [`crate::simd::avx512`], this module compiles on every `x86_64` target:
-//! each entry point is an `unsafe fn` gated by `#[target_feature(enable = ...)]`,
-//! and whether it is *called* is decided at compile time from the features the
-//! build enables — by [`crate::simd`] for the element-wise kernels and by
-//! [`crate::network`] for [`fused_fc_chain`]. `avx512vnni` is required only for
-//! the `dpbusd`-based affine/[`fused_fc_chain`] path; the element-wise kernels
+//! Like [`crate::simd::avx512`], this module compiles on every `x86_64` target
+//! and only its call sites are gated. `avx512vnni` is required for the
+//! `dpbusd`-based affine and [`fused_fc_chain`] path; the element-wise kernels
 //! need only F + BW.
 
 use std::arch::x86_64::{
@@ -36,12 +27,12 @@ const I32_LANES_PER_M512: usize = 16;
 const I16_LANES_PER_M512: usize = 32;
 const EWM_HALF: usize = HIDDEN_SIZE / 2;
 
-// Mirror scalar_post_ft constants as u32 (AVX-512 shift intrinsics take IMM8: u32).
+// The scalar constants as `u32`: the AVX-512 shift intrinsics take an IMM8.
 const WEIGHT_SCALE_BITS: u32 = 6;
 const SQR_SHIFT: u32 = 19;
 const EWM_CLAMP_I16: i16 = 127 * 2;
 
-// EWM mulhi trick: mulhi(sum0 << 7, sum1) == (sum0 * sum1) >> 9 on the i16 domain.
+// On the `i16` domain, `mulhi(sum0 << 7, sum1) == (sum0 * sum1) >> 9`.
 const EWM_PRESHIFT: u32 = 7;
 
 /// Pairwise element-wise multiply for one perspective (see the scalar
@@ -58,8 +49,8 @@ pub unsafe fn ewm_one_perspective(half: &[i16], out: &mut [u8]) {
     unsafe { ewm_one_perspective_ptr(half.as_ptr(), out.as_mut_ptr()) };
 }
 
-/// Clipped ReLU with a scalar fallback for lane counts the kernel cannot tile
-/// (`< 16` or not a multiple of 16).
+/// Clipped ReLU, falling back to scalar for a lane count the kernel cannot
+/// tile.
 ///
 /// # Safety
 /// The running CPU must support `avx512f` and `avx512bw`. `input.len()` must
@@ -71,7 +62,8 @@ pub unsafe fn clipped_relu(input: &[i32], output: &mut [u8]) {
         scalar_post_ft::clipped_relu(input, output);
         return;
     }
-    // SAFETY: target_feature gate ensures F+BW; length is a nonzero multiple of 16.
+    // SAFETY: the target_feature gate ensures F+BW, and the length is a nonzero
+    // multiple of 16.
     unsafe { clipped_relu_kernel(input, output) }
 }
 
@@ -91,8 +83,8 @@ pub unsafe fn sqr_clipped_relu(input: &[i32], output: &mut [u8]) {
     unsafe { sqr_clipped_relu_kernel(input, output) }
 }
 
-/// Full `fc_0 → ReLU/SqrReLU → fc_1 → ReLU → fc_2 → shortcut` chain in one
-/// `target_feature` body. Bit-identical to the per-layer scalar flow.
+/// The whole `fc_0 → ReLU/SqrReLU → fc_1 → ReLU → fc_2 → shortcut` chain in one
+/// `target_feature` body.
 ///
 /// # Safety
 /// The running CPU must support `avx512f`, `avx512bw`, and `avx512vnni`. The
@@ -125,7 +117,8 @@ pub unsafe fn fused_fc_chain(
     );
 
     let mut fc_0_out = [0i32; FC_0_OUTPUT_DIMS];
-    // SAFETY: target_feature gate ensures F+BW+VNNI; FC_0_INPUT_DIMS is a multiple of 64.
+    // SAFETY: the target_feature gate ensures F+BW+VNNI, and FC_0_INPUT_DIMS is
+    // a multiple of 64.
     unsafe {
         affine_avx512_vnni(
             &mut fc_0_out,
@@ -137,13 +130,14 @@ pub unsafe fn fused_fc_chain(
         );
     }
 
-    // fc_0_out[HIDDEN1_DIMS] is the shortcut; only the first HIDDEN1_DIMS lanes feed activations (scalar).
+    // Only the first HIDDEN1_DIMS lanes feed activations; the next is the
+    // shortcut.
     let mut ac_0 = [0u8; HIDDEN1_DIMS];
     let mut ac_sqr_0 = [0u8; HIDDEN1_DIMS];
     scalar_post_ft::clipped_relu(&fc_0_out[..HIDDEN1_DIMS], &mut ac_0);
     scalar_post_ft::sqr_clipped_relu(&fc_0_out[..HIDDEN1_DIMS], &mut ac_sqr_0);
 
-    // fc_1_in = [ac_sqr_0(15) | ac_0(15) | 0_pad(2)]; the pad keeps VNNI padding lanes safe.
+    // The two-lane pad keeps the VNNI padding lanes safe.
     let mut fc_1_in = [0u8; FC_1_PADDED_INPUT_DIMS];
     fc_1_in[..HIDDEN1_DIMS].copy_from_slice(&ac_sqr_0);
     fc_1_in[HIDDEN1_DIMS..2 * HIDDEN1_DIMS].copy_from_slice(&ac_0);
@@ -153,18 +147,17 @@ pub unsafe fn fused_fc_chain(
     unsafe { affine_padded32_avx512_vnni(&mut fc_1_out, fc_1_biases, fc_1_weights, &fc_1_in) };
 
     let mut ac_1 = [0u8; FC_1_OUTPUT_DIMS];
-    // SAFETY: target_feature gate ensures F+BW; FC_1_OUTPUT_DIMS == 32 is a multiple of 16.
+    // SAFETY: the target_feature gate ensures F+BW, and FC_1_OUTPUT_DIMS is a
+    // multiple of 16.
     unsafe { clipped_relu_kernel(&fc_1_out, &mut ac_1) };
 
     let mut fc_2_out = [0i32; FC_2_OUTPUT_DIMS];
-    // SAFETY: target_feature gate ensures F+BW+VNNI; ac_1.len() == 32.
+    // SAFETY: the target_feature gate ensures F+BW+VNNI, and `ac_1.len() == 32`.
     unsafe { affine_padded32_avx512_vnni(&mut fc_2_out, fc_2_biases, fc_2_weights, &ac_1) };
 
-    // Shortcut: matches the per-layer flow's wrapping_add byte-for-byte.
     fc_2_out[0].wrapping_add(fc_0_out[HIDDEN1_DIMS])
 }
 
-// Reads 2*EWM_HALF i16 from half, writes EWM_HALF u8 to out. See EWM_PRESHIFT for the mulhi trick.
 #[target_feature(enable = "avx512f,avx512bw")]
 unsafe fn ewm_one_perspective_ptr(half: *const i16, out: *mut u8) {
     let zero = _mm512_setzero_si512();
@@ -172,7 +165,8 @@ unsafe fn ewm_one_perspective_ptr(half: *const i16, out: *mut u8) {
     let chunks = EWM_HALF / I16_LANES_PER_M512;
     for chunk in 0..chunks {
         let off = chunk * I16_LANES_PER_M512;
-        // SAFETY: chunk*32+32 <= EWM_HALF, so both 512-bit unaligned loads stay in range.
+        // SAFETY: `chunk*32+32 <= EWM_HALF`, so both 512-bit unaligned loads
+        // stay in range.
         let (in0, in1) = unsafe {
             (
                 _mm512_loadu_si512(half.add(off).cast::<__m512i>()),
@@ -184,12 +178,13 @@ unsafe fn ewm_one_perspective_ptr(half: *const i16, out: *mut u8) {
         let shifted = _mm512_slli_epi16::<EWM_PRESHIFT>(sum0);
         let product = _mm512_mulhi_epi16(shifted, sum1);
         let bytes = _mm512_cvtepi16_epi8(product);
-        // SAFETY: chunk*32+32 <= EWM_HALF keeps the 32-byte store in range.
+        // SAFETY: `chunk*32+32 <= EWM_HALF` keeps the 32-byte store in range.
         unsafe { _mm256_storeu_si256(out.add(off).cast::<__m256i>(), bytes) };
     }
 }
 
-// in_dims % 64 == 0 only; each partial sum stays < i32::MAX so the reduce wrapping_add is defensive.
+// `in_dims % 64 == 0` only. Each partial sum stays below `i32::MAX`, so the
+// reduce's wrapping add is defensive.
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
 unsafe fn affine_avx512_vnni(
     output: &mut [i32],
@@ -206,7 +201,8 @@ unsafe fn affine_avx512_vnni(
         let mut acc = _mm512_setzero_si512();
         for k in 0..chunks {
             let offset = k * VNNI_LANES;
-            // SAFETY: chunks*VNNI_LANES == in_dims; both loads stay within input and weight row.
+            // SAFETY: `chunks*VNNI_LANES == in_dims`, so both loads stay within
+            // the input and the weight row.
             let (a, b) = unsafe {
                 (
                     _mm512_loadu_si512(input_ptr.add(offset).cast::<__m512i>()),
@@ -219,7 +215,8 @@ unsafe fn affine_avx512_vnni(
     }
 }
 
-// input.len() % 16 == 0 only; cvtepi32_epi8 is loss-free because lanes are clamped to [0,127] first.
+// `input.len() % 16 == 0` only. `cvtepi32_epi8` is loss-free because the lanes
+// are clamped to `[0,127]` first.
 #[target_feature(enable = "avx512f,avx512bw")]
 unsafe fn clipped_relu_kernel(input: &[i32], output: &mut [u8]) {
     let chunks = input.len() / I32_LANES_PER_M512;
@@ -229,18 +226,20 @@ unsafe fn clipped_relu_kernel(input: &[i32], output: &mut [u8]) {
     let cap = _mm512_set1_epi32(127);
     for k in 0..chunks {
         let off = k * I32_LANES_PER_M512;
-        // SAFETY: chunks*16 == input.len() == output.len(); load + store stay in range.
+        // SAFETY: `chunks*16 == input.len() == output.len()`, so the load and
+        // store stay in range.
         let x = unsafe { _mm512_loadu_si512(in_ptr.add(off).cast::<__m512i>()) };
         let shifted = _mm512_srai_epi32::<WEIGHT_SCALE_BITS>(x);
         let clamped_lo = _mm512_max_epi32(shifted, zero);
         let clamped = _mm512_min_epi32(clamped_lo, cap);
         let bytes = _mm512_cvtepi32_epi8(clamped);
-        // SAFETY: see the load — same length invariant.
+        // SAFETY: as the load, on the same length invariant.
         unsafe { _mm_storeu_si128(out_ptr.add(off).cast::<__m128i>(), bytes) };
     }
 }
 
-// input.len() % 16 == 0 only; i64 squaring stays bit-identical to scalar across i32 incl. i32::MIN.
+// `input.len() % 16 == 0` only. The `i64` squaring stays bit-identical to the
+// scalar form across every `i32`, `i32::MIN` included.
 #[target_feature(enable = "avx512f,avx512bw")]
 unsafe fn sqr_clipped_relu_kernel(input: &[i32], output: &mut [u8]) {
     let chunks = input.len() / I32_LANES_PER_M512;
@@ -249,7 +248,8 @@ unsafe fn sqr_clipped_relu_kernel(input: &[i32], output: &mut [u8]) {
     let cap = _mm512_set1_epi64(127);
     for k in 0..chunks {
         let off = k * I32_LANES_PER_M512;
-        // SAFETY: chunks*16 == input.len() == output.len(); load + store in range.
+        // SAFETY: `chunks*16 == input.len() == output.len()`, so the load and
+        // store stay in range.
         let x = unsafe { _mm512_loadu_si512(in_ptr.add(off).cast::<__m512i>()) };
         let lo_i32: __m256i = _mm512_castsi512_si256(x);
         let hi_i32: __m256i = _mm512_extracti64x4_epi64::<1>(x);
@@ -269,7 +269,8 @@ unsafe fn sqr_clipped_relu_kernel(input: &[i32], output: &mut [u8]) {
     }
 }
 
-// VNNI affine for fc_1/fc_2 (in_dims=32); zextsi256_si512 zero-extends so one dpbusd suffices.
+// The VNNI affine for fc_1/fc_2, whose `in_dims` is 32: `zextsi256_si512`
+// zero-extends, so one `dpbusd` suffices.
 #[target_feature(enable = "avx512f,avx512bw,avx512vnni")]
 unsafe fn affine_padded32_avx512_vnni(
     output: &mut [i32],
@@ -280,13 +281,13 @@ unsafe fn affine_padded32_avx512_vnni(
     debug_assert_eq!(output.len(), biases.len());
     debug_assert_eq!(weights.len(), output.len() * 32);
 
-    // SAFETY: input is &[u8; 32], so the 256-bit load reads exactly 32 bytes.
+    // SAFETY: `input` is a `&[u8; 32]`, so the 256-bit load reads exactly it.
     let in_full =
         unsafe { _mm512_zextsi256_si512(_mm256_loadu_si256(input.as_ptr().cast::<__m256i>())) };
 
     for (j, out_slot) in output.iter_mut().enumerate() {
         let row_ptr = weights[j * 32..j * 32 + 32].as_ptr();
-        // SAFETY: weight row spans 32 bytes; same zero-extension argument.
+        // SAFETY: the weight row spans 32 bytes, on the same argument.
         let row_full =
             unsafe { _mm512_zextsi256_si512(_mm256_loadu_si256(row_ptr.cast::<__m256i>())) };
         let acc = _mm512_dpbusd_epi32(_mm512_setzero_si512(), in_full, row_full);
@@ -303,9 +304,8 @@ mod tests {
         NnueNetwork, NnueNetworkBuilder,
     };
 
-    /// A single-stack network (standard FC dims, tiny FT) whose lone stack the
-    /// caller fills through `fill`; returned by value so its arena outlives the
-    /// borrowed `&net.stacks[0]`.
+    /// A single-stack network whose lone stack the caller fills through `fill`.
+    /// Returned by value, so that its arena outlives the borrowed stack.
     fn stack_net(fill: impl FnOnce(&mut NnueNetworkBuilder)) -> NnueNetwork {
         let dims = NetDims {
             layer_stacks: 1,
@@ -394,7 +394,6 @@ mod tests {
     fn affine_matches_scalar_for_fc_0_shape() {
         require_vnni!();
         let (in_dims, padded_in, out_dims, seed) = (1536usize, 1536usize, 16usize, 41u32);
-        // 64-byte aligned so the unaligned 512-bit loads never split a line.
         let weights: Aligned64<i8> = seeded_weights(out_dims * padded_in, seed)
             .iter()
             .copied()
@@ -419,12 +418,13 @@ mod tests {
             .collect();
         let biases = seeded_biases(out_dims, seed);
 
-        // Real inputs in [0, in_dims); padding lanes are zero (as in the fused chain).
+        // The padding lanes are zero, as in the fused chain.
         let mut input = [0u8; 32];
         for (i, slot) in input.iter_mut().enumerate().take(in_dims) {
             *slot = ((i as u32).wrapping_mul(11).wrapping_add(seed) % 256) as u8;
         }
-        // Zero the padded weight columns so the scalar (in_dims) and SIMD (all 32) agree.
+        // Zeroing the padded weight columns is what makes the scalar form, which
+        // reads `in_dims`, agree with the SIMD one, which reads all 32.
         let mut weights_padded = weights;
         for j in 0..out_dims {
             for c in in_dims..32 {
@@ -501,7 +501,8 @@ mod tests {
         clipped_relu_parity(&inputs);
     }
 
-    // i32::MIN / MAX witness the i64-squaring path: mullo_epi32 would wrap.
+    // `i32::MIN` and `MAX` witness the `i64`-squaring path, where
+    // `mullo_epi32` would wrap.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn sqr_clipped_relu_matches_scalar_on_boundary_values() {
@@ -684,7 +685,7 @@ mod tests {
     #[test]
     fn fused_fc_chain_preserves_shortcut() {
         require_vnni!();
-        // Only fc_0_biases[HIDDEN1_DIMS]=K is nonzero, so the shortcut alone must yield exactly K.
+        // Only the shortcut bias is nonzero, so it alone must reach the output.
         const SHORTCUT_K: i32 = 12_345;
         let net = stack_net(|b| {
             b.fc_0_biases_mut(0)[HIDDEN1_DIMS] = SHORTCUT_K;

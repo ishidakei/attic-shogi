@@ -1,7 +1,6 @@
-//! Cross-crate smoke test: spawn the built `attic` binary, drive a multi-
-//! cycle USI session through stdin, capture stdout, assert each `bestmove`
-//! line is well-formed and the binary exits 0. Confirms the `main` ↔
-//! `UsiDriver` wiring carries the new position/go path end-to-end.
+//! Smoke test: spawn the built `attic` binary, drive a multi-cycle USI session
+//! through stdin, and assert each `bestmove` line is well-formed and the binary
+//! exits 0.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -65,10 +64,8 @@ fn multi_cycle_play_via_spawned_binary() {
 
     let stdout = String::from_utf8(out.stdout).expect("utf-8 stdout");
     assert!(stdout.contains("usiok\n"), "missing usiok in:\n{stdout}");
-    // No EvalDir set → default `eval/nn.bin` is absent in the spawned binary's
-    // CWD → load fails, no readyok, and each `go` resigns. This confirms the
-    // main ↔ UsiDriver wiring survives an unloaded network end-to-end; the
-    // positive multi-cycle play path lives in engine/tests/real_network_selfplay.
+    // With no `EvalDir` set the default `eval/nn.bin` is absent in the spawned
+    // binary's CWD, so the load fails and each `go` resigns.
     assert!(
         stdout.contains("info string eval load failed:"),
         "missing eval-load-failure notice in:\n{stdout}"

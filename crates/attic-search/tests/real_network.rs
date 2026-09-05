@@ -1,10 +1,8 @@
-//! Integration test: greedy 1-ply search with the real SFNN-1536 network.
+//! Greedy 1-ply search with the real SFNN-1536 network.
 //!
-//! The network file is staged locally at
-//! `eval/nn.bin` and is never committed. When it is
-//! absent (a checkout without it staged) the test prints a notice and passes,
-//! so the default `cargo test` run stays green everywhere — the same pattern
-//! `attic-eval`'s integration tests use.
+//! The network file is staged locally and never committed, so when it is absent
+//! the test prints a notice and passes and the default `cargo test` run stays
+//! green everywhere.
 
 use std::path::PathBuf;
 
@@ -48,7 +46,7 @@ fn startpos_choice_is_legal_deterministic_and_matches_full_refresh() {
     let path = nn_bin_path();
     if !path.exists() {
         eprintln!(
-            "skipping startpos_choice_is_legal_deterministic_and_matches_full_refresh: {} is not present (staged only on the dev VM)",
+            "skipping startpos_choice_is_legal_deterministic_and_matches_full_refresh: {} is not present (obtained out-of-band)",
             path.display()
         );
         return;
@@ -60,19 +58,16 @@ fn startpos_choice_is_legal_deterministic_and_matches_full_refresh() {
     let a = search.go(&p, &SearchLimits::default(), &mut NullInfoSink);
     let chosen = a.best_move.expect("startpos has legal moves");
 
-    // Legal.
     assert!(
         legal_moves(&p).contains(&chosen),
         "chosen move is not a startpos legal move"
     );
 
-    // Deterministic across two runs.
     let b = search.go(&p, &SearchLimits::default(), &mut NullInfoSink);
     assert_eq!(a.best_move, b.best_move);
     assert_eq!(a.score_cp, b.score_cp);
     assert_eq!(a.nodes, b.nodes);
 
-    // Equal to the independent full-refresh argmax.
     assert_eq!(
         a.best_move,
         full_refresh_argmax(search.network(), &p),

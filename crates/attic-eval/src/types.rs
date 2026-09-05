@@ -1,16 +1,11 @@
 //! Dimensions, shared network types, and the loader error type for SFNN-1536.
 //!
-//! Ported from the Rust NNUE reference implementation's `types.rs`. The
-//! evaluation-only types (`Accumulator`, the feature-index list) are deferred
-//! to the children that introduce feature extraction and the accumulator; this
-//! child keeps only what the network-file loader needs.
-//!
 //! ## Layer naming
 //!
 //! Prose in this crate follows the upstream naming: the **FT layer** is the
-//! feature transformer (input features → accumulator), and **L1 / L2 / L3** are
-//! the dense layers that follow it. The FT layer is never called "L1". Mapping
-//! to the identifiers declared below: L1 = `fc_0`, L2 = `fc_1`, L3 = `fc_2`.
+//! feature transformer, and **L1 / L2 / L3** are the dense layers after it. The
+//! FT layer is never called "L1". In the identifiers below, L1 = `fc_0`,
+//! L2 = `fc_1`, L3 = `fc_2`.
 
 use std::fmt;
 
@@ -20,7 +15,8 @@ pub const HIDDEN_SIZE: usize = 1_536;
 pub const NUM_FEATURES: usize = 73_305;
 pub const LAYER_STACKS: usize = 9;
 
-// fc_0 has 16 outputs; the 16th feeds only the post-fc_2 shortcut, the first 15 feed both activations.
+// fc_0 has 16 outputs: the 16th feeds only the post-fc_2 shortcut, while the
+// first 15 feed both activations.
 pub const HIDDEN1_DIMS: usize = 15;
 pub const HIDDEN2_DIMS: usize = 32;
 
@@ -44,8 +40,7 @@ pub struct NetHeader {
 }
 
 /// The dimensions of one SFNN network, driving both the arena layout and the
-/// loader's read sizes. [`STANDARD`](NetDims::STANDARD) is the shipped
-/// SFNN-1536 shape; the loader's tests use smaller synthetic dims.
+/// loader's read sizes.
 #[derive(Clone, Copy, Debug)]
 pub struct NetDims {
     pub hidden_size: usize,
@@ -85,9 +80,8 @@ struct StackSections {
     fc_2_weights: Section<i8>,
 }
 
-/// The full arena layout of one network: the offsets/lengths of every parameter
-/// sub-array plus the total byte size. Recorded once so a NUMA replica can be
-/// rebuilt (same sections, fresh arena) without re-deriving anything.
+/// The full arena layout of one network. Recorded once, so that a NUMA replica
+/// can be rebuilt from the same sections without re-deriving anything.
 #[derive(Clone, Debug)]
 struct NetLayout {
     ft_biases: Section<i16>,
@@ -124,7 +118,7 @@ impl NetLayout {
 }
 
 /// One layer stack's parameter arrays, each a 64-byte-aligned view into the
-/// network's single arena (no per-array allocation).
+/// network's single arena.
 #[derive(Debug)]
 pub struct NetworkStack {
     pub fc_0_biases: ArenaSlice<i32>,
@@ -152,19 +146,14 @@ impl NetworkStack {
 /// A loaded SFNN network.
 ///
 /// Every parameter array — `ft_biases`, the ~215 MiB `ft_weights`, and all nine
-/// stacks' FC weights/biases — lives in **one** large-page allocation ([`arena`],
-/// mirroring the reference's single `make_unique_large_page<NnueNetworks>`,
-/// `evaluate_nnue.cpp`). The public parameter fields are 64-byte-aligned
-/// [`ArenaSlice`] views into that arena (a superset of the 64-byte alignment the
-/// AVX-512 kernels require); reads coerce to `&[T]` just as a per-array
-/// container would.
-///
-/// [`arena`]: attic_storage::LargePageArena
+/// stacks' FC weights and biases — lives in **one** large-page allocation, as
+/// the reference's `make_unique_large_page<NnueNetworks>` does
+/// (`evaluate_nnue.cpp`). The public parameter fields are 64-byte-aligned
+/// views into it, meeting what the AVX-512 kernels require.
 #[derive(Debug)]
 pub struct NnueNetwork {
     pub header: NetHeader,
-    /// The single backing allocation for every parameter array. Kept so a NUMA
-    /// replica can copy the whole buffer in one shot; never mutated after build.
+    /// The single backing allocation, never mutated after build.
     arena: LargePageArena,
     /// The section table, replayed to rebuild views for a replica.
     layout: NetLayout,
@@ -175,9 +164,8 @@ pub struct NnueNetwork {
 }
 
 impl NnueNetwork {
-    /// Assemble a network from a filled `arena` and its `layout` — the shared
-    /// tail of the loader and [`replicate`](Self::replicate). Builds every view;
-    /// no data is copied.
+    /// Assemble a network from a filled `arena` and its `layout`, copying no
+    /// data.
     fn from_arena(
         header: NetHeader,
         arena: LargePageArena,
@@ -202,38 +190,29 @@ impl NnueNetwork {
         }
     }
 
-    /// A deep copy of the whole network with a freshly allocated arena.
+    /// A byte-identical deep copy of the whole network in a freshly allocated
+    /// arena, so the two instances evaluate any position to the same score.
     ///
-    /// The single backing buffer is copied byte-for-byte into a distinct
-    /// allocation ([`LargePageArena::clone_backing`]) and the views rebuilt from
-    /// the recorded layout — one allocation per replica, byte-identical and
-    /// allocation-distinct. Because the copy runs on the calling thread, doing it
-    /// inside a NUMA-node-bound thread
-    /// ([`NumaConfig::execute_on_numa_node`](attic_numa::NumaConfig::execute_on_numa_node))
-    /// first-touches every page on that node — the port's in-process analog of
-    /// the reference `LazyNumaReplicatedSystemWide<Networks>` replica
-    /// (`numa.h`), minus the POSIX shared-memory layer (a declared scope
-    /// reduction for this engine's single-process deployment).
-    ///
-    /// The copy is byte-identical to `self`, so the two instances evaluate any
-    /// position to the same score.
+    /// The copy runs on the calling thread, so performing it inside a
+    /// NUMA-node-bound one first-touches every page on that node — the
+    /// in-process analogue of the reference's
+    /// `LazyNumaReplicatedSystemWide<Networks>` (`numa.h`), minus its
+    /// POSIX shared-memory layer.
     pub fn replicate(&self) -> Self {
         let arena = self.arena.clone_backing();
         Self::from_arena(self.header.clone(), arena, self.layout.clone(), self.sha256)
     }
 
-    /// The number of large-page allocations backing this network (always 1) and
-    /// the reserved byte size (the request rounded up to a whole large page) —
-    /// the figures the PR's allocation-disclosure table reports.
+    /// The number of large-page allocations backing this network, always 1, and
+    /// the reserved byte size.
     pub fn allocation_disclosure(&self) -> (usize, usize) {
         (1, self.arena.reserved_bytes())
     }
 }
 
-/// In-place builder for a [`NnueNetwork`]: allocates the single arena up front,
-/// hands out mutable views of each parameter array to fill (in file order, no
-/// large temporary for the ~215 MiB `ft_weights`), then [`build`](Self::build)s
-/// the network. The loader fills from `nn.bin`; tests fill synthetic values.
+/// In-place builder for a [`NnueNetwork`]: allocate the arena up front, fill
+/// each parameter array through a mutable view, then [`build`](Self::build).
+/// Filling in place avoids a large temporary for the ~215 MiB `ft_weights`.
 pub struct NnueNetworkBuilder {
     header: NetHeader,
     sha256: [u8; 32],
@@ -247,7 +226,7 @@ impl NnueNetworkBuilder {
         Self::with_dims(header, sha256, &NetDims::STANDARD)
     }
 
-    /// A zeroed builder for arbitrary `dims` (the loader's synthetic-dims tests).
+    /// A zeroed builder for arbitrary `dims`.
     pub fn with_dims(header: NetHeader, sha256: [u8; 32], dims: &NetDims) -> Self {
         let layout = NetLayout::compute(dims);
         let arena = LargePageArena::with_capacity(layout.total_bytes);
@@ -299,14 +278,14 @@ impl NnueNetworkBuilder {
         self.layout.stacks.len()
     }
 
-    /// Finish: consume the filled arena and produce the network (no copy).
+    /// Consume the filled arena and produce the network, copying nothing.
     pub fn build(self) -> NnueNetwork {
         NnueNetwork::from_arena(self.header, self.arena, self.layout, self.sha256)
     }
 }
 
-/// Errors returned by the network-file loader. Every variant carries a
-/// human-readable reason; the loader never panics on malformed input.
+/// Errors returned by the network-file loader, which never panics on malformed
+/// input.
 #[derive(Debug)]
 pub enum NnueError {
     Io {
@@ -358,8 +337,8 @@ mod tests {
     use super::*;
     use std::mem::size_of;
 
-    /// A small but multi-stack synthetic net for the arena-layout tests: two
-    /// stacks and a tiny feature transformer, standard FC shapes.
+    /// A small but multi-stack synthetic net: two stacks and a tiny feature
+    /// transformer, at standard FC shapes.
     fn small_net() -> NnueNetwork {
         let dims = NetDims {
             layer_stacks: 2,
@@ -404,7 +383,6 @@ mod tests {
         let net = small_net();
         let mut spans = sub_arrays(&net);
         spans.sort_by_key(|&(addr, _)| addr);
-        // Pairwise non-overlap: each start is at or after the previous end.
         for w in spans.windows(2) {
             let (start_a, len_a) = w[0];
             let (start_b, _) = w[1];
@@ -413,7 +391,6 @@ mod tests {
                 "sub-arrays overlap: [{start_a:#x}, +{len_a}) then {start_b:#x}",
             );
         }
-        // The whole spread fits inside the single reserved arena.
         let (first, _) = *spans.first().unwrap();
         let (last, last_len) = *spans.last().unwrap();
         let (allocs, reserved) = net.allocation_disclosure();
@@ -483,7 +460,6 @@ mod tests {
             assert_eq!(&*a.fc_1_weights, &*b.fc_1_weights);
             assert_eq!(&*a.fc_2_biases, &*b.fc_2_biases);
         }
-        // Distinct allocation: no view aliases the source arena.
         assert_ne!(copy.ft_weights.as_ptr(), net.ft_weights.as_ptr());
         assert_ne!(
             copy.stacks[1].fc_1_weights.as_ptr(),
@@ -491,7 +467,7 @@ mod tests {
         );
         assert_eq!(net.allocation_disclosure().0, 1);
         assert_eq!(copy.allocation_disclosure().0, 1);
-        // Sanity that the arrays are non-trivial and the type sizes are as assumed.
+        // The arrays must be non-trivial and the type sizes as assumed.
         assert_eq!(size_of::<i16>(), 2);
     }
 

@@ -1,16 +1,11 @@
-//! Runtime `FV_SCALE` gate: the final score is the raw network output divided
-//! by the live [`attic_eval::fv_scale`], so changing the scale at runtime
-//! rescales the eval exactly.
-//!
-//! Reuses the committed eval fixtures (`tests/fixtures/eval/*.json`) — the same
-//! ones `attic-eval/tests/eval_parity.rs` captured at `FV_SCALE = 16`; nothing
-//! is re-captured here. The real SFNN-1536 network is staged locally at
-//! `eval/nn.bin` and is never committed, so the test
-//! prints a notice and passes when it is absent (a checkout without it staged).
+//! Runtime `FV_SCALE` test: the final score is the raw network output divided
+//! by the live scale, so changing it at runtime rescales the eval exactly.
 //!
 //! This is the only test in its binary, so the process-global scale it toggles
-//! never races another test; it is restored to the default on the way out
-//! regardless.
+//! never races another test; it is restored on the way out regardless.
+//!
+//! The network file is staged locally and never committed, so when it is absent
+//! the test prints a notice and passes.
 
 use std::path::PathBuf;
 
@@ -32,8 +27,8 @@ fn position_for(sfen: &str, moves: &[String]) -> Position {
     pos
 }
 
-/// Load one fixture's `(sfen, moves)` — the highest-magnitude fixture, so the
-/// `/24` division is exercised on a value well above the divisor.
+/// The highest-magnitude fixture's `(sfen, moves)`, so that the division under
+/// test runs on a value well above its divisor.
 fn richest_fixture() -> (String, Vec<String>) {
     let dir = workspace_relative("tests/fixtures/eval");
     let mut best: Option<(i64, String, Vec<String>)> = None;
@@ -69,7 +64,7 @@ fn fv_scale_24_divides_raw_output_by_24() {
     let nn_bin = workspace_relative("eval/nn.bin");
     if !nn_bin.exists() {
         eprintln!(
-            "skipping fv_scale_24_divides_raw_output_by_24: {} is not present (staged only on the dev VM)",
+            "skipping fv_scale_24_divides_raw_output_by_24: {} is not present (obtained out-of-band)",
             nn_bin.display()
         );
         return;
@@ -79,7 +74,7 @@ fn fv_scale_24_divides_raw_output_by_24() {
     let (sfen, moves) = richest_fixture();
     let pos = position_for(&sfen, &moves);
 
-    // Recover the raw (pre-scale) network output by evaluating at scale 1.
+    // Evaluating at scale 1 recovers the raw network output.
     set_fv_scale(1);
     let raw = evaluate(&net, &pos);
     assert!(
@@ -87,12 +82,10 @@ fn fv_scale_24_divides_raw_output_by_24() {
         "fixture output {raw} too small to exercise a /24 division"
     );
 
-    // At the default scale the eval is the raw output / 16 (the fixture-capture
-    // condition), reconfirming `raw` is the true numerator.
+    // The default scale reconfirms `raw` is the true numerator.
     set_fv_scale(FV_SCALE_DEFAULT);
     assert_eq!(evaluate(&net, &pos), raw / FV_SCALE_DEFAULT);
 
-    // The property under test: at FV_SCALE 24 the score is the raw output / 24.
     set_fv_scale(24);
     assert_eq!(fv_scale(), 24);
     assert_eq!(
@@ -101,6 +94,5 @@ fn fv_scale_24_divides_raw_output_by_24() {
         "FV_SCALE 24 must divide the raw network output by 24"
     );
 
-    // Restore the process-global default for any later-loaded consumer.
     set_fv_scale(FV_SCALE_DEFAULT);
 }

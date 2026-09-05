@@ -71,5 +71,5 @@ cargo xtask capture-perft \
   --max-depth 3
 ```
 
-`capture-perft` is deterministic: rerunning against the same submodule pin
+`capture-perft` is deterministic: rerunning against the same reference build
 produces a byte-identical file.

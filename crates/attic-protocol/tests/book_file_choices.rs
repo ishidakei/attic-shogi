@@ -1,14 +1,9 @@
-//! Every `BookFile` choice the handshake advertises must be selectable AND
+//! Every `BookFile` choice the handshake advertises must be selectable and
 //! loadable.
 //!
-//! The pin's choice list is `no_book` plus eight `.db` names plus `book.bin`;
-//! this engine reads `.ybb` books only, so it deliberately diverges and offers
-//! the `.ybb` spelling of the same stems. This test is the guard on that
-//! divergence: it reads the combo line out of the real `usi` handshake (not a
-//! hard-coded copy of the list), then drives one full session per choice with
-//! the committed `sample.ybb` staged under `BookDir` as exactly that name, and
-//! requires a book load plus a book hit through the unchanged name-resolution
-//! and priority-enumeration machinery.
+//! The choice list is read out of the real `usi` handshake rather than
+//! hard-coded here, so a list that drifts away from what the engine can
+//! actually open fails this test.
 
 mod common;
 
@@ -36,8 +31,8 @@ fn advertised_choices() -> Vec<String> {
     choices
 }
 
-/// A session that points `BookDir`/`EvalDir` at `dir`, selects `choice`, and
-/// relaxes the book filters so the fixture's top move survives.
+/// A session pointing `BookDir` / `EvalDir` at `dir`, selecting `choice`, with
+/// the book filters relaxed so the fixture's top move survives.
 fn session_for(dir: &str, choice: &str) -> String {
     format!(
         "usi\n\
@@ -80,8 +75,8 @@ fn the_advertised_choice_list_is_the_expected_ybb_set() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn every_advertised_choice_is_accepted_by_setoption() {
-    // A combo rejects any value outside its list with an `option … rejected:`
-    // info string. No advertised choice may take that path.
+    // A combo rejects any value outside its list; no advertised choice may take
+    // that path.
     for (i, choice) in advertised_choices().iter().enumerate() {
         let dir = TempDir::new(&format!("choice-accept-{i}"));
         let d = dir.path().to_str().unwrap();
@@ -104,9 +99,8 @@ fn every_advertised_book_choice_loads_from_book_dir() {
         let d = dir.path().to_str().unwrap();
 
         if choice == "no_book" {
-            // The sentinel: bookless by construction, so nothing loads and a
-            // real search runs. Even a stray file named `no_book` is irrelevant
-            // — the name has no book extension, hence no priority series.
+            // Bookless by construction, so a real search runs. A stray file
+            // named `no_book` would be irrelevant: no extension, no series.
             let out = drive_with_seed(&session_for(d, choice), TEST_BOOK_SEED);
             assert!(
                 !out.contains("book loaded : "),
@@ -119,7 +113,6 @@ fn every_advertised_book_choice_loads_from_book_dir() {
             continue;
         }
 
-        // The committed fixture, staged under the advertised name verbatim.
         stage_sample_ybb(dir.path(), choice);
         let out = drive_with_seed(&session_for(d, choice), TEST_BOOK_SEED);
 
@@ -152,9 +145,6 @@ fn every_advertised_book_choice_loads_from_book_dir() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn every_advertised_book_choice_drives_its_priority_series() {
-    // The advertised names must work with the Multiple Book enumeration too:
-    // a `<stem>-000.ybb` alongside the base is picked up first, and the base
-    // still answers what `-000` misses.
     for (i, choice) in advertised_choices().iter().enumerate() {
         if choice == "no_book" {
             continue;

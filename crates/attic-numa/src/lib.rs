@@ -1,75 +1,34 @@
 //! NUMA topology discovery — a Linux-only port of the reference engine's
-//! `NumaConfig` machinery (`source/numa.h`, pinned submodule
-//! @ `76d58ef`).
+//! `NumaConfig` machinery (`numa.h`).
 //!
-//! This crate describes the machine's NUMA layout and, on Linux, can bind the
-//! calling thread to a node; memory replication is not modelled. The protocol
-//! layer consumes it for the `NumaPolicy` option and
-//! thread-to-node binding; on a single-node machine no thread ever
-//! binds (`auto` never suggests it), so parity fixtures and both bench forms
-//! stay byte-identical there by construction.
+//! The crate describes the machine's NUMA layout and, on Linux, can bind the
+//! calling thread to a node; memory replication is not modelled. On a
+//! single-node machine no thread ever binds, since `auto` never suggests it.
 //!
-//! # What is ported
+//! The reference's `_WIN64` paths are not ported. The pure parsing and topology
+//! code runs everywhere; only [`startup_affinity`] and the default `/sys` root
+//! of [`NumaConfig::from_system`] are meaningful on Linux, and both degrade to
+//! an "all system threads" fallback elsewhere so the crate stays buildable and
+//! testable off Linux.
 //!
-//! * [`NumaConfig`] — an immutable description of NUMA nodes: for each logical
-//!   node, the ordered set of CPUs it owns, plus a CPU → node reverse map, the
-//!   highest CPU index seen, and a `custom_affinity` flag. Its invariants mirror
-//!   the reference: the exposed nodes are never empty, and assigning a CPU that
-//!   is already owned by some node is a fail-loud error.
-//! * [`NumaConfig::from_string`] / [`Display`] — the reference's custom
-//!   `':'`-separated / `','`-separated / `"a-b"`-range syntax, round-tripping
-//!   through a canonical shortened form.
-//! * [`NumaConfig::from_system`] — sysfs-driven autodetection under the three
-//!   [`NumaAutoPolicy`] variants, including the L3-aware bundling that groups
-//!   L3 cache domains within a system NUMA node up to a bundle size.
-//! * [`NumaConfig::suggests_binding_threads`] /
-//!   [`NumaConfig::distribute_threads_among_numa_nodes`] /
-//!   [`NumaConfig::bind_current_thread_to_numa_node`] — the binding-decision,
-//!   thread-distribution, and (Linux) `sched_setaffinity` pieces the engine uses
-//!   to pin workers to nodes.
-//! * [`startup_affinity`] — a *once-at-startup* snapshot of the process's CPU
-//!   affinity (`sched_getaffinity`), matching the reference's use of startup
-//!   affinities "so as not to modify its own behaviour in time".
-//!
-//! Linux-only by design (a deliberate decision for this port): the reference's
-//! `_WIN64` paths are **not** ported. The pure parsing and topology code
-//! compiles and runs everywhere; only the real-syscall pieces
-//! ([`startup_affinity`] and the default `/sys` root of [`NumaConfig::from_system`])
-//! are meaningful on Linux, and they degrade to a safe "all system threads"
-//! fallback elsewhere so the crate stays buildable and testable on non-Linux
-//! CI.
-//!
-//! # Testability
-//!
-//! All sysfs readers take an injectable root path via [`SysfsOptions`], so unit
-//! and integration tests run against fixture directories rather than the live
-//! `/sys` tree. [`NumaConfig::from_system`] is the thin production wrapper that
-//! plugs in the real `/sys` root, the real [`startup_affinity`] snapshot, and
-//! the real [`system_threads`] count.
+//! All sysfs readers take an injectable root path via [`SysfsOptions`], so tests
+//! run against fixture directories rather than the live `/sys` tree.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// A processor (CPU) index, as numbered by the operating system.
-///
-/// These always correspond to the actual numbering the system uses (mirroring
-/// the reference `CpuIndex = size_t`).
+/// A processor index, always as the operating system numbers it.
 pub type CpuIndex = usize;
 
-/// A logical NUMA-node index within a [`NumaConfig`].
-///
-/// These do **not** necessarily correspond to the system's own NUMA-node
-/// numbering: L3-aware subdivision, empty-node removal, and custom
-/// configurations can all renumber nodes (mirroring the reference
-/// `NumaIndex = size_t`).
+/// A logical NUMA-node index within a [`NumaConfig`]. These do *not* necessarily
+/// match the system's own numbering: L3-aware subdivision, empty-node removal,
+/// and custom configurations all renumber nodes.
 pub type NumaIndex = usize;
 
-/// Policy for how [`NumaConfig::from_system`] maps the machine to logical NUMA
-/// nodes.
-///
-/// Mirrors the reference `NumaAutoPolicy` variant set (`numa.h`).
+/// How [`NumaConfig::from_system`] maps the machine to logical NUMA nodes
+/// (`numa.h`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumaAutoPolicy {
     /// Use the system's own NUMA nodes verbatim.
@@ -78,24 +37,18 @@ pub enum NumaAutoPolicy {
     L3Domains,
     /// Group system-reported L3 domains (within each system NUMA node) until
     /// each bundle reaches `bundle_size` CPUs.
-    BundledL3 {
-        /// Target maximum CPU count per bundled node.
-        bundle_size: usize,
-    },
+    BundledL3 { bundle_size: usize },
 }
 
 /// The engine's default policy: bundle L3 domains up to 32 CPUs
-/// (`source/engine.cpp`).
+/// (`engine.cpp`).
 pub const DEFAULT_POLICY: NumaAutoPolicy = NumaAutoPolicy::BundledL3 { bundle_size: 32 };
 
-/// Error type for the fail-loud paths that the reference resolves with
-/// `std::exit`.
+/// The fail-loud paths the reference resolves with `std::exit`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NumaError {
-    /// A CPU index was assigned to a node while already owned by some node.
-    ///
-    /// The reference `from_string` calls `std::exit(EXIT_FAILURE)` here; we
-    /// surface it as a recoverable error instead.
+    /// A CPU index was assigned to a node while already owned by another. The
+    /// reference `from_string` calls `std::exit(EXIT_FAILURE)` here.
     DuplicateCpu(CpuIndex),
 }
 
@@ -111,73 +64,55 @@ impl fmt::Display for NumaError {
 
 impl std::error::Error for NumaError {}
 
-/// Injectable inputs for the sysfs-driven detection path.
-///
-/// Production code fills this with the real `/sys` root, the real
-/// [`startup_affinity`] snapshot, and the real [`system_threads`] count (see
-/// [`NumaConfig::from_system`]); tests substitute a fixture directory and a
-/// synthetic affinity set / thread count.
+/// Injectable inputs for the sysfs-driven detection path, so tests can
+/// substitute a fixture directory and a synthetic affinity set.
 #[derive(Debug, Clone)]
 pub struct SysfsOptions {
-    /// Root under which the `devices/system/...` sysfs hierarchy lives
-    /// (`/sys` in production).
+    /// Root under which the `devices/system/...` hierarchy lives.
     pub root: PathBuf,
-    /// The set of CPUs the process is allowed to run on. Consulted only when a
-    /// detection call passes `respect_affinity = true`.
+    /// The CPUs the process may run on, consulted only when a detection call
+    /// passes `respect_affinity = true`.
     pub allowed_cpus: BTreeSet<CpuIndex>,
-    /// The number of hardware threads to assume when a fallback to a single
-    /// all-CPU node is required.
+    /// The hardware-thread count to assume when falling back to a single node.
     pub system_threads: CpuIndex,
 }
 
-/// A system L3 cache domain: the CPUs sharing one L3, tagged with the *system*
-/// NUMA node they belong to. Mirrors the reference `struct L3Domain`.
+/// The CPUs sharing one L3, tagged with the *system* NUMA node they belong to.
 #[derive(Debug, Default, Clone)]
 struct L3Domain {
     system_numa_index: NumaIndex,
     cpus: BTreeSet<CpuIndex>,
 }
 
-/// An immutable description of the machine's NUMA layout.
-///
-/// The CPU numbers always match the system's own numbering; the NUMA-node
-/// numbers may not (see [`NumaIndex`]). Every node exposed by a `NumaConfig` is
-/// guaranteed non-empty. Mirrors the reference `class NumaConfig`
-/// (`numa.h`).
+/// An immutable description of the machine's NUMA layout (`numa.h`). Every
+/// node it exposes is non-empty.
 #[derive(Debug, Clone)]
 pub struct NumaConfig {
-    /// Per-node ordered CPU sets, indexed by [`NumaIndex`].
     nodes: Vec<BTreeSet<CpuIndex>>,
-    /// Reverse map: CPU → owning node.
     node_by_cpu: BTreeMap<CpuIndex, NumaIndex>,
-    /// The largest CPU index ever assigned.
     highest_cpu_index: CpuIndex,
-    /// Set when the configuration was produced in a way that may not match the
-    /// current process affinity (custom string, or `respect_affinity = false`).
+    /// Set when the configuration may not match the current process affinity: a
+    /// custom string, or `respect_affinity = false`.
     custom_affinity: bool,
 }
 
 impl Default for NumaConfig {
-    /// A single node containing CPUs `0..system_threads()`
-    /// (`numa.h`).
+    /// A single node containing CPUs `0..system_threads()` (`numa.h`).
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl NumaConfig {
-    /// The default configuration: one node holding every hardware thread
-    /// (`numa.h`).
+    /// One node holding every hardware thread (`numa.h`).
     pub fn new() -> Self {
         let mut cfg = Self::empty();
         let num_cpus = system_threads();
-        // `system_threads()` is always >= 1, so `num_cpus - 1` cannot underflow.
         cfg.add_cpu_range_to_node(0, 0, num_cpus - 1);
         cfg
     }
 
-    /// An empty configuration with no nodes (the reference's private
-    /// `empty()`).
+    /// An empty configuration with no nodes (the reference's `empty()`).
     fn empty() -> Self {
         NumaConfig {
             nodes: Vec::new(),
@@ -187,14 +122,10 @@ impl NumaConfig {
         }
     }
 
-    /// Parses the reference's custom node syntax (`numa.h`).
-    ///
-    /// `':'` separates nodes, `','` separates entries within a node, and
-    /// `"a-b"` denotes an inclusive CPU range. Empty node groups are skipped.
-    /// A CPU that appears more than once is a fail-loud
-    /// [`NumaError::DuplicateCpu`]. The result has `custom_affinity` set.
-    ///
-    /// Example: `"0-15,32-47:16-31,48-63"`.
+    /// Parse the reference's custom node syntax (`numa.h`), e.g.
+    /// `"0-15,32-47:16-31,48-63"`: `':'` separates nodes, `','` separates
+    /// entries, `"a-b"` is an inclusive range, and empty node groups are
+    /// skipped. A repeated CPU is a [`NumaError::DuplicateCpu`].
     pub fn from_string(s: &str) -> Result<Self, NumaError> {
         let mut cfg = Self::empty();
 
@@ -215,12 +146,8 @@ impl NumaConfig {
         Ok(cfg)
     }
 
-    /// Autodetects the NUMA layout from the live `/sys` tree, the real startup
+    /// Autodetect the NUMA layout from the live `/sys` tree, the real startup
     /// affinity snapshot, and the real hardware-thread count.
-    ///
-    /// This is the thin production wrapper over [`NumaConfig::from_sysfs`]. On
-    /// non-Linux targets the affinity snapshot degrades to "all system
-    /// threads" (see [`startup_affinity`]).
     pub fn from_system(policy: &NumaAutoPolicy, respect_affinity: bool) -> Self {
         let opts = SysfsOptions {
             root: PathBuf::from("/sys"),
@@ -230,13 +157,8 @@ impl NumaConfig {
         Self::from_sysfs(policy, respect_affinity, &opts)
     }
 
-    /// Autodetects the NUMA layout from an injectable sysfs root.
-    ///
-    /// Mirrors the reference `from_system` Linux branch (`numa.h`):
-    /// unless the policy is [`NumaAutoPolicy::SystemNuma`], first try the
-    /// L3-aware config; fall back to the system-NUMA sysfs config otherwise.
-    /// Empty nodes are removed at the end, and `respect_affinity = false`
-    /// marks the result custom.
+    /// Autodetect the NUMA layout from an injectable sysfs root, mirroring the
+    /// reference `from_system` Linux branch (`numa.h`).
     pub fn from_sysfs(
         policy: &NumaAutoPolicy,
         respect_affinity: bool,
@@ -282,7 +204,7 @@ impl NumaConfig {
     /// The number of CPUs in node `n` (`numa.h`).
     ///
     /// # Panics
-    /// Panics if `n` is out of range, mirroring the reference `assert`.
+    /// If `n` is out of range, mirroring the reference `assert`.
     pub fn num_cpus_in_numa_node(&self, n: NumaIndex) -> CpuIndex {
         assert!(n < self.nodes.len());
         self.nodes[n].len()
@@ -299,7 +221,7 @@ impl NumaConfig {
         self.custom_affinity || self.nodes.len() > 1
     }
 
-    /// Read-only access to the per-node CPU sets, in node order.
+    /// The per-node CPU sets, in node order.
     pub fn nodes(&self) -> &[BTreeSet<CpuIndex>] {
         &self.nodes
     }
@@ -310,38 +232,22 @@ impl NumaConfig {
     }
 
     /// The *system* NUMA node a logical node belongs to (`get_discriminator`,
-    /// `numa.h`).
+    /// `numa.h`) — the granularity at which memory is replicated, so
+    /// two logical nodes sharing one system node can share a single copy.
     ///
-    /// The reference uses this to decide the replication granularity of
-    /// `LazyNumaReplicatedSystemWide`: the copy granularity is the hardware /
-    /// system NUMA domain, not the (possibly L3-bundled) logical node. It takes
-    /// the logical node's first CPU, resolves it against a *system* config
-    /// (`NumaConfig::from_sysfs(SystemNuma, respect_affinity = false, opts)`), and
-    /// falls back to system node 0 for an unassigned CPU. Two logical nodes that
-    /// share one system node therefore return the same value — the signal the
-    /// port uses to share a single network copy between them.
-    ///
-    /// The discriminator's textual system-topology prefix (`cfg_sys.to_string() +
-    /// "$" + sys_idx`) keys the reference's shared-memory segment; this port has
-    /// no shared-memory layer (a declared scope reduction) and lives in one
-    /// process with one topology, so the system-node index alone is the
-    /// discriminator.
+    /// The reference keys its shared-memory segment on the system topology as
+    /// text prefixed to this index; with no shared-memory layer and one topology
+    /// per process, the index alone is the discriminator here.
     ///
     /// # Panics
-    /// Panics if `idx` is out of range (mirroring the reference's `nodes[idx]`
-    /// dereference). Every exposed node is non-empty, so the first-CPU lookup
-    /// always succeeds.
+    /// If `idx` is out of range, mirroring the reference's `nodes[idx]`.
     pub fn system_node_of_logical(&self, idx: NumaIndex, opts: &SysfsOptions) -> NumaIndex {
         let cfg_sys = NumaConfig::from_sysfs(&NumaAutoPolicy::SystemNuma, false, opts);
         self.system_node_of_logical_in(idx, &cfg_sys)
     }
 
-    /// The system node of every worker's logical node, in `bound` order.
-    ///
-    /// A batch [`Self::system_node_of_logical`] that builds the system config once
-    /// (it reads sysfs), for resolving a whole binding assignment at pool-rebuild
-    /// time. Entry `i` is the system node the reference would replicate worker
-    /// `i`'s network onto.
+    /// The system node of every worker's logical node, in `bound` order — a
+    /// batch [`Self::system_node_of_logical`] that reads sysfs once.
     pub fn system_nodes_for_binding(
         &self,
         bound: &[NumaIndex],
@@ -354,7 +260,6 @@ impl NumaConfig {
             .collect()
     }
 
-    /// The shared body of the two mappers above, given a prebuilt system config.
     fn system_node_of_logical_in(&self, idx: NumaIndex, cfg_sys: &NumaConfig) -> NumaIndex {
         let cpu = *self.nodes[idx]
             .iter()
@@ -363,8 +268,8 @@ impl NumaConfig {
         cfg_sys.node_of_cpu(cpu).unwrap_or(0)
     }
 
-    /// Whether the configuration is flagged custom (custom string, or built
-    /// without respecting process affinity).
+    /// Whether the configuration is flagged custom: a custom string, or built
+    /// without respecting process affinity.
     pub fn is_custom_affinity(&self) -> bool {
         self.custom_affinity
     }
@@ -372,29 +277,23 @@ impl NumaConfig {
     /// Whether the engine should distribute and bind its worker threads across
     /// NUMA nodes for the requested thread count (`numa.h`).
     ///
-    /// A custom affinity always suggests binding (the OS affinity may not match
-    /// what the user asked for). A single thread never binds. Otherwise: let
-    /// `largest` be the biggest node's CPU count; a node is "small" when its
-    /// size is at most `SmallNodeThreshold = 0.6` of `largest`; let
-    /// `num_not_small` be the count of non-small nodes. Binding is suggested
-    /// when `num_threads` cannot reasonably be contained by the first node
-    /// (`num_threads > largest / 2`) or there are enough threads to spread
-    /// across the non-small nodes with minimal disparity
-    /// (`num_threads >= num_not_small * 4`) — and there is more than one node.
+    /// A custom affinity always suggests binding, since the OS affinity may not
+    /// match what the user asked for, and a single thread never binds. Otherwise
+    /// binding is suggested when the threads cannot reasonably be contained by
+    /// the largest node, or when there are enough of them to spread across the
+    /// non-small nodes with minimal disparity.
     pub fn suggests_binding_threads(&self, num_threads: CpuIndex) -> bool {
         if self.custom_affinity {
             return true;
         }
 
-        // A single thread cannot be distributed, so it is never bound.
         if num_threads <= 1 {
             return false;
         }
 
         let largest_node_size = self.nodes.iter().map(|cpus| cpus.len()).max().unwrap_or(0);
 
-        // `SmallNodeThreshold = 0.6` — a node is small (in particular, an empty
-        // node) when its share of the largest node is at or below this.
+        // The reference's `SmallNodeThreshold`. An empty node is always small.
         const SMALL_NODE_THRESHOLD: f64 = 0.6;
         let is_node_small = |node: &BTreeSet<CpuIndex>| {
             node.len() as f64 / largest_node_size as f64 <= SMALL_NODE_THRESHOLD
@@ -411,19 +310,13 @@ impl NumaConfig {
     }
 
     /// Assign each of `num_threads` worker threads to a NUMA node
-    /// (`numa.h`).
-    ///
-    /// A single-node config puts every thread on node 0. Otherwise the
-    /// assignment greedily fills the node that minimises
-    /// `(occupation + 1) / node_size` (strict `<`, so ties go to the lowest node
-    /// index), incrementing that node's occupation after each pick. No node is
+    /// (`numa.h`), greedily filling the node that minimises
+    /// `(occupation + 1) / node_size`, ties going to the lowest index. No node is
     /// favoured, so multiple engine instances do not all crowd node 0.
     pub fn distribute_threads_among_numa_nodes(&self, num_threads: CpuIndex) -> Vec<NumaIndex> {
         let mut ns: Vec<NumaIndex> = Vec::new();
 
         if self.nodes.len() == 1 {
-            // Special case for when there are no real NUMA nodes: keep the
-            // default path simple by putting everything on node 0.
             ns.resize(num_threads, 0);
             return ns;
         }
@@ -447,20 +340,16 @@ impl NumaConfig {
     }
 
     /// Bind the *current* thread to NUMA node `n`, restricting its CPU affinity
-    /// to that node's CPUs (`numa.h`, Linux branch).
+    /// to that node's CPUs (`numa.h`, Linux branch). A no-op off
+    /// Linux.
     ///
     /// # Panics
-    /// Fail-loud, mirroring the reference's `std::exit(EXIT_FAILURE)` (the
-    /// accepted port form for these paths — see the crate PR):
+    /// Where the reference reaches `std::exit(EXIT_FAILURE)`:
     /// * if `n` is out of range or the node is empty;
-    /// * (Linux) if `highest_cpu_index >= 1024` — this port uses a fixed
-    ///   1024-CPU `cpu_set_t` rather than the reference's dynamic
-    ///   `CPU_ALLOC(highestCpuIndex + 1)`, so a CPU index that would not fit the
-    ///   fixed mask is rejected rather than silently truncated;
-    /// * (Linux) if `sched_setaffinity` fails.
-    ///
-    /// On non-Linux targets this is a no-op (the reference's real binding is
-    /// Linux/Win64-only and Win64 is out of scope for this port).
+    /// * if `highest_cpu_index >= 1024` — a fixed 1024-CPU `cpu_set_t` is used
+    ///   rather than the reference's dynamic `CPU_ALLOC`, so a CPU index that
+    ///   would not fit is rejected rather than silently truncated;
+    /// * if `sched_setaffinity` fails.
     pub fn bind_current_thread_to_numa_node(&self, n: NumaIndex) {
         if n >= self.nodes.len() || self.nodes[n].is_empty() {
             panic!(
@@ -473,18 +362,11 @@ impl NumaConfig {
     }
 
     /// Run `f` on a temporary thread bound to NUMA node `n`, then join it
-    /// (`numa.h`).
+    /// (`numa.h`), so a region the closure allocates and fills has its
+    /// pages first-touched on `n`.
     ///
-    /// The reference uses this so an on-node allocation's pages are first-touched
-    /// on that node: the thread binds, the closure allocates (and, in this port's
-    /// case, fills) the region, and the kernel's first-touch policy places the
-    /// pages on `n`. The closure runs to completion before this returns; `f`'s
-    /// captures may be borrowed for the duration (a scoped thread), so it can
-    /// write its result back into a caller-owned slot.
-    ///
-    /// On non-Linux targets the bind is a no-op (see
-    /// [`Self::bind_current_thread_to_numa_node`]); the closure still runs on the
-    /// temporary thread, so the control flow is identical across platforms.
+    /// Off Linux the bind is a no-op but the closure still runs on the temporary
+    /// thread, so the control flow is identical across platforms.
     pub fn execute_on_numa_node<F>(&self, n: NumaIndex, f: F)
     where
         F: FnOnce() + Send,
@@ -497,15 +379,14 @@ impl NumaConfig {
         });
     }
 
-    /// Drops any empty nodes, preserving the order of the rest
+    /// Drop any empty nodes, preserving the order of the rest
     /// (`numa.h`).
     fn remove_empty_numa_nodes(&mut self) {
         self.nodes.retain(|cpus| !cpus.is_empty());
-        // `node_by_cpu` is untouched: it maps CPUs to *pre-removal* node
-        // indices. Matching the reference, callers rebuild configs rather than
-        // mutate them, so no code observes stale reverse-map indices after a
-        // removal. To keep this port's reverse map internally consistent we
-        // rebuild it from the surviving nodes.
+        // The reference leaves `node_by_cpu` mapping CPUs to *pre-removal*
+        // indices; rebuilding it here keeps the reverse map self-consistent, and
+        // callers rebuild configs rather than mutate them, so nothing observes
+        // the difference.
         self.node_by_cpu.clear();
         for (n, cpus) in self.nodes.iter().enumerate() {
             for &c in cpus {
@@ -514,10 +395,8 @@ impl NumaConfig {
         }
     }
 
-    /// Assigns CPU `c` to node `n`.
-    ///
-    /// Returns `false` (leaving the structure unmodified) if `c` is already
-    /// assigned; `true` on success (`numa.h`).
+    /// Assign CPU `c` to node `n`, returning `false` and leaving the structure
+    /// unmodified if `c` is already assigned (`numa.h`).
     fn add_cpu_to_node(&mut self, n: NumaIndex, c: CpuIndex) -> bool {
         if self.is_cpu_assigned(c) {
             return false;
@@ -537,10 +416,9 @@ impl NumaConfig {
         true
     }
 
-    /// Assigns the inclusive CPU range `cfirst..=clast` to node `n`.
-    ///
-    /// All-or-nothing: returns `false` (unmodified) if any CPU in the range is
-    /// already assigned (`numa.h`).
+    /// Assign the inclusive CPU range `cfirst..=clast` to node `n`.
+    /// All-or-nothing: `false` and unmodified if any CPU is already assigned
+    /// (`numa.h`).
     fn add_cpu_range_to_node(&mut self, n: NumaIndex, cfirst: CpuIndex, clast: CpuIndex) -> bool {
         for c in cfirst..=clast {
             if self.is_cpu_assigned(c) {
@@ -566,9 +444,9 @@ impl NumaConfig {
 }
 
 impl fmt::Display for NumaConfig {
-    /// Emits the canonical shortened form, re-compressing consecutive CPUs into
-    /// `"a-b"` ranges (`numa.h`). The round-trip
-    /// `from_string(x.to_string())` reproduces `x`'s node structure.
+    /// The canonical shortened form, re-compressing consecutive CPUs into
+    /// `"a-b"` ranges (`numa.h`). `from_string(x.to_string())` reproduces
+    /// `x`'s node structure.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut is_first_node = true;
         for cpus in &self.nodes {
@@ -605,24 +483,21 @@ impl fmt::Display for NumaConfig {
     }
 }
 
-/// Reads a sysfs file under `root`, returning its contents.
-///
-/// Returns `None` if the file cannot be read (does not exist); `Some("")` for
-/// an empty file. Mirrors the reference `read_file_to_string`
-/// (`misc.cpp`), which returns `nullopt` only when the file cannot be
-/// opened.
+/// Read a sysfs file under `root`. `None` when it cannot be opened, `Some("")`
+/// for an empty file — the reference `read_file_to_string`
+/// (`misc.cpp`) draws the same distinction.
 fn read_sysfs(root: &Path, rel: &str) -> Option<String> {
     std::fs::read_to_string(root.join(rel)).ok()
 }
 
-/// Removes all ASCII whitespace from `s` (`misc.cpp`).
+/// Remove all ASCII whitespace from `s` (`misc.cpp`).
 fn remove_whitespace(s: &str) -> String {
     s.chars().filter(|c| !c.is_ascii_whitespace()).collect()
 }
 
-/// Parses a single decimal index, tolerating surrounding whitespace and
-/// trailing non-digits like the reference `str_to_size_t`'s `stoull`
-/// (`misc.cpp`). Returns `None` when no leading digits are present.
+/// Parse a single decimal index, tolerating surrounding whitespace and trailing
+/// non-digits as the reference `str_to_size_t`'s `stoull` does
+/// (`misc.cpp`).
 fn parse_size_t(s: &str) -> Option<CpuIndex> {
     let t = s.trim_start();
     let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -632,12 +507,9 @@ fn parse_size_t(s: &str) -> Option<CpuIndex> {
     digits.parse::<CpuIndex>().ok()
 }
 
-/// Expands the reference's "shortened index-list" syntax into a flat list of
-/// indices (`numa.h`).
-///
-/// `','` separates entries; each entry is either a single index or an inclusive
-/// `"a-b"` range. Empty entries are skipped, and an empty input yields no
-/// indices.
+/// Expand the reference's shortened index-list syntax into a flat list
+/// (`numa.h`): `','` separates entries, each a single index or an
+/// inclusive `"a-b"` range, with empty entries skipped.
 fn indices_from_shortened_string(s: &str) -> Vec<CpuIndex> {
     let mut indices = Vec::new();
 
@@ -664,8 +536,7 @@ fn indices_from_shortened_string(s: &str) -> Vec<CpuIndex> {
                     }
                 }
             }
-            // Entries with 0 or 3+ dash-separated parts are ignored, matching
-            // the reference (which only handles the 1- and 2-part cases).
+            // The reference handles only the 1- and 2-part cases.
             _ => {}
         }
     }
@@ -673,16 +544,13 @@ fn indices_from_shortened_string(s: &str) -> Vec<CpuIndex> {
     indices
 }
 
-/// Whether CPU `c` is allowed given a detection call's affinity setting.
 fn is_cpu_allowed(opts: &SysfsOptions, respect_affinity: bool, c: CpuIndex) -> bool {
     !respect_affinity || opts.allowed_cpus.contains(&c)
 }
 
-/// The system-NUMA sysfs config path (`numa.h`).
-///
-/// Reads `devices/system/node/online`, then each node's `cpulist`. A missing
-/// `online` file (or a missing per-node `cpulist`) falls back to a single node
-/// containing all allowed CPUs `0..system_threads`.
+/// The system-NUMA sysfs config path (`numa.h`). A missing `online`
+/// file, or a missing per-node `cpulist`, falls back to a single node holding
+/// every allowed CPU.
 fn from_system_numa(opts: &SysfsOptions, respect_affinity: bool) -> NumaConfig {
     let mut cfg = NumaConfig::empty();
     let mut use_fallback = false;
@@ -693,8 +561,8 @@ fn from_system_numa(opts: &SysfsOptions, respect_affinity: bool) -> NumaConfig {
             for n in indices_from_shortened_string(&node_ids) {
                 let path = format!("devices/system/node/node{n}/cpulist");
                 match read_sysfs(&opts.root, &path) {
-                    // Only bail if the file does not exist. An empty node still
-                    // has a (whitespace-only) file, and empty nodes are fine.
+                    // An empty node still has a whitespace-only file, and empty
+                    // nodes are fine — only a missing file is a fallback.
                     None => {
                         use_fallback = true;
                         break;
@@ -716,8 +584,7 @@ fn from_system_numa(opts: &SysfsOptions, respect_affinity: bool) -> NumaConfig {
     }
 
     if use_fallback {
-        // Discard any partial config, exactly as the reference's `fallback()`
-        // resets `cfg` to empty.
+        // The reference's `fallback()` likewise resets `cfg` to empty.
         cfg = NumaConfig::empty();
         for c in 0..opts.system_threads {
             if is_cpu_allowed(opts, respect_affinity, c) {
@@ -729,27 +596,21 @@ fn from_system_numa(opts: &SysfsOptions, respect_affinity: bool) -> NumaConfig {
     cfg
 }
 
-/// Attempts the L3-aware config path (`numa.h`).
-///
-/// Walks CPUs via "next unseen CPU", reading each one's
-/// `cache/index3/shared_cpu_list`; each L3 domain keeps its owning *system*
-/// NUMA node (looked up from a system-NUMA config). Stops at the first
-/// missing/empty file. Returns `None` if no L3 domains were found.
+/// Attempt the L3-aware config path (`numa.h`): walk CPUs by "next
+/// unseen CPU", reading each one's `cache/index3/shared_cpu_list` and tagging
+/// its domain with the owning system NUMA node. `None` if no domains were found.
 fn try_get_l3_aware_config(
     opts: &SysfsOptions,
     respect_affinity: bool,
     bundle_size: usize,
 ) -> Option<NumaConfig> {
-    // Get the normal system config so we know which NUMA node each L3 domain
-    // belongs to.
     let system_config = NumaConfig::from_sysfs(&NumaAutoPolicy::SystemNuma, respect_affinity, opts);
 
     let mut l3_domains: Vec<L3Domain> = Vec::new();
     let mut seen: BTreeSet<CpuIndex> = BTreeSet::new();
 
-    // Defensive upper bound on the "next unseen CPU" scan. The loop really
-    // terminates on the first missing/empty sysfs file; this only guards
-    // against a malformed fixture that never grows `seen`.
+    // The scan really terminates on the first missing or empty sysfs file; this
+    // bound only guards against a malformed tree that never grows `seen`.
     const MAX_CPU_SCAN: CpuIndex = 1 << 20;
 
     loop {
@@ -767,16 +628,14 @@ fn try_get_l3_aware_config(
         let path = format!("devices/system/cpu/cpu{next}/cache/index3/shared_cpu_list");
         let siblings = match read_sysfs(&opts.root, &path) {
             Some(s) if !s.is_empty() => s,
-            // Missing or empty file: we have read all available CPUs.
             _ => break,
         };
 
         let mut domain = L3Domain::default();
         for c in indices_from_shortened_string(&siblings) {
             if is_cpu_allowed(opts, respect_affinity, c) {
-                // `.at(c)` in the reference — a fail-loud lookup. On a
-                // consistent system every allowed CPU is present in the
-                // system-NUMA config.
+                // The reference's `.at(c)`, a fail-loud lookup: on a consistent
+                // system every allowed CPU is in the system-NUMA config.
                 let sys_idx = *system_config
                     .node_by_cpu
                     .get(&c)
@@ -799,16 +658,14 @@ fn try_get_l3_aware_config(
     }
 }
 
-/// Bundles L3 domains into logical NUMA nodes (`numa.h`).
-///
-/// Domains are grouped by their system NUMA node; within each group, adjacent
-/// pairs are repeatedly merged while `|a| + |b| <= bundle_size`; the surviving
-/// domains are numbered sequentially.
+/// Bundle L3 domains into logical NUMA nodes (`numa.h`): group by
+/// system NUMA node, then repeatedly merge adjacent pairs within each group
+/// while `|a| + |b| <= bundle_size`.
 fn from_l3_info(domains: Vec<L3Domain>, bundle_size: usize) -> NumaConfig {
     debug_assert!(!domains.is_empty());
 
-    // Group by system NUMA index. A `BTreeMap` iterates keys in ascending
-    // order, matching the reference `std::map`.
+    // A `BTreeMap` iterates keys in ascending order, like the reference's
+    // `std::map`.
     let mut list: BTreeMap<NumaIndex, Vec<L3Domain>> = BTreeMap::new();
     for d in domains {
         list.entry(d.system_numa_index).or_default().push(d);
@@ -817,8 +674,6 @@ fn from_l3_info(domains: Vec<L3Domain>, bundle_size: usize) -> NumaConfig {
     let mut cfg = NumaConfig::empty();
     let mut n: NumaIndex = 0;
     for (_, mut ds) in list {
-        // Scan through pairs and merge them. With roughly equal L3 sizes this
-        // gives a decent distribution.
         loop {
             let mut changed = false;
             let mut j = 0;
@@ -828,13 +683,10 @@ fn from_l3_info(domains: Vec<L3Domain>, bundle_size: usize) -> NumaConfig {
                     let mut next = ds.remove(j + 1);
                     ds[j].cpus.append(&mut next.cpus);
                 }
-                // `j` advances every iteration, exactly as the reference
-                // for-loop does: a just-merged node is not re-checked against
-                // its new neighbour within the same pass.
+                // `j` advances every iteration, as the reference for-loop does:
+                // a just-merged node is not re-checked within the same pass.
                 j += 1;
             }
-            // `ds.len()` strictly decreases whenever `changed`, so this
-            // terminates.
             if !changed {
                 break;
             }
@@ -852,8 +704,7 @@ fn from_l3_info(domains: Vec<L3Domain>, bundle_size: usize) -> NumaConfig {
     cfg
 }
 
-/// The number of usable hardware threads, at least 1
-/// (`numa.h` / `SYSTEM_THREADS_NB`).
+/// The number of usable hardware threads, at least 1 (`numa.h`).
 pub fn system_threads() -> CpuIndex {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -861,13 +712,10 @@ pub fn system_threads() -> CpuIndex {
         .max(1)
 }
 
-/// The set of CPUs the process was allowed to run on **at startup**, captured
-/// once.
-///
-/// Mirrors the reference `STARTUP_PROCESSOR_AFFINITY` (`numa.h`): a
-/// deliberate startup snapshot so detection does not change behaviour as the
-/// live affinity changes over time. On Linux this is the result of
-/// `sched_getaffinity`; on other targets it degrades to all system threads.
+/// The set of CPUs the process was allowed to run on *at startup*, captured
+/// once (`STARTUP_PROCESSOR_AFFINITY`, `numa.h`) so detection does not
+/// change behaviour as the live affinity changes over time. Off Linux it
+/// degrades to all system threads.
 pub fn startup_affinity() -> &'static BTreeSet<CpuIndex> {
     static STARTUP: OnceLock<BTreeSet<CpuIndex>> = OnceLock::new();
     STARTUP.get_or_init(capture_process_affinity)
@@ -875,22 +723,16 @@ pub fn startup_affinity() -> &'static BTreeSet<CpuIndex> {
 
 #[cfg(target_os = "linux")]
 fn capture_process_affinity() -> BTreeSet<CpuIndex> {
-    // This port deliberately uses a fixed 1024-CPU `cpu_set_t` here. This is a
-    // narrower cap than the reference's startup snapshot, which allocates
-    // `CPU_ALLOC(1024 * 64)` (`numa.h`) precisely because the platform
-    // default of 1024 may be too small on very large machines. The fixed cap is
-    // acceptable for this project's target hardware (well under 1024 logical
-    // CPUs); a machine that exceeds it would fail loud at bind time via
-    // [`NumaConfig::bind_current_thread_to_numa_node`] rather than silently
-    // mis-binding.
+    // A fixed 1024-CPU `cpu_set_t`, narrower than the reference's
+    // `CPU_ALLOC(1024 * 64)` (`numa.h`). A machine exceeding it fails
+    // loud at bind time rather than silently mis-binding.
     let mut cpus = BTreeSet::new();
     unsafe {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
         let size = std::mem::size_of::<libc::cpu_set_t>();
         let status = libc::sched_getaffinity(0, size, &mut set as *mut libc::cpu_set_t);
         if status != 0 {
-            // Soft error: assume all system threads are available rather than
-            // aborting the process from within a library.
+            // Assume all system threads rather than aborting from a library.
             return (0..system_threads()).collect();
         }
         for c in 0..(size * 8) {
@@ -907,18 +749,14 @@ fn capture_process_affinity() -> BTreeSet<CpuIndex> {
     (0..system_threads()).collect()
 }
 
-/// The Linux affinity-setting core of [`NumaConfig::bind_current_thread_to_numa_node`].
-///
-/// Builds a CPU mask of `cpus`, applies it to the current thread via
-/// `sched_setaffinity(0, ...)`, then `sched_yield`s (the reference's defensive
-/// re-schedule so the thread lands on the newly-allowed CPUs promptly). Fail-loud
-/// on every error path, mirroring the reference `std::exit(EXIT_FAILURE)`.
+/// The Linux affinity-setting core of
+/// [`NumaConfig::bind_current_thread_to_numa_node`]. Fail-loud on every error
+/// path, mirroring the reference `std::exit(EXIT_FAILURE)`.
 #[cfg(target_os = "linux")]
 fn bind_current_thread_to_cpus(highest_cpu_index: CpuIndex, cpus: &BTreeSet<CpuIndex>) {
-    // This port sizes the mask with a fixed `cpu_set_t` (1024-CPU capacity)
-    // instead of the reference's dynamic `CPU_ALLOC(highestCpuIndex + 1)`. A CPU
-    // index that would not fit the fixed mask is a fail-loud error rather than a
-    // silent out-of-bounds `CPU_SET`.
+    // A fixed 1024-CPU `cpu_set_t` instead of the reference's dynamic
+    // `CPU_ALLOC(highestCpuIndex + 1)`, so an index that would not fit is a
+    // fail-loud error rather than a silent out-of-bounds `CPU_SET`.
     assert!(
         highest_cpu_index < 1024,
         "bind_current_thread_to_numa_node: highest CPU index {highest_cpu_index} \
@@ -938,14 +776,13 @@ fn bind_current_thread_to_cpus(highest_cpu_index: CpuIndex, cpus: &BTreeSet<CpuI
                 std::io::Error::last_os_error()
             );
         }
-        // Defensive re-schedule; allowed because this is not performance critical.
+        // The reference's defensive re-schedule, so the thread lands on the
+        // newly-allowed CPUs promptly.
         libc::sched_yield();
     }
 }
 
-/// Non-Linux no-op counterpart of [`bind_current_thread_to_cpus`]: this port does
-/// not bind threads off Linux (the reference's other real path is Win64, out of
-/// scope).
+/// Non-Linux no-op counterpart of [`bind_current_thread_to_cpus`].
 #[cfg(not(target_os = "linux"))]
 fn bind_current_thread_to_cpus(_highest_cpu_index: CpuIndex, _cpus: &BTreeSet<CpuIndex>) {}
 
@@ -957,8 +794,6 @@ mod tests {
         cpus.iter().copied().collect()
     }
 
-    // -- shortened-list parsing -------------------------------------------
-
     #[test]
     fn parse_simple_list_and_range() {
         assert_eq!(indices_from_shortened_string("0-3,8"), vec![0, 1, 2, 3, 8]);
@@ -969,19 +804,16 @@ mod tests {
     #[test]
     fn parse_empty_and_empty_entries() {
         assert_eq!(indices_from_shortened_string(""), Vec::<CpuIndex>::new());
-        // Empty entries between commas are skipped.
         assert_eq!(indices_from_shortened_string("0,,3"), vec![0, 3]);
     }
 
     #[test]
     fn parse_tolerates_whitespace() {
-        // sysfs content is passed through `remove_whitespace` first.
         assert_eq!(
             indices_from_shortened_string(&remove_whitespace(" 0-3 , 8 \n")),
             vec![0, 1, 2, 3, 8]
         );
-        // A trailing newline within a token is tolerated directly (as the
-        // reference relies on `stoull` doing).
+        // Tolerated directly, as the reference relies on `stoull` doing.
         assert_eq!(indices_from_shortened_string("0-3\n"), vec![0, 1, 2, 3]);
     }
 
@@ -989,8 +821,6 @@ mod tests {
     fn descending_range_is_empty() {
         assert_eq!(indices_from_shortened_string("5-3"), Vec::<CpuIndex>::new());
     }
-
-    // -- from_string ------------------------------------------------------
 
     #[test]
     fn from_string_valid_two_nodes() {
@@ -1036,11 +866,8 @@ mod tests {
         let cfg = NumaConfig::from_string("").unwrap();
         assert_eq!(cfg.num_numa_nodes(), 0);
         assert!(cfg.is_custom_affinity());
-        // custom_affinity alone forces replication.
         assert!(cfg.requires_memory_replication());
     }
-
-    // -- to_string round-trip ---------------------------------------------
 
     #[test]
     fn to_string_canonical_range_compression() {
@@ -1064,8 +891,6 @@ mod tests {
         }
     }
 
-    // -- L3 pair-merge bundling on synthetic domains ----------------------
-
     fn domain(sys: NumaIndex, cpus: &[CpuIndex]) -> L3Domain {
         L3Domain {
             system_numa_index: sys,
@@ -1075,15 +900,12 @@ mod tests {
 
     #[test]
     fn l3_bundle_merges_within_budget() {
-        // Two system nodes, two L3 domains of 2 CPUs each.
         let domains = vec![
             domain(0, &[0, 1]),
             domain(0, &[2, 3]),
             domain(1, &[4, 5]),
             domain(1, &[6, 7]),
         ];
-        // bundle_size = 4: each pair (2+2 <= 4) merges into one node per system
-        // node.
         let cfg = from_l3_info(domains, 4);
         assert_eq!(cfg.num_numa_nodes(), 2);
         assert_eq!(cfg.nodes()[0], set(&[0, 1, 2, 3]));
@@ -1098,7 +920,6 @@ mod tests {
             domain(1, &[4, 5]),
             domain(1, &[6, 7]),
         ];
-        // bundle_size = 3: 2+2 = 4 > 3, so nothing merges; four nodes.
         let cfg = from_l3_info(domains, 3);
         assert_eq!(cfg.num_numa_nodes(), 4);
         assert_eq!(cfg.nodes()[0], set(&[0, 1]));
@@ -1109,7 +930,6 @@ mod tests {
 
     #[test]
     fn l3_bundle_size_zero_never_merges() {
-        // L3DomainsPolicy is modelled as bundle_size = 0.
         let domains = vec![domain(0, &[0, 1]), domain(0, &[2, 3])];
         let cfg = from_l3_info(domains, 0);
         assert_eq!(cfg.num_numa_nodes(), 2);
@@ -1117,7 +937,6 @@ mod tests {
 
     #[test]
     fn l3_bundle_boundary_exact_merges() {
-        // |a| + |b| == bundle_size must merge (`<=`).
         let domains = vec![domain(0, &[0, 1]), domain(0, &[2, 3])];
         let cfg = from_l3_info(domains, 4);
         assert_eq!(cfg.num_numa_nodes(), 1);
@@ -1126,11 +945,8 @@ mod tests {
 
     #[test]
     fn l3_bundle_pass_semantics_leaves_odd_tail() {
-        // Three domains of 2 within one system node, bundle_size = 4.
-        // Pass 1: merge (0,1)+(2,3) -> {0,1,2,3}; j advances past the merged
-        // node, so (4,5) is not merged in this pass. After the pass `changed`
-        // is true, so a second pass runs: now [{0,1,2,3}, {4,5}], 4+2 = 6 > 4,
-        // no merge. Result: two nodes.
+        // The first pass merges (0,1)+(2,3) and advances past the result, so
+        // (4,5) is untouched; the second pass finds 4+2 > 4 and stops.
         let domains = vec![domain(0, &[0, 1]), domain(0, &[2, 3]), domain(0, &[4, 5])];
         let cfg = from_l3_info(domains, 4);
         assert_eq!(cfg.num_numa_nodes(), 2);
@@ -1138,23 +954,17 @@ mod tests {
         assert_eq!(cfg.nodes()[1], set(&[4, 5]));
     }
 
-    // -- default construction ---------------------------------------------
-
     #[test]
     fn default_config_single_node() {
         let cfg = NumaConfig::new();
         assert_eq!(cfg.num_numa_nodes(), 1);
         assert_eq!(cfg.num_cpus(), system_threads());
         assert!(!cfg.is_custom_affinity());
-        // A single node without custom affinity needs no replication.
         assert!(!cfg.requires_memory_replication());
     }
 
-    // -- suggests_binding_threads -----------------------------------------
-
-    /// Build a NON-custom config from explicit per-node CPU lists (the tests
-    /// module can reach the private `empty` / `add_cpu_to_node`). `from_string`
-    /// cannot be used because it forces `custom_affinity`.
+    /// Build a non-custom config from explicit per-node CPU lists.
+    /// `from_string` cannot be used: it forces `custom_affinity`.
     fn config_from_nodes(node_cpus: &[&[CpuIndex]]) -> NumaConfig {
         let mut cfg = NumaConfig::empty();
         for (n, cpus) in node_cpus.iter().enumerate() {
@@ -1167,8 +977,8 @@ mod tests {
 
     #[test]
     fn suggests_binding_custom_affinity_always_true() {
-        // `custom_affinity` short-circuits to true before every other check —
-        // even for a single thread.
+        // `custom_affinity` short-circuits before every other check, even for a
+        // single thread.
         let cfg = NumaConfig::from_string("0-3:4-7").unwrap();
         assert!(cfg.is_custom_affinity());
         assert!(cfg.suggests_binding_threads(1));
@@ -1177,61 +987,49 @@ mod tests {
 
     #[test]
     fn suggests_binding_single_thread_or_single_node_false() {
-        // A single thread never binds (non-custom).
         let two = config_from_nodes(&[&[0, 1, 2, 3], &[4, 5, 6, 7]]);
         assert!(!two.suggests_binding_threads(1));
         assert!(!two.suggests_binding_threads(0));
-        // A single node never binds regardless of thread count.
         let one = config_from_nodes(&[&[0, 1, 2, 3, 4, 5, 6, 7]]);
         assert!(!one.suggests_binding_threads(8));
     }
 
     #[test]
     fn suggests_binding_largest_over_two_branch() {
-        // Two equal 4-CPU nodes: largest = 4, largest/2 = 2, num_not_small = 2.
-        // (num_threads > 2 || num_threads >= 8) && nodes > 1.
+        // Two equal 4-CPU nodes: largest/2 = 2 and num_not_small = 2.
         let cfg = config_from_nodes(&[&[0, 1, 2, 3], &[4, 5, 6, 7]]);
-        // 2 > 2 is false and 2 >= 8 is false → no binding.
         assert!(!cfg.suggests_binding_threads(2));
-        // 3 > 2 is true → binding (the `largest / 2` branch).
+        // The `largest / 2` branch.
         assert!(cfg.suggests_binding_threads(3));
     }
 
     #[test]
     fn suggests_binding_four_times_not_small_branch() {
-        // One big node (20) plus a small node (4, ratio 0.2 ≤ 0.6). largest = 20,
-        // largest/2 = 10, num_not_small = 1.
+        // One big node of 20 plus a small node of 4, so num_not_small = 1.
         let big: Vec<CpuIndex> = (0..20).collect();
         let small: Vec<CpuIndex> = (20..24).collect();
         let cfg = config_from_nodes(&[&big, &small]);
-        // 3 > 10 false, 3 >= 4 false → no binding.
         assert!(!cfg.suggests_binding_threads(3));
-        // 4 > 10 false, but 4 >= 4*1 true → binding (the `4 * num_not_small`
-        // branch, distinct from the `largest / 2` branch which is false here).
+        // The `4 * num_not_small` branch, with `largest / 2` false here.
         assert!(cfg.suggests_binding_threads(4));
     }
 
     #[test]
     fn suggests_binding_small_node_threshold_is_inclusive_0_6() {
-        // largest = 20, largest/2 = 10. Pick num_threads = 4 so the `largest/2`
-        // branch (4 > 10) is false; only `num_threads >= 4 * num_not_small`
-        // decides, isolating the small-node classification.
+        // Four threads keeps the `largest / 2` branch false, so only the
+        // small-node classification decides.
         let big: Vec<CpuIndex> = (0..20).collect();
 
-        // Second node of 12 CPUs: 12/20 = 0.6, which is `<= 0.6` → SMALL, so
-        // num_not_small = 1 and 4 >= 4*1 → binding.
+        // 12/20 = 0.6 is at the threshold, so this node counts as small.
         let at_boundary: Vec<CpuIndex> = (20..32).collect();
         let small_cfg = config_from_nodes(&[&big, &at_boundary]);
         assert!(small_cfg.suggests_binding_threads(4));
 
-        // Second node of 13 CPUs: 13/20 = 0.65 > 0.6 → NOT small, so
-        // num_not_small = 2 and 4 >= 4*2 is false → no binding.
+        // 13/20 = 0.65 is above it, so this node is not small.
         let above_boundary: Vec<CpuIndex> = (20..33).collect();
         let big_cfg = config_from_nodes(&[&big, &above_boundary]);
         assert!(!big_cfg.suggests_binding_threads(4));
     }
-
-    // -- distribute_threads_among_numa_nodes ------------------------------
 
     #[test]
     fn distribute_single_node_all_zero() {
@@ -1247,13 +1045,11 @@ mod tests {
 
     #[test]
     fn distribute_ties_go_to_lowest_index() {
-        // The first pick is a tie (both fills 1/2); it must land on node 0.
+        // The first pick is a tie, which must land on node 0.
         let cfg = config_from_nodes(&[&[0, 1], &[2, 3]]);
         assert_eq!(cfg.distribute_threads_among_numa_nodes(1), vec![0]);
         assert_eq!(cfg.distribute_threads_among_numa_nodes(2), vec![0, 1]);
     }
-
-    // -- bind_current_thread_to_numa_node ---------------------------------
 
     #[cfg(target_os = "linux")]
     fn current_thread_affinity() -> BTreeSet<CpuIndex> {
@@ -1275,9 +1071,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn bind_sets_exactly_the_node_cpus() {
-        // Run in a spawned thread so we never perturb the test runner's own
-        // affinity. Build a single-node config from the CPUs currently allowed,
-        // bind to it, then confirm `sched_getaffinity` reports exactly that set.
+        // Spawned so the test runner's own affinity is never perturbed, and
+        // built from the currently allowed CPUs so the bind targets a valid set.
         let handle = std::thread::spawn(|| {
             let allowed: Vec<CpuIndex> = current_thread_affinity().into_iter().collect();
             assert!(!allowed.is_empty(), "the test thread must have >= 1 CPU");
@@ -1294,16 +1089,13 @@ mod tests {
     #[should_panic(expected = "out of range or empty")]
     fn bind_out_of_range_node_panics() {
         let cfg = config_from_nodes(&[&[0, 1]]);
-        // Node 5 does not exist — fail-loud.
         cfg.bind_current_thread_to_numa_node(5);
     }
 
     #[test]
     fn execute_on_numa_node_runs_closure_bound() {
-        // Build a single-node config from the CPUs currently allowed, so the bind
-        // inside `execute_on_numa_node` targets a valid set (mirrors
-        // `bind_sets_exactly_the_node_cpus`). The closure must run to completion
-        // and observe the bound affinity.
+        // Built from the currently allowed CPUs so the bind inside
+        // `execute_on_numa_node` targets a valid set.
         let allowed: Vec<CpuIndex> = current_thread_affinity().into_iter().collect();
         assert!(!allowed.is_empty(), "the test thread must have >= 1 CPU");
         let cfg = config_from_nodes(&[&allowed]);

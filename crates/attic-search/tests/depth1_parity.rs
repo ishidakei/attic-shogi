@@ -1,21 +1,14 @@
-//! Depth-1 search parity gate (blocking).
+//! Depth-1 search parity test: run the `go depth 1` root search against six
+//! reference-captured fixtures and assert **bestmove, score and nodes** all
+//! match exactly.
 //!
-//! Runs the `go depth 1` root search ([`QSearch::run_root`]) against the six
-//! reference-captured fixtures under `tests/fixtures/search-depth1/` and asserts
-//! that **bestmove, score, and nodes** all match exactly. These three are one
-//! inseparable set: the `(nodes & 14)` root tie-break means a single-node drift
-//! can cascade into a different score and a flipped bestmove, so a mismatch on
-//! any of them signals a divergence in the search itself.
+//! Those three are one inseparable set. The `(nodes & 14)` root tie-break means
+//! a single node of drift can cascade into a different score and a flipped
+//! bestmove, so a mismatch on any of them signals a divergence in the search.
 //!
-//! The fixtures were captured with Threads=1, no book, `usinewgame` before each
-//! position, `go depth 1`, USI_Hash default 1024 MiB, FV_SCALE=16 — reproduced
-//! here by resizing the transposition table to 1024 MiB, clearing it per
-//! fixture (the `usinewgame` equivalent), and letting `run_root` bump the
-//! generation (the `go` equivalent).
-//!
-//! Like the other real-network tests, this is skipped with a notice when
-//! `nn.bin` is absent (a checkout without it staged), so the default
-//! `cargo test` run stays green everywhere.
+//! The capture conditions are reproduced below by resizing the transposition
+//! table and clearing it per fixture. Skipped with a notice when `nn.bin` is
+//! absent, like the other real-network tests.
 
 use std::path::PathBuf;
 
@@ -26,9 +19,9 @@ use serde::Deserialize;
 
 /// `VALUE_MATE` (`types.h`).
 const VALUE_MATE: i32 = 32000;
-/// `VALUE_TB_WIN_IN_MAX_PLY` (`types.h`): the `is_decisive` threshold.
+/// The `is_decisive` threshold (`types.h`).
 const VALUE_TB_WIN_IN_MAX_PLY: i32 = VALUE_MATE - 246;
-/// `Eval::PawnValue` (`NormalizeToPawnValue`, `usi.cpp`).
+/// `Eval::PawnValue` (`usi.cpp`).
 const PAWN_VALUE: i32 = 90;
 /// Engine default `USI_Hash` in MiB (`tests/fixtures/search-depth1/README.md`).
 const HASH_MB: usize = 1024;
@@ -45,7 +38,7 @@ const FIXTURES: &[&str] = &[
 #[derive(Debug, Deserialize)]
 struct Fixture {
     sfen: String,
-    /// Optional USI moves applied after the SFEN (USI `position ... moves ...`).
+    /// Optional USI moves applied after the SFEN.
     #[serde(default)]
     moves: Vec<String>,
     depth: i32,
@@ -79,8 +72,7 @@ fn load_fixture(name: &str) -> Fixture {
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse fixture {name}: {e}"))
 }
 
-/// Parse the SFEN and apply the optional `moves` prefix, mirroring USI
-/// `position sfen <SFEN> moves <m1> <m2> ...`.
+/// Parse the SFEN and apply the optional `moves` prefix.
 fn setup(fixture: &Fixture) -> Position {
     let mut pos = parse_sfen(&fixture.sfen).expect("valid fixture SFEN");
     for usi in &fixture.moves {
@@ -90,8 +82,7 @@ fn setup(fixture: &Fixture) -> Position {
     pos
 }
 
-/// The USI-string form of the outcome's bestmove (fixtures use ordinary moves;
-/// the resign / win sentinels never occur for the six fixtures).
+/// The USI-string form of the outcome's bestmove.
 fn bestmove_usi(best_move: Move, kind: RootKind) -> String {
     match kind {
         RootKind::Resign => "resign".to_string(),
@@ -105,9 +96,8 @@ fn is_decisive(v: i32) -> bool {
     v.abs() >= VALUE_TB_WIN_IN_MAX_PLY
 }
 
-/// Format a search value the way the reference USI layer does (`score.cpp` /
-/// `usi.cpp` `format_score`): a mate distance for decisive scores, else
-/// `100 * v / PawnValue` centipawns (C++ truncating division).
+/// Format a search value as the reference USI layer does (`format_score`,
+/// `usi.cpp`): a mate distance for a decisive score, else centipawns.
 fn format_score(v: i32) -> ScoreJson {
     if is_decisive(v) {
         let distance = VALUE_MATE - v.abs();
@@ -127,7 +117,7 @@ fn assert_fixture(name: &str, net: &attic_eval::NnueNetwork, tt: &mut Transposit
     let fixture = load_fixture(name);
     assert_eq!(fixture.depth, 1, "{name}: depth-1 fixtures only");
 
-    // usinewgame: clear the table (also resets the generation to 0).
+    // The `usinewgame` equivalent, which also resets the generation.
     tt.clear();
     let pos = setup(&fixture);
 
@@ -136,7 +126,6 @@ fn assert_fixture(name: &str, net: &attic_eval::NnueNetwork, tt: &mut Transposit
         search.run_root(&pos, fixture.depth)
     };
 
-    // bestmove.
     let got_best = bestmove_usi(outcome.best_move, outcome.kind);
     assert_eq!(
         got_best, fixture.bestmove,
@@ -144,7 +133,6 @@ fn assert_fixture(name: &str, net: &attic_eval::NnueNetwork, tt: &mut Transposit
         fixture.bestmove
     );
 
-    // score (cp or mate).
     let got_score = format_score(outcome.score);
     assert_eq!(
         got_score.cp, fixture.score.cp,
@@ -157,14 +145,13 @@ fn assert_fixture(name: &str, net: &attic_eval::NnueNetwork, tt: &mut Transposit
         outcome.score
     );
 
-    // nodes.
     assert_eq!(
         outcome.nodes, fixture.nodes,
         "{name}: node count mismatch (got {}, want {})",
         outcome.nodes, fixture.nodes
     );
 
-    // pv is desirable but not gated; surface a divergence as a notice only.
+    // The PV is desirable but not gated.
     let got_pv: Vec<String> = outcome.pv.iter().map(|&m| format_usi_move(m)).collect();
     if got_pv != fixture.pv {
         eprintln!(
@@ -180,7 +167,7 @@ fn depth1_search_matches_reference_fixtures() {
     let path = nn_bin_path();
     if !path.exists() {
         eprintln!(
-            "skipping depth1_search_matches_reference_fixtures: {} is not present (staged only on the dev VM)",
+            "skipping depth1_search_matches_reference_fixtures: {} is not present (obtained out-of-band)",
             path.display()
         );
         return;
@@ -188,7 +175,7 @@ fn depth1_search_matches_reference_fixtures() {
 
     let net = attic_eval::load_network(&path).expect("real nn.bin should load and validate");
 
-    // One 1024 MiB table, cleared per fixture (the usinewgame equivalent).
+    // One table, cleared per fixture.
     let mut tt = TranspositionTable::new();
     tt.resize(HASH_MB);
 

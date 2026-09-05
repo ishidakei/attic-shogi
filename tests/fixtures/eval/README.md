@@ -69,5 +69,5 @@ cargo xtask capture-eval \
   --fixture tests/fixtures/eval/my-position.json
 ```
 
-`capture-eval` is deterministic: rerunning against the same submodule pin and
+`capture-eval` is deterministic: rerunning against the same reference build and
 the same `nn.bin` produces a byte-identical file.

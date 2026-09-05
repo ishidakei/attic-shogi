@@ -1,11 +1,9 @@
-//! Driver-level session tests for the root opening-book integration.
+//! Session tests for the root opening-book integration, against a synthetic
+//! all-zero network and a `.ybb` staged in a temp dir.
 //!
-//! Each test drives a full `usi → setoption → isready → position → go` session
-//! in-process against a synthetic (all-zero) network and a `.ybb` staged in a
-//! temp dir, so they are hermetic. The all-zero network makes any *search*
-//! deterministic; a book hit short-circuits the search entirely, so a reply that
-//! equals the book's best move (and carries the depth-0 book `info` signature)
-//! proves the book was consulted.
+//! A book hit short-circuits the search entirely, so a reply equal to the book's
+//! best move and carrying the depth-0 book `info` signature is what proves the
+//! book was consulted.
 
 mod common;
 
@@ -23,10 +21,8 @@ const DROP_HEAVY: &str = "k8/1P7/G8/1N2P4/9/9/9/9/8K b 2PG2pg 1";
 const SENNICHITE: &str = "9/4k4/9/9/9/9/9/4K4/9 b 9P9p 1";
 
 /// A session prefix that loads the synthetic net and points the book at `dir`,
-/// staging `sample.ybb` as `user_book1.ybb` — one of the advertised `BookFile`
-/// choices, all of which are `.ybb` names. `on_the_fly` toggles the
-/// `BookOnTheFly` leg. The filter options are opened up so every fixture's
-/// unique top move survives with `BookEvalDiff 0`.
+/// staging `sample.ybb` as one of the advertised `BookFile` choices. The filter
+/// options are opened up so every fixture's unique top move survives.
 fn book_session_prefix(dir: &str, on_the_fly: bool) -> String {
     format!(
         "usi\n\
@@ -44,17 +40,12 @@ fn book_session_prefix(dir: &str, on_the_fly: bool) -> String {
     )
 }
 
-// -------------------------------------------------------------------------
-// No-book behaviour is invisible.
-// -------------------------------------------------------------------------
-
 #[test]
 #[cfg_attr(miri, ignore)]
 fn default_no_book_emits_no_book_output_and_searches() {
     let dir = TempDir::new("nobook");
     write_synthetic_nn_bin(dir.path());
     let evaldir = dir.path().to_str().unwrap();
-    // Pure defaults: BookFile=no_book. No book string of any kind, real search.
     let session = format!(
         "usi\n\
          setoption name Threads value 1\n\
@@ -65,9 +56,8 @@ fn default_no_book_emits_no_book_output_and_searches() {
          quit\n"
     );
     let out = drive_with_seed(&session, TEST_BOOK_SEED);
-    // `usi` lists the book *option declarations* (which contain "Book"); what
-    // must be absent is any book *activity* — no `info` line mentions the book,
-    // and no depth-0 book short-circuit occurs.
+    // `usi` lists the book option declarations, which contain "Book"; what must
+    // be absent is book activity.
     assert!(
         !out.lines()
             .any(|l| l.starts_with("info") && l.to_lowercase().contains("book")),
@@ -90,8 +80,7 @@ fn absent_listed_book_falls_back_to_bookless_without_panic() {
     let dir = TempDir::new("absent");
     write_synthetic_nn_bin(dir.path());
     let d = dir.path().to_str().unwrap();
-    // A listed name whose file is absent: an info-string notice, then a normal
-    // (bookless) search — never a panic.
+    // A listed name whose file is absent: a notice, then a bookless search.
     let session = format!(
         "usi\n\
          setoption name Threads value 1\n\
@@ -115,10 +104,6 @@ fn absent_listed_book_falls_back_to_bookless_without_panic() {
     assert_eq!(bestmove_lines(&out).len(), 1);
 }
 
-// -------------------------------------------------------------------------
-// Book-hit session (both read modes).
-// -------------------------------------------------------------------------
-
 fn run_book_hits(on_the_fly: bool) {
     let dir = TempDir::new(if on_the_fly { "hit-otf" } else { "hit-mem" });
     write_synthetic_nn_bin(dir.path());
@@ -138,10 +123,8 @@ fn run_book_hits(on_the_fly: bool) {
     session.push_str("quit\n");
     let out = drive_with_seed(&session, TEST_BOOK_SEED);
 
-    // An advertised choice names the file directly, so nothing is rewritten:
-    // the sibling-fallback info string must NOT appear. (The fallback itself is
-    // unchanged and unit-tested in `driver.rs`; it is simply unreachable from a
-    // combo that offers only `.ybb` names.)
+    // An advertised choice names the file directly, so the sibling-fallback
+    // notice must not appear.
     assert!(
         !out.contains("book file fallback :"),
         "an advertised `.ybb` choice must load without a fallback rewrite:\n{out}"
@@ -160,8 +143,7 @@ fn run_book_hits(on_the_fly: bool) {
             "book move for {sfen} (on_the_fly={on_the_fly}):\n{out}"
         );
     }
-    // A book hit reports a depth-0 line; a search never does. No depth-1 search
-    // line appears for any of the four in-book positions.
+    // A book hit reports a depth-0 line; a search never does.
     assert!(
         out.contains("info depth 0 "),
         "book hits must emit a depth-0 info line:\n{out}"
@@ -184,10 +166,6 @@ fn book_hits_on_the_fly_mode() {
     run_book_hits(true);
 }
 
-// -------------------------------------------------------------------------
-// Gating options.
-// -------------------------------------------------------------------------
-
 #[test]
 #[cfg_attr(miri, ignore)]
 fn own_book_off_runs_a_real_search() {
@@ -196,7 +174,6 @@ fn own_book_off_runs_a_real_search() {
     stage_sample_ybb(dir.path(), "user_book1.ybb");
     let d = dir.path().to_str().unwrap();
     let mut session = book_session_prefix(d, false);
-    // Turn the master gate off, then search an in-book position.
     session.push_str("setoption name USI_OwnBook value false\n");
     session.push_str(&format!("position sfen {STARTPOS_B}\ngo depth 1\nquit\n"));
     let out = drive_with_seed(&session, TEST_BOOK_SEED);
@@ -218,7 +195,7 @@ fn wrong_game_ply_misses_then_ignore_book_ply_hits() {
     stage_sample_ybb(dir.path(), "user_book1.ybb");
     let d = dir.path().to_str().unwrap();
 
-    // Same board as the in-book startpos but at ply 2 → miss → search runs.
+    // The in-book startpos board, but at ply 2, so the probe misses.
     let mut miss = book_session_prefix(d, false);
     miss.push_str(&format!(
         "position sfen {STARTPOS_B_PLY2}\ngo depth 1\nquit\n"
@@ -229,8 +206,7 @@ fn wrong_game_ply_misses_then_ignore_book_ply_hits() {
         "ply mismatch must miss and search:\n{out}"
     );
 
-    // IgnoreBookPly is captured at load, so it needs a reload (isready) to take
-    // effect — then the same ply-2 position hits the ply-1 entry.
+    // `IgnoreBookPly` is captured at load, so it takes a reload to have effect.
     let mut hit = book_session_prefix(d, false);
     hit.push_str("setoption name IgnoreBookPly value true\n");
     hit.push_str("isready\n");
@@ -264,10 +240,6 @@ fn game_ply_past_book_moves_misses() {
     );
 }
 
-// -------------------------------------------------------------------------
-// FlippedBook (session level; unit-level flip_move is in attic-state).
-// -------------------------------------------------------------------------
-
 #[test]
 #[cfg_attr(miri, ignore)]
 fn flipped_book_hits_the_rotated_startpos() {
@@ -276,8 +248,8 @@ fn flipped_book_hits_the_rotated_startpos() {
     stage_sample_ybb(dir.path(), "user_book1.ybb");
     let d = dir.path().to_str().unwrap();
 
-    // Startpos is 180°-symmetric under color swap: the White-to-move startpos
-    // packs (after flipping) to the in-book Black key, so 7g7f → 3c3d.
+    // Startpos is 180°-symmetric under a color swap, so the White-to-move
+    // startpos flips onto the in-book Black key and 7g7f becomes 3c3d.
     let mut on = book_session_prefix(d, false);
     on.push_str("setoption name FlippedBook value true\n");
     on.push_str(&format!("position sfen {STARTPOS_W}\ngo depth 1\nquit\n"));
@@ -293,7 +265,6 @@ fn flipped_book_hits_the_rotated_startpos() {
         "FlippedBook on must hit the rotated position:\n{out}"
     );
 
-    // With FlippedBook off the rotated position misses and searches.
     let mut off = book_session_prefix(d, false);
     off.push_str("setoption name FlippedBook value false\n");
     off.push_str(&format!("position sfen {STARTPOS_W}\ngo depth 1\nquit\n"));
@@ -304,10 +275,6 @@ fn flipped_book_hits_the_rotated_startpos() {
     );
 }
 
-// -------------------------------------------------------------------------
-// Ponder fallback.
-// -------------------------------------------------------------------------
-
 #[test]
 #[cfg_attr(miri, ignore)]
 fn ponder_emitted_when_child_is_in_book_and_omitted_at_a_leaf() {
@@ -315,7 +282,6 @@ fn ponder_emitted_when_child_is_in_book_and_omitted_at_a_leaf() {
     write_synthetic_nn_bin(dir.path());
     let d = dir.path().to_str().unwrap();
 
-    // Post-7g7f position, for the chained entry.
     let after = {
         let mut p = parse(STARTPOS_B);
         p.do_move(parse_usi_move("7g7f", &p).unwrap());
@@ -323,7 +289,6 @@ fn ponder_emitted_when_child_is_in_book_and_omitted_at_a_leaf() {
     };
     let after_sfen = format_sfen(&after);
 
-    // A chained book: startpos → 7g7f, and its child → 3c3d.
     write_ybb(
         &dir.path().join("user_book1.ybb"),
         &[
@@ -340,14 +305,14 @@ fn ponder_emitted_when_child_is_in_book_and_omitted_at_a_leaf() {
         "child in book → ponder from its first move:\n{out}"
     );
 
-    // A leaf book (startpos only): no child entry → no ponder.
+    // A leaf book: no child entry, so no ponder move.
     write_ybb(
         &dir.path().join("user_book1.ybb"),
         &[(STARTPOS_B, vec![("7g7f", 100, 20)])],
     );
     let mut leaf = book_session_prefix(d, false);
-    // A reload picks up the rewritten file (same name → force via BookOnTheFly
-    // toggle so the signature changes and the book is re-read).
+    // The name is unchanged, so `BookOnTheFly` is toggled to move the reload
+    // signature and force the re-read.
     leaf.push_str("setoption name BookOnTheFly value true\nisready\n");
     leaf.push_str(&format!("position sfen {STARTPOS_B}\ngo depth 1\nquit\n"));
     let out = drive_with_seed(&leaf, TEST_BOOK_SEED);
@@ -358,10 +323,6 @@ fn ponder_emitted_when_child_is_in_book_and_omitted_at_a_leaf() {
         "leaf position → bestmove with no ponder:\n{out}"
     );
 }
-
-// -------------------------------------------------------------------------
-// Ponder / infinite discipline (no bestmove until stop / ponderhit).
-// -------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(miri, ignore)]
@@ -379,13 +340,11 @@ fn go_infinite_book_hit_holds_bestmove_until_stop() {
     h.send(&format!("position sfen {STARTPOS_B}"));
     h.send("go infinite");
 
-    // The book probe emits its multipv info lines immediately, then holds.
     assert!(
         h.wait_until(2000, |o| o.contains("multipv 1")),
         "book info lines must appear:\n{}",
         h.output()
     );
-    // No bestmove yet — the reply is held for stop.
     std::thread::sleep(std::time::Duration::from_millis(120));
     assert!(
         !h.output().contains("bestmove"),
@@ -446,21 +405,15 @@ fn go_ponder_book_hit_holds_bestmove_until_ponderhit() {
     assert_eq!(bm[0].split_whitespace().next().unwrap(), "7g7f");
 }
 
-// -------------------------------------------------------------------------
-// Multiple Book — the numbered priority series.
-// -------------------------------------------------------------------------
-
-/// [`book_session_prefix`] with `FlippedBook` off: the startpos is 180°-symmetric
-/// under a color swap, so with the flip enabled a Black-startpos entry in an
-/// upper book would answer a White-startpos probe and mask which book was
-/// actually consulted.
+/// [`book_session_prefix`] with `FlippedBook` off: startpos is 180°-symmetric
+/// under a color swap, so with the flip on a Black-startpos entry in an upper
+/// book would answer a White-startpos probe and mask which book was consulted.
 fn multi_book_prefix(dir: &str, on_the_fly: bool) -> String {
     let mut s = book_session_prefix(dir, on_the_fly);
     s.push_str("setoption name FlippedBook value false\n");
     s
 }
 
-/// How many books the session reported loading.
 fn loaded_count(out: &str) -> usize {
     out.lines().filter(|l| l.contains("book loaded : ")).count()
 }
@@ -474,8 +427,6 @@ fn run_priority_series_first_hit(on_the_fly: bool) {
     write_synthetic_nn_bin(dir.path());
     let d = dir.path().to_str().unwrap();
 
-    // Priority 0 answers the Black startpos; the base answers it differently and
-    // is the only book holding the White startpos.
     write_ybb(
         &dir.path().join("user_book1-000.ybb"),
         &[(STARTPOS_B, vec![("7g7f", 100, 20)])],
@@ -536,7 +487,6 @@ fn a_gap_ends_the_series() {
         &dir.path().join("user_book1-000.ybb"),
         &[(STARTPOS_B, vec![("7g7f", 100, 20)])],
     );
-    // `-001` is absent; `-003` exists but must never be reached.
     write_ybb(
         &dir.path().join("user_book1-003.ybb"),
         &[(STARTPOS_W, vec![("3c3d", 100, 20)])],
@@ -573,12 +523,10 @@ fn duplicate_extension_prefers_the_primary_and_a_db_slot_fails_loudly() {
     write_synthetic_nn_bin(dir.path());
     let d = dir.path().to_str().unwrap();
 
-    // `BookFile user_book1.ybb` makes `.ybb` the PRIMARY extension, so:
-    //   `-000` present under both extensions -> the `.ybb` wins, with the pin's
-    //          verbatim duplicate notice;
-    //   `-001` present only as a `.db`       -> the secondary extension is picked,
-    //          and this port cannot read it, so it reports loudly instead of
-    //          skipping silently. The series still continues past it.
+    // `BookFile user_book1.ybb` makes `.ybb` the primary extension, so `-000`
+    // present under both resolves to the `.ybb` with a duplicate notice, and
+    // `-001` present only as a `.db` resolves to a file this engine cannot read
+    // — reported loudly rather than skipped, and the series continues past it.
     let dup_slot = dir.path().join("user_book1-000.ybb");
     write_ybb(&dup_slot, &[(STARTPOS_B, vec![("7g7f", 100, 20)])]);
     std::fs::write(
@@ -602,7 +550,7 @@ fn duplicate_extension_prefers_the_primary_and_a_db_slot_fails_loudly() {
             "info string priority book file exists twice. use : {}\n",
             dup_slot.display()
         )),
-        "expected the pin's verbatim duplicate notice, got:\n{out}"
+        "expected the reference's verbatim duplicate notice, got:\n{out}"
     );
     assert!(
         out.contains(&format!(
@@ -629,8 +577,7 @@ fn no_book_loads_nothing_even_with_numbered_files_present() {
     let dir = TempDir::new("series-nobook");
     write_synthetic_nn_bin(dir.path());
     let d = dir.path().to_str().unwrap();
-    // A stray numbered file for the sentinel: the `no_book` stem is empty, so no
-    // series is enumerated and nothing is loaded.
+    // The `no_book` stem is empty, so no series is enumerated at all.
     write_ybb(
         &dir.path().join("no_book-000.ybb"),
         &[(STARTPOS_B, vec![("7g7f", 100, 20)])],
@@ -668,7 +615,6 @@ fn reread_is_skipped_until_the_capture_triple_changes() {
         &[(STARTPOS_B, vec![("2g2f", 100, 20)])],
     );
 
-    // An unchanged triple: the second `isready` re-reads nothing.
     let mut same = multi_book_prefix(d, false);
     same.push_str("isready\nquit\n");
     let out = drive_with_seed(&same, TEST_BOOK_SEED);
@@ -678,7 +624,6 @@ fn reread_is_skipped_until_the_capture_triple_changes() {
         "an unchanged (names, BookOnTheFly, IgnoreBookPly) triple must not reload:\n{out}"
     );
 
-    // Flipping BookOnTheFly re-reads; flipping IgnoreBookPly re-reads again.
     let mut flips = multi_book_prefix(d, false);
     flips.push_str("setoption name BookOnTheFly value true\nisready\n");
     flips.push_str("setoption name IgnoreBookPly value true\nisready\n");
@@ -691,7 +636,7 @@ fn reread_is_skipped_until_the_capture_triple_changes() {
     );
 
     // A numbered file appearing between two `isready`s changes the resolved name
-    // list — also a re-read, and the new book takes priority.
+    // list, which is itself a reason to re-read.
     let h = StreamHarness::start_with_seed(Some(TEST_BOOK_SEED));
     for line in multi_book_prefix(d, false).lines() {
         h.send(line);

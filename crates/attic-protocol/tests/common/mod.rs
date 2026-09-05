@@ -1,10 +1,6 @@
 //! Shared harness for driver-level session tests: a synthetic (all-zero,
-//! format-valid) `nn.bin` builder, a temp-dir guard, an all-at-once `drive`,
-//! a `.ybb` writer, and a streaming input harness for async-hold tests.
-//!
-//! The synthetic-network builder mirrors `attic-eval/src/loader.rs` (the format
-//! ground truth) and `attic-eval/src/types.rs` (the dimensions); it is a copy of
-//! the helper in `tests/eval_session.rs` so book tests run hermetically too.
+//! format-valid) `nn.bin` builder, a temp-dir guard, an all-at-once `drive`, a
+//! `.ybb` writer, and a streaming input harness for async-hold tests.
 
 #![allow(dead_code)]
 
@@ -17,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use attic_protocol::UsiDriver;
 use attic_state::{Move, Position, parse_sfen, parse_usi_move, sfen_pack};
 
-// --- SFNN-1536 file-format constants (mirror attic-eval/src/loader.rs).
+// SFNN-1536 file-format constants, mirroring `attic-eval`'s loader.
 const NNUE_VERSION: u32 = 0x7AF3_2F16;
 const NNUE_HASH_VALUE: u32 = 0x3C20_3B32;
 const FT_HASH: u32 = 0x5F13_4AB8;
@@ -102,12 +98,11 @@ pub fn write_synthetic_nn_bin(dir: &Path) -> PathBuf {
     path
 }
 
-/// Drive a full canned session in-process (input fed all at once) and return the
-/// transcript. `run` joins any worker, so the buffer is complete on return.
+/// Drive a full canned session in-process and return the transcript. `run`
+/// joins any worker, so the buffer is complete on return.
 ///
-/// The book / `rtime` PRNG seed is process entropy (the production default), so
-/// this is for sessions whose output does not depend on book-move randomisation.
-/// Book sessions use [`drive_with_seed`] for a fixed, reproducible seed.
+/// The book / `rtime` PRNG seed is process entropy, so this suits only sessions
+/// whose output does not depend on that randomisation.
 pub fn drive(input: &str) -> String {
     let output = Arc::new(Mutex::new(Vec::<u8>::new()));
     let driver = UsiDriver::new(input.as_bytes(), Arc::clone(&output));
@@ -116,9 +111,7 @@ pub fn drive(input: &str) -> String {
     String::from_utf8(bytes).expect("utf-8")
 }
 
-/// A fixed book-PRNG seed for reproducible book / `rtime` sessions — the engine's
-/// former hard-coded session seed, so injecting it reproduces the historical
-/// deterministic book-selection behaviour exactly.
+/// A fixed book-PRNG seed for reproducible book / `rtime` sessions.
 pub const TEST_BOOK_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// Like [`drive`] but with an explicit book-PRNG session seed, so book-move
@@ -132,8 +125,8 @@ pub fn drive_with_seed(input: &str, book_seed: u64) -> String {
 }
 
 /// Like [`drive_with_seed`] but with an injected `engine_option_profile.txt`
-/// path, so a session can exercise a non-default engine-option profile without
-/// the test process's working directory containing a profile file.
+/// path, so a session can exercise a non-default profile without one sitting in
+/// the test process's working directory.
 pub fn drive_with_profile(input: &str, book_seed: u64, profile: &Path) -> String {
     let output = Arc::new(Mutex::new(Vec::<u8>::new()));
     let driver =
@@ -156,14 +149,11 @@ pub fn bestmove_lines(out: &str) -> Vec<&str> {
         .collect()
 }
 
-// --- `.ybb` writer (mirrors xtask capture-book's serializer). ---
-
 /// One book move for [`write_ybb`]: `(usi, value, depth)`.
 pub type YbbMove<'a> = (&'a str, i16, u16);
 
 /// Build and write a depth-carrying `.ybb` at `path` from `(sfen, moves)`
-/// records. Positions are packed with the workspace encoder; records are sorted
-/// by packed key (as the format requires).
+/// records, sorted by packed key as the format requires.
 pub fn write_ybb(path: &Path, records: &[(&str, Vec<YbbMove<'_>>)]) {
     const MAGIC: &[u8; 16] = b"YANE-BINBOOK-V1\0";
 
@@ -239,11 +229,8 @@ pub fn legal(pos: &Position) -> Vec<Move> {
     v
 }
 
-// --- Streaming input harness (for the ponder/infinite hold tests). ---
-
-/// A blocking [`Read`] fed line-chunks over an mpsc channel: it blocks on an
-/// empty buffer until the next chunk (or EOF) arrives, so a test can feed the
-/// driver commands over time and observe output between them.
+/// A blocking [`Read`] fed line-chunks over an mpsc channel, so a test can feed
+/// the driver commands over time and observe output between them.
 pub struct BlockingReader {
     rx: Receiver<Option<Vec<u8>>>,
     buf: Vec<u8>,
@@ -285,7 +272,6 @@ pub struct StreamHarness {
 }
 
 impl StreamHarness {
-    /// A streaming harness seeded from process entropy (the production default).
     pub fn start() -> Self {
         Self::start_with_seed(None)
     }
@@ -317,20 +303,18 @@ impl StreamHarness {
         }
     }
 
-    /// Feed one command line (a `\n` is appended).
+    /// Feed one command line; a `\n` is appended.
     pub fn send(&self, line: &str) {
         let mut bytes = line.as_bytes().to_vec();
         bytes.push(b'\n');
         self.tx.send(Some(bytes)).expect("send");
     }
 
-    /// Current transcript.
     pub fn output(&self) -> String {
         String::from_utf8(self.output.lock().expect("lock").clone()).expect("utf-8")
     }
 
-    /// Poll until `pred(output)` holds or `timeout` elapses; returns whether it
-    /// became true. Uses a coarse 5ms poll (no wall-clock assertions).
+    /// Poll until `pred(output)` holds or `timeout` elapses.
     pub fn wait_until(&self, timeout_ms: u64, pred: impl Fn(&str) -> bool) -> bool {
         let mut waited = 0u64;
         loop {

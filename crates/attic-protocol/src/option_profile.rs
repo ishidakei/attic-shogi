@@ -1,22 +1,14 @@
 //! Parser for `engine_option_profile.txt`, the pre-handshake selector that
-//! decides *which* engine-option group the engine grows.
+//! decides which engine-option group the engine grows.
 //!
 //! Ported from the reference `OptionsMap::read_engine_option_profile`
-//! (`source/usioption.cpp`). The reference reads the
-//! file from the current directory in `USIEngine::set_engine`, BEFORE
-//! `add_options` builds the option map and therefore before the `usi` reply
-//! (`usi.cpp`) — so the read must print nothing at all, not even an
-//! `info string` (unlike `engine_options.txt`, which is read at `isready` and
-//! does announce itself).
+//! (`usioption.cpp`), which reads the file before `add_options` builds
+//! the option map and therefore before the `usi` reply (`usi.cpp`) — so
+//! the read must print nothing at all, unlike `engine_options.txt`, which is
+//! read at `isready` and does announce itself.
 //!
-//! Only one knob exists today: the book-option profile version
-//! ([`BookOptionsVersion`]). V1 is the historical surface and the default; V2
-//! swaps in the black/white-split book filters (see
-//! [`crate::options::declarations`] and `attic_search::BookConfig`).
-//!
-//! The filename is taken as a parameter (as in the reference) so tests can point
-//! at an isolated temp directory instead of relying on the process working
-//! directory.
+//! Only one knob exists: the book-option profile version
+//! ([`BookOptionsVersion`]).
 
 use std::path::Path;
 
@@ -24,41 +16,34 @@ use std::path::Path;
 /// process's current directory (`usi.cpp`).
 pub const ENGINE_OPTION_PROFILE_FILE: &str = "engine_option_profile.txt";
 
-/// Which book-option group to register.
-///
-/// Mirrors `OptionsMap::book_options_version` (`usioption.h`), whose default
-/// is `1`; a missing / unreadable profile file leaves it at V1.
+/// Which book-option group to register, mirroring
+/// `OptionsMap::book_options_version` (`usioption.h`). A missing or
+/// unreadable profile file leaves it at V1.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BookOptionsVersion {
-    /// The historical surface: `NarrowBook`, `BookEvalDiff`, `BookDepthLimit`,
-    /// `ConsiderBookMoveCount`.
+    /// `NarrowBook`, `BookEvalDiff`, `BookDepthLimit`, `ConsiderBookMoveCount`.
     #[default]
     V1,
-    /// `BOOK_OPTIONS=V2`: black/white-split eval-diff and depth limits, and the
-    /// large-book defaults (`BookOnTheFly` / `IgnoreBookPly` on, `BookMoves`
-    /// 200).
+    /// `BOOK_OPTIONS=V2`: black/white-split eval-diff and depth limits, plus the
+    /// large-book defaults.
     V2,
 }
 
 impl BookOptionsVersion {
-    /// The reference accessor `OptionsMap::book_options_v2()`
-    /// (`usioption.h`).
     pub fn is_v2(self) -> bool {
         matches!(self, BookOptionsVersion::V2)
     }
 }
 
-/// The characters the reference `StringExtension::trim` strips — and it strips
-/// them from the END only (`misc.cpp`, `is_space` at `misc.cpp`).
+/// The characters the reference `StringExtension::trim` strips, and it strips
+/// them from the end only (`misc.cpp`).
 const TRAILING_SPACE: [char; 4] = ['\r', '\n', ' ', '\t'];
 
 /// Parse the contents of a profile file, mirroring the reference scan loop
-/// (`usioption.cpp`): trailing-trim each line; skip empty lines, lines
-/// starting with `#`, and lines starting with `//`; replace `=` with a space;
-/// take the first whitespace token as the key. `BOOK_OPTIONS_V2` (any case) sets
-/// V2; `BOOK_OPTIONS` takes its value from the next token (`V2` / `2` → V2,
-/// `V1` / `1` → V1, anything else leaves the version untouched). Unknown keys
-/// are ignored, and the last recognised line wins.
+/// (`usioption.cpp`). `BOOK_OPTIONS_V2` in any case sets V2;
+/// `BOOK_OPTIONS` reads the next token, where anything but `V2` / `2` / `V1` /
+/// `1` leaves the version untouched. Unknown keys are ignored and the last
+/// recognised line wins.
 pub fn parse_engine_option_profile(contents: &str) -> BookOptionsVersion {
     let mut version = BookOptionsVersion::V1;
 
@@ -69,8 +54,8 @@ pub fn parse_engine_option_profile(contents: &str) -> BookOptionsVersion {
             continue;
         }
 
-        // `'=' → ' '` first, then whitespace tokenisation (`Parser::LineScanner`,
-        // whose `get_text` yields `""` past end-of-line).
+        // `'=' → ' '` first, then whitespace tokenisation, as the reference
+        // `Parser::LineScanner` does.
         let replaced = line.replace('=', " ");
         let mut tokens = replaced.split_whitespace();
         let key = tokens.next().unwrap_or("");
@@ -93,9 +78,9 @@ pub fn parse_engine_option_profile(contents: &str) -> BookOptionsVersion {
     version
 }
 
-/// Read `path` and parse it as a profile file. A missing / unreadable / non-UTF-8
-/// file is the V1 default, silently — the reference `Open(...).is_not_ok()`
-/// early-return (`usioption.cpp`). Nothing is printed on any path.
+/// Read `path` and parse it as a profile file. A missing, unreadable, or
+/// non-UTF-8 file silently yields the V1 default (`usioption.cpp`).
+/// Nothing is printed on any path.
 pub fn read_engine_option_profile(path: &Path) -> BookOptionsVersion {
     match std::fs::read_to_string(path) {
         Ok(text) => parse_engine_option_profile(&text),
@@ -115,7 +100,6 @@ mod tests {
             parse_engine_option_profile("\n\n   \n\t\n"),
             BookOptionsVersion::V1
         );
-        // A path that cannot exist reads as V1 without erroring.
         assert_eq!(
             read_engine_option_profile(Path::new(
                 "/nonexistent-dir-for-tests/engine_option_profile.txt"
@@ -130,7 +114,6 @@ mod tests {
             parse_engine_option_profile("BOOK_OPTIONS_V2\n"),
             BookOptionsVersion::V2
         );
-        // No trailing newline, and a trailing-whitespace tail, are equivalent.
         assert_eq!(
             parse_engine_option_profile("BOOK_OPTIONS_V2"),
             BookOptionsVersion::V2
@@ -191,7 +174,6 @@ mod tests {
 ";
         assert_eq!(parse_engine_option_profile(text), BookOptionsVersion::V1);
 
-        // A real directive surrounded by comments still applies.
         let text = "# header\nBOOK_OPTIONS_V2\n// trailer\n";
         assert_eq!(parse_engine_option_profile(text), BookOptionsVersion::V2);
     }
@@ -202,8 +184,7 @@ mod tests {
             parse_engine_option_profile("SOME_OTHER_KEY = V2\nBOOK_OPTIONS_V3\n"),
             BookOptionsVersion::V1
         );
-        // An unrecognised value leaves the current version untouched (the
-        // reference sets neither branch).
+        // An unrecognised value leaves the current version untouched.
         assert_eq!(
             parse_engine_option_profile("BOOK_OPTIONS_V2\nBOOK_OPTIONS = V9\n"),
             BookOptionsVersion::V2

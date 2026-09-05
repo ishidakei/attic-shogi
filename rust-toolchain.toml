@@ -1,5 +1,6 @@
 # Pins the workspace toolchain. An auto-fetched pinned toolchain must bring
-# rustfmt + clippy along, or the fmt/lint gates break on a fresh checkout.
+# rustfmt + clippy along, so `cargo fmt` and `cargo clippy` run on a fresh
+# checkout.
 [toolchain]
 channel = "1.98.0"
 components = ["rustfmt", "clippy"]

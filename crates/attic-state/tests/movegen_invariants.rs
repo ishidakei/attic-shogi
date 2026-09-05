@@ -1,34 +1,13 @@
-//! Property gate: invariants of the legal-move generator over random reachable
-//! positions — every position on a random legal line from `startpos`, see
-//! [`common::walk_line`].
+//! Property test: invariants of the legal-move generator over every position on
+//! a random legal line from `startpos`. Move *order* is pinned elsewhere, so
+//! these properties are deliberately order-blind.
 //!
-//! Three families:
-//!
-//! 1. **Well-formedness** — `generate_legal_all` emits no duplicates, every
-//!    emitted move is `is_ok`, passes the crate's own `pseudo_legal` and
-//!    `is_legal` predicates, and survives the `move16` narrow/widen round trip
-//!    through `to_move` (the TT fragment path).
-//! 2. **Independent legality oracle** — every emitted move, once played, really
-//!    does leave the mover's king unattacked. This is a copy-apply-scan check
-//!    (`is_attacked_discounting` over the post-move board) that shares no logic
-//!    with `is_legal`'s constant-time pin test, so it is a genuine cross-check
-//!    rather than a restatement.
-//! 3. **Cross-path agreement** — the pseudo-legal-plus-filter route and the
-//!    direct legal route agree as *sets*:
-//!    * not in check: `generate_captures ∪ generate_quiets`, filtered by
-//!      `is_legal`, equals `generate_legal_all` — which goes through the
-//!      single-target `generate_non_evasions` instead, a different target mask
-//!      and a different emission order;
-//!    * in check: the *unrestricted* `generate_non_evasions`, filtered by the
-//!      independent scan oracle above, equals `generate_legal_all` — which goes
-//!      through the restricted `generate_evasions` plus `is_legal`. This is the
-//!      strong direction: it says the restricted evasion generator loses no
-//!      legal move and invents none. (`is_legal` cannot judge the non-evasion
-//!      candidates here: its fast path is contract-bound to evasion output when
-//!      the side to move is in check.)
-//!
-//! Move *order* is pinned elsewhere — the `search_movegen` scan-oracle sequence
-//! gate — so these properties are deliberately order-blind.
+//! The strong one is cross-path agreement while in check: the *unrestricted*
+//! `generate_non_evasions`, filtered by an independent copy-apply-scan oracle,
+//! must equal `generate_legal_all`, which goes through the restricted
+//! `generate_evasions` — so that generator loses no legal move and invents
+//! none. The oracle is needed there because `is_legal`'s fast path is
+//! contract-bound to evasion output when the side to move is in check.
 
 mod common;
 
@@ -43,13 +22,12 @@ fn arb_line() -> impl Strategy<Value = Vec<u16>> {
     proptest::collection::vec(any::<u16>(), 0..=common::MAX_PLIES)
 }
 
-/// Copy-apply-scan legality oracle: play `mv`, ask whether the mover's king is
-/// attacked on the resulting board, then take the move back.
+/// Play `mv`, ask whether the mover's king is attacked on the resulting board,
+/// then take the move back.
 ///
 /// `is_attacked_discounting(ksq, them, ksq)` is the plain "is this square
-/// attacked" scan: discounting the square under test is documented as a no-op
-/// for the piece standing on it — it can never block an attack aimed at itself
-/// — and that argument is the only way to reach the scan from outside the
+/// attacked" scan — discounting the square under test is a no-op for the piece
+/// standing on it — and is the only way to reach that scan from outside the
 /// crate.
 fn leaves_mover_king_safe(pos: &mut Position, mv: Move) -> bool {
     let mover = pos.side_to_move();
@@ -74,8 +52,8 @@ fn describe(moves: &HashSet<Move>) -> String {
     v.join(" ")
 }
 
-/// Generated legal moves are unique, well-formed, and accepted by the crate's
-/// own predicates.
+/// Generated legal moves are unique, well-formed, accepted by the crate's own
+/// predicates, and survive the `move16` narrow/widen round trip.
 fn check_well_formed(pos: &mut Position) -> Result<(), TestCaseError> {
     let sfen = format_sfen(pos);
 

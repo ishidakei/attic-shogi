@@ -1,78 +1,36 @@
-//! Transposition table — a faithful port of the YaneuraOu reference
-//! (`source/tt.h` / `tt.cpp` at the pinned submodule
-//! commit), specialised to the engine's default build configuration.
+//! Transposition table, a port of the reference `tt.h` / `tt.cpp` specialised
+//! to the engine's default build configuration: a 64-bit position key whose low
+//! 16 bits are the in-cluster fragment, and three 10-byte entries per 32-byte
+//! cluster (`TT_CLUSTER_SIZE == 3`).
 //!
-//! # Configuration
+//! Those choices are load-bearing for search-node parity. The cluster size and
+//! the `clusterCount = mb·2²⁰ / sizeof(Cluster)` arithmetic together decide
+//! which positions collide, and the in-cluster replacement policy decides which
+//! entry survives a collision.
 //!
-//! The reference is heavily `#define`-parameterised; we mirror the **default**
-//! build (`source/config.h`):
-//!
-//! - `HASH_KEY_BITS == 64` → the position key is a plain 64-bit `Key64`, and
-//!   the in-cluster key fragment stored per entry is the key's low 16 bits.
-//! - `TT_CLUSTER_SIZE == 3` → each cluster holds three [`TTEntry`]s, so the
-//!   per-entry key fragment type (`TTE_KEY_TYPE`) is `uint16_t`, an entry is
-//!   10 bytes, and a cluster is exactly 32 bytes (`3 × 10 + 2` padding).
-//!
-//! These choices are load-bearing for search-node parity with the reference:
-//! the cluster size and the `clusterCount = mb·2²⁰ / sizeof(Cluster)` sizing
-//! arithmetic together decide which positions collide, and the in-cluster
-//! replacement policy decides which entry survives a collision — both feed
-//! directly into how many nodes qsearch visits.
-//!
-//! # Layering
-//!
-//! The Storage layer must not depend on the State
-//! layer, so this module speaks in primitives: the position key is a `u64`,
-//! the side-to-move is a `u8` (0 = Black, 1 = White, matching the reference's
-//! `Color` being folded into cluster-index bit 0), and the best move is stored
-//! as its low-16-bit fragment (`u16`, the reference's `Move16`). The Search
-//! layer — which owns both this table and `attic-state` — is responsible for
-//! widening the 16-bit move back to a full move and for validating it against
-//! the actual position; that reconstruction is out of scope here.
+//! The Storage layer must not depend on the State layer, so this module speaks
+//! in primitives: a `u64` key, a `u8` side-to-move, and the best move as its
+//! low-16-bit fragment. Widening that fragment and validating it against a
+//! position is the Search layer's job.
 //!
 //! # Threading
 //!
-//! The table is shared across search threads as `Arc<TranspositionTable>`: the
-//! read/write path ([`TranspositionTable::probe`] / [`TranspositionTable::locate`]
-//! / [`TranspositionTable::write_at`]) takes `&self`, so several workers can hit
-//! one instance concurrently. Each entry field is an atomic accessed with
-//! [`Ordering::Relaxed`] loads/stores — the Rust-sound equivalent of the
-//! reference's racy, lock-free `TTEntry` (`source/tt.h`),
-//! which reads and writes plain members across threads with no synchronisation.
-//! On x86-64 a relaxed atomic load/store lowers to a plain `MOV`, so the
-//! single-thread codegen is identical to the previous plain-field layout and the
-//! data layout is unchanged (a flat array of fixed-size 32-byte clusters).
-//!
-//! ## Torn-entry tolerance
+//! The table is shared as `Arc<TranspositionTable>`, and every entry field is
+//! an atomic accessed with [`Ordering::Relaxed`] — the Rust-sound equivalent of
+//! the reference's racy, lock-free `TTEntry`.
 //!
 //! Relaxed atomics make each *field* access indivisible, but an entry is six
-//! fields with no cross-field atomicity: a concurrent write on another thread
-//! can land between this thread's field reads, so [`TTEntry::read`] may return a
-//! payload that mixes an old key fragment with a new value/move (a *torn*
-//! entry). The reference tolerates exactly this. Correctness does not depend on
-//! entries being coherent: a stale or mismatched key fragment simply reads back
-//! as a miss or a wrong-position hit, and the Search layer validates every TT
-//! move against the actual position before trusting it (see the module docs
-//! above) — the shared-atomic layout here makes no coherence promise beyond
-//! per-field atomicity.
-//!
-//! ## Single-thread decision-identity
-//!
-//! With one searcher the atomics are never contended, so every field read
-//! observes the value the same thread last wrote: `probe` / `locate` /
-//! `write_at` make the exact same cluster-geometry, entry-selection,
-//! replacement-scoring and generation decisions as the previous plain-field
-//! implementation, and return the same data. The search-node parity gates are
-//! the proof.
-//!
-//! ## Lifecycle exclusivity
+//! fields with no cross-field atomicity, so a concurrent write can land between
+//! this thread's reads and [`TTEntry::read`] can return a payload mixing an old
+//! key fragment with a new value. **This is tolerated, as the reference
+//! tolerates it**: a mismatched fragment reads back as a miss or a
+//! wrong-position hit, and the Search layer validates every TT move against the
+//! actual position before trusting it.
 //!
 //! [`TranspositionTable::resize`] and [`TranspositionTable::clear`] take
-//! `&mut self`: they are driver-side lifecycle operations run only while no
-//! search holds the table. With the table behind an `Arc`, the driver reaches
-//! them via [`Arc::get_mut`], which returns `Some` only when the refcount is 1
-//! — i.e. after every search worker has been joined and dropped its clone. The
-//! type system therefore enforces that a resize/clear never races a probe.
+//! `&mut self`, so the driver must reach them through [`Arc::get_mut`], which
+//! returns `Some` only once every worker has dropped its clone. The type system
+//! therefore enforces that a resize or clear never races a probe.
 
 use std::alloc::Layout;
 use std::mem::size_of;
@@ -84,34 +42,30 @@ use std::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, Ordering};
 use crate::large_page;
 
 /// The single memory ordering used for every entry field access, matching the
-/// reference's unsynchronised (racy) reads and writes. On x86-64 this lowers to
-/// a plain `MOV`.
+/// reference's unsynchronised reads and writes.
 const REL: Ordering = Ordering::Relaxed;
 
-/// Search value. The reference's `Value` is a plain `int`; we mirror that with
-/// `i32`. Stored in an entry truncated to `i16` (all real values fit).
+/// Search value, mirroring the reference's `int`-typed `Value`. Stored in an
+/// entry truncated to `i16`, which every real value fits.
 pub type Value = i32;
 
-/// Search depth. The reference's `Depth` is a plain `int`; we mirror that with
-/// `i32`. Stored in an entry offset by [`DEPTH_NONE`] and truncated to `u8`.
+/// Search depth, mirroring the reference's `int`-typed `Depth`. Stored in an
+/// entry offset by [`DEPTH_NONE`] and truncated to `u8`.
 pub type Depth = i32;
 
-/// `DEPTH_NONE` (`source/types.h`). Entries are stored with
-/// `depth8 = depth − DEPTH_NONE`, so an all-zero entry reads back as
-/// `DEPTH_NONE` and is treated as unoccupied.
+/// `DEPTH_NONE` (`types.h`). Entries store `depth8 = depth − DEPTH_NONE`, so an
+/// all-zero entry reads back as `DEPTH_NONE` and counts as unoccupied.
 pub const DEPTH_NONE: Depth = -3;
 
-/// `VALUE_NONE` (`source/types.h`). The sentinel returned
-/// for a miss.
+/// `VALUE_NONE` (`types.h`), the sentinel returned for a miss.
 pub const VALUE_NONE: Value = 32002;
 
-/// The reference's default `USI_Hash` in MiB (`yaneuraou-search.cpp`), matched
-/// so that gate conditions equal the fixture-capture conditions. This is only
-/// the default the driver passes to `resize`: a fresh table is empty
-/// (`clusterCount == 0`) exactly like the reference's default constructor.
+/// The reference's default `USI_Hash` in MiB. Only the default the driver
+/// passes to `resize`: a fresh table is empty, like the reference's
+/// default-constructed one.
 pub const DEFAULT_HASH_MB: usize = 1024;
 
-// genBound8 bit layout (`source/tt.cpp`):
+// The `genBound8` bit layout (`tt.cpp`):
 // `generation (5) | bound (2) << 5 | pv (1) << 7`.
 const GENERATION_BITS: u8 = 5;
 const GENERATION_MASK: u8 = (1 << GENERATION_BITS) - 1;
@@ -123,9 +77,8 @@ const PV_MASK: u8 = 1 << PV_SHIFT;
 /// Number of entries per cluster (`TT_CLUSTER_SIZE == 3`).
 const CLUSTER_SIZE: usize = 3;
 
-/// Bound type of a stored value (`source/types.h`). The
-/// discriminants matter: `Exact == Upper | Lower`, and the value is packed
-/// into `genBound8`.
+/// Bound type of a stored value (`types.h`). The discriminants matter:
+/// `Exact == Upper | Lower`, and the value is packed into `genBound8`.
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Bound {
@@ -152,11 +105,8 @@ impl Bound {
     }
 }
 
-/// A decoded copy of an entry's payload — the reference's `TTData`. Reads are
-/// by value; nothing here borrows the table.
-///
-/// `move16` is the low-16-bit move fragment as stored; widening and validating
-/// it against a position is the Search layer's job (see the module docs).
+/// A decoded copy of an entry's payload (`TTData`). Nothing here borrows the
+/// table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TTData {
     /// Best move for this position, as a 16-bit fragment (`0` = none).
@@ -174,9 +124,7 @@ pub struct TTData {
 }
 
 impl TTData {
-    /// The miss sentinel returned by a failed [`TranspositionTable::probe`],
-    /// mirroring the reference's
-    /// `TTData{Move::none(), VALUE_NONE, VALUE_NONE, DEPTH_NONE, BOUND_NONE, false}`.
+    /// The miss sentinel a failed [`TranspositionTable::probe`] returns.
     #[inline]
     fn none() -> TTData {
         TTData {
@@ -190,26 +138,21 @@ impl TTData {
     }
 }
 
-/// This entry's age relative to `curr_generation` (the reference's
-/// `TTEntry::relative_age`), computed from a raw `gen_bound8` byte.
+/// This entry's age relative to `curr_generation` (`TTEntry::relative_age`),
+/// computed from a raw `gen_bound8` byte.
 ///
-/// Generations are counted like clock hours: `0 − 1 == 31`. Unsigned
-/// (wrapping) subtraction then masking to 5 bits gives the required borrow
-/// regardless of the upper pv / bound bits packed alongside. Taking the byte by
-/// value lets callers reuse a single relaxed load instead of re-reading the
-/// atomic.
+/// Generations are counted like clock hours: `0 − 1 == 31`. Wrapping
+/// subtraction then masking to 5 bits gives the required borrow whatever the
+/// pv / bound bits packed alongside hold.
 #[inline]
 fn relative_age(gen_bound8: u8, curr_generation: u8) -> u8 {
     curr_generation.wrapping_sub(gen_bound8) & GENERATION_MASK
 }
 
-/// A single transposition-table entry — 10 bytes, laid out field-for-field
-/// like the reference's `TTEntry`, with each field an atomic so the entry can
-/// be shared `&self` across threads (see the module docs' Threading section).
-/// `#[repr(C)]` pins the layout so a [`Cluster`] is exactly 32 bytes and the
-/// `clusterCount` sizing arithmetic matches the reference. Every atomic has the
-/// same size and alignment as its plain counterpart, so the layout is
-/// byte-for-byte the plain-field version's.
+/// A single transposition-table entry — 10 bytes, laid out field-for-field like
+/// the reference's `TTEntry`, with each field an atomic. `#[repr(C)]` pins the
+/// layout so that a [`Cluster`] is exactly 32 bytes and the `clusterCount`
+/// arithmetic matches the reference.
 #[repr(C)]
 #[derive(Default)]
 struct TTEntry {
@@ -229,11 +172,8 @@ struct TTEntry {
 
 impl TTEntry {
     /// Decode the packed bitfields into external types (`TTEntry::read`).
-    ///
-    /// Each field is loaded independently ([`Ordering::Relaxed`]); under
-    /// contention the six loads can straddle a concurrent write and yield a
-    /// torn payload (see the module docs). Single-threaded, every load observes
-    /// this thread's last write, so the decode is exact.
+    /// Under contention the six independent loads can straddle a concurrent
+    /// write and yield a torn payload; see the module head.
     #[inline]
     fn read(&self) -> TTData {
         let gen_bound8 = self.gen_bound8.load(REL);
@@ -247,16 +187,14 @@ impl TTEntry {
         }
     }
 
-    /// Cheap occupancy check (`TTEntry::is_occupied`): `depth8 != 0`, i.e. the
-    /// external depth is not `DEPTH_NONE`.
+    /// `TTEntry::is_occupied`: the external depth is not `DEPTH_NONE`.
     #[inline]
     fn is_occupied(&self) -> bool {
         self.depth8.load(REL) != 0
     }
 
-    /// Replacement priority used by `probe`: `depth8 − 8 · relative_age`.
-    /// Lower is more replaceable. Computed in `i32` to match the reference's
-    /// `int` promotion (the subtraction can go negative).
+    /// Replacement priority, lower being more replaceable. Computed in `i32` to
+    /// match the reference's `int` promotion: the subtraction can go negative.
     #[inline]
     fn replace_priority(&self, curr_generation: u8) -> i32 {
         let depth8 = self.depth8.load(REL) as i32;
@@ -264,9 +202,8 @@ impl TTEntry {
         depth8 - 8 * relative_age(gen_bound8, curr_generation) as i32
     }
 
-    /// Zero every field (the per-entry half of [`TranspositionTable::clear`]).
-    /// Uses `&mut self` (`get_mut`) so it runs as plain stores under the
-    /// lifecycle-exclusivity contract, no atomic ops.
+    /// Zero every field. Takes `&mut self`, so the writes are plain stores
+    /// under the exclusivity contract rather than atomic ops.
     #[inline]
     fn reset(&mut self) {
         *self.key.get_mut() = 0;
@@ -278,15 +215,11 @@ impl TTEntry {
     }
 
     /// Store a new node's data, possibly overwriting an older position
-    /// (`TTEntry::save`). `k` is the low-16-bit key fragment; `curr_generation`
-    /// is the caller-supplied age (the reference lets learners pass a per-thread
-    /// generation, so it is an argument rather than read from the table).
+    /// (`TTEntry::save`). `curr_generation` is an argument rather than read from
+    /// the table because the reference lets learners pass a per-thread one.
     ///
-    /// Takes `&self`: the fields are mutated through relaxed atomic stores,
-    /// exactly like the reference's racy in-place writes. The old `key` /
-    /// `depth8` / `gen_bound8` are each read once up front (before any store),
-    /// so the replacement decision sees the pre-save entry state — bit-identical
-    /// to the previous plain-field logic in single-threaded execution.
+    /// The old `key` / `depth8` / `gen_bound8` are each read once before any
+    /// store, so the replacement decision sees the pre-save entry state.
     #[inline]
     #[allow(clippy::too_many_arguments)]
     fn save(
@@ -304,14 +237,12 @@ impl TTEntry {
         let old_depth8 = self.depth8.load(REL);
         let old_gen_bound8 = self.gen_bound8.load(REL);
 
-        // Preserve the old move if we don't have a new one for this position.
         if m != 0 || k != old_key {
             self.move16.store(m, REL);
         }
 
-        // Overwrite less valuable entries (cheapest checks first). The depth
-        // comparison is done in i32 to match the reference's int promotion of
-        // `depth8` (`depth8 - 4` may be negative).
+        // The depth comparison is in `i32` to match the reference's `int`
+        // promotion: `depth8 - 4` may be negative.
         if b == Bound::Exact
             || k != old_key
             || d - DEPTH_NONE + 2 * pv as Depth > old_depth8 as Depth - 4
@@ -334,8 +265,7 @@ impl TTEntry {
 }
 
 /// A cluster of [`CLUSTER_SIZE`] entries plus padding to a round 32 bytes.
-/// Entries in one cluster share a hash slot; a collision spills into the
-/// following entries and is resolved by the replacement policy in `probe`.
+/// Entries in one cluster share a hash slot.
 #[repr(C)]
 #[derive(Default)]
 struct Cluster {
@@ -343,91 +273,60 @@ struct Cluster {
     _padding: [u8; 2],
 }
 
-// The `clusterCount` sizing arithmetic and cache-line reasoning both assume a
-// 32-byte cluster; pin it so a layout regression is a compile error.
+// The `clusterCount` arithmetic assumes a 32-byte cluster, so a layout
+// regression must be a compile error.
 const _: () = assert!(size_of::<Cluster>() == 32);
 
-/// Base alignment of the cluster allocation, mirroring the reference's
-/// `aligned_large_pages_alloc` (`source/memory.cpp`): a
-/// 2 MiB huge-page boundary on Linux so a `MADV_HUGEPAGE` hint can back the
-/// region with transparent huge pages, and a 4 KiB page boundary elsewhere
-/// (macOS dev machines / CI), where the huge-page path does not apply.
-///
-/// The same value the shared allocator uses ([`crate::large_page::LARGE_PAGE_ALIGN`]);
-/// the TT allocates through that shared helper, so this alias just documents the
-/// TT's own dependence on the constant.
+/// Base alignment of the cluster allocation, an alias for the shared
+/// [`crate::large_page::LARGE_PAGE_ALIGN`] the TT allocates through.
 const TT_ALLOC_ALIGN: usize = crate::large_page::LARGE_PAGE_ALIGN;
 
 /// The transposition table's owned backing store: a raw, [`TT_ALLOC_ALIGN`]-
-/// aligned, zero-initialised block of [`Cluster`]s, mirroring the reference's
-/// `aligned_large_pages_alloc` / `aligned_large_pages_free` pair
-/// (`source/memory.cpp`, `tt.cpp`).
-///
-/// Unlike the previous `Box<[Cluster]>` backing store, the allocation size is
-/// rounded **up** to a whole multiple of [`TT_ALLOC_ALIGN`] (the tail beyond
-/// `len` clusters stays unused), the base pointer is aligned to the huge-page
-/// boundary, and — on Linux — the region is `madvise(MADV_HUGEPAGE)`-hinted at
-/// allocation time. The exposed slice still covers exactly `len` clusters, so
-/// every consumer ([`Deref`]/[`DerefMut`] to `[Cluster]`) sees the same view as
-/// before.
+/// aligned, zero-initialised block of [`Cluster`]s. The exposed slice covers
+/// exactly `len` clusters; the round-up tail of the allocation is not part of
+/// it.
 struct ClusterArray {
     /// Base of the aligned allocation. Dangling (never dereferenced) when
     /// `len == 0`; always [`TT_ALLOC_ALIGN`]-aligned otherwise.
     ptr: NonNull<Cluster>,
-    /// Number of live clusters (`clusterCount`). The slice exposes exactly this
-    /// many; the rounded-up allocation tail is not part of it.
+    /// Number of live clusters (`clusterCount`).
     len: usize,
-    /// The exact [`Layout`] the block was allocated with (rounded-up size +
-    /// [`TT_ALLOC_ALIGN`] alignment), replayed verbatim to [`dealloc`] on drop.
+    /// The exact [`Layout`] the block was allocated with, replayed verbatim to
+    /// [`dealloc`] on drop.
     layout: Layout,
 }
 
-// SAFETY: `ClusterArray` owns a heap block of `Cluster`, which is itself
-// `Send`/`Sync` (every field is an atomic). The raw `NonNull` backing store
-// suppresses the automatic derivation, so it is restored explicitly. The block
-// is uniquely owned (freed once, in `Drop`), so moving it across threads and
-// sharing `&` to it are both sound.
+// SAFETY: `ClusterArray` uniquely owns a heap block of `Cluster`, freed once in
+// `Drop`; `Cluster` is itself `Send`/`Sync`, every field being an atomic. The
+// raw `NonNull` suppresses the automatic derivation, so it is restored here.
 unsafe impl Send for ClusterArray {}
 unsafe impl Sync for ClusterArray {}
 
 impl ClusterArray {
-    /// An unsized backing store (`clusterCount == 0`) — allocates nothing,
-    /// matching the reference's default-constructed table.
+    /// An unsized backing store (`clusterCount == 0`), allocating nothing.
     fn empty() -> Self {
         ClusterArray {
             ptr: NonNull::dangling(),
             len: 0,
-            // Zero-sized, correctly aligned; never handed to `dealloc`.
             layout: Layout::from_size_align(0, TT_ALLOC_ALIGN)
                 .expect("TT_ALLOC_ALIGN is a valid power-of-two alignment"),
         }
     }
 
-    /// Allocate `cluster_count` zeroed clusters on a [`TT_ALLOC_ALIGN`] boundary,
-    /// rounding the byte size up to a whole multiple of the alignment, then (on
-    /// Linux) issuing a best-effort `MADV_HUGEPAGE` hint over the whole rounded
-    /// region. Delegates to the shared [`crate::large_page::alloc_zeroed_large`]
-    /// helper, a faithful port of `aligned_large_pages_alloc`
-    /// (`source/memory.cpp`): the Linux path is
-    /// silent on both success and failure, and the `madvise` return value is
-    /// ignored exactly as the reference ignores it.
+    /// Allocate `cluster_count` zeroed clusters through the shared
+    /// [`crate::large_page::alloc_zeroed_large`].
     fn alloc(cluster_count: usize) -> Self {
         if cluster_count == 0 {
             return Self::empty();
         }
 
         // A `Cluster` is 32 bytes, so the product cannot overflow for any table
-        // size the driver can request. The shared helper rounds the byte size up
-        // to a whole multiple of the alignment (`size = ((allocSize + alignment -
-        // 1) / alignment) * alignment`) and issues the `MADV_HUGEPAGE` hint.
+        // size the driver can request.
         let bytes = cluster_count * size_of::<Cluster>();
         let (raw, layout) = large_page::alloc_zeroed_large(bytes);
 
-        // The returned block is `TT_ALLOC_ALIGN`-aligned and fully zeroed; an
-        // all-zero bit pattern is a valid `Cluster` (every field is an atomic
-        // integer whose zero value is its `Default`, and the padding is inert),
-        // so the block is a valid, unoccupied cluster array — the same
-        // post-`clear()` state the reference relies on.
+        // An all-zero bit pattern is a valid, unoccupied `Cluster`, so the
+        // zeroed block stands in for the reference's post-resize `clear()`.
         ClusterArray {
             ptr: raw.cast(),
             len: cluster_count,
@@ -473,25 +372,20 @@ impl DerefMut for ClusterArray {
     }
 }
 
-/// High 64 bits of the 128-bit product `a · b` (`mul_hi64`,
-/// `source/misc.h`). Used to map a 64-bit key onto
-/// `0..clusterCount` without requiring a power-of-two table size.
+/// High 64 bits of the 128-bit product `a · b` (`mul_hi64`, `misc.h`), which
+/// maps a key onto `0..clusterCount` without a power-of-two table size.
 #[inline]
 fn mul_hi64(a: u64, b: u64) -> u64 {
     ((a as u128 * b as u128) >> 64) as u64
 }
 
-/// The engine's single global transposition table — a contiguous array of
-/// [`Cluster`]. A faithful port of the reference's `TranspositionTable`.
+/// The engine's single global transposition table, a contiguous array of
+/// [`Cluster`].
 pub struct TranspositionTable {
-    /// Allocated clusters. Empty (length 0) until [`Self::resize`]. Shared
-    /// `&self` across search threads; every field inside is atomic. Backed by a
-    /// huge-page-aligned, `MADV_HUGEPAGE`-hinted allocation (see
-    /// [`ClusterArray`]).
+    /// Allocated clusters, empty until [`Self::resize`].
     table: ClusterArray,
     /// Generation counter, bumped once per [`Self::new_search`]. Only the low
-    /// [`GENERATION_BITS`] bits are significant. Atomic so the (main) searcher
-    /// can bump it through the shared `&self`.
+    /// [`GENERATION_BITS`] bits are significant.
     generation8: AtomicU8,
 }
 
@@ -502,8 +396,7 @@ impl Default for TranspositionTable {
 }
 
 impl TranspositionTable {
-    /// A fresh, empty table (`clusterCount == 0`), matching the reference's
-    /// default constructor. Call [`Self::resize`] before use.
+    /// A fresh, empty table. Call [`Self::resize`] before use.
     pub fn new() -> Self {
         TranspositionTable {
             table: ClusterArray::empty(),
@@ -517,11 +410,9 @@ impl TranspositionTable {
         self.table.len()
     }
 
-    /// Base virtual address of the cluster allocation, for Linux transparent-
-    /// huge-page diagnostics: the caller can match this against a
-    /// `/proc/self/smaps` region to read its `AnonHugePages` figure and see how
-    /// much of the TT the kernel actually backed with huge pages. Returns `0`
-    /// on an unsized table (`clusterCount == 0`). Carries no other semantics.
+    /// Base virtual address of the cluster allocation, so that a caller can
+    /// match it against a `/proc/self/smaps` region and read how much of the TT
+    /// the kernel backed with huge pages. `0` on an unsized table.
     #[inline]
     pub fn backing_ptr_addr(&self) -> usize {
         if self.table.is_empty() {
@@ -534,11 +425,10 @@ impl TranspositionTable {
     /// Resize the table to `mb_size` MiB and clear it
     /// (`TranspositionTable::resize`).
     ///
-    /// `clusterCount = mb_size · 1024 · 1024 / sizeof(Cluster)`, which is always
-    /// even (`sizeof(Cluster) == 32` divides `1 MiB`), as required so that
-    /// folding the side-to-move into cluster-index bit 0 stays in range. If the
-    /// requested size yields the current cluster count the table is left
-    /// untouched (no reallocation, no clear), exactly like the reference.
+    /// `clusterCount = mb_size · 1024 · 1024 / sizeof(Cluster)` is always even,
+    /// which is what keeps the side-to-move fold into cluster-index bit 0 in
+    /// range. A request yielding the current cluster count leaves the table
+    /// untouched, as the reference does.
     pub fn resize(&mut self, mb_size: usize) {
         let new_cluster_count = mb_size * 1024 * 1024 / size_of::<Cluster>();
         debug_assert!(new_cluster_count & 1 == 0);
@@ -547,19 +437,13 @@ impl TranspositionTable {
             return;
         }
 
-        // A freshly allocated region is zeroed (`alloc_zeroed`), i.e. every
-        // entry is unoccupied (`depth8 == 0`); this stands in for the
-        // reference's post-resize `clear()`. Dropping the previous
-        // `ClusterArray` frees the old allocation with its matching layout —
-        // mirroring the reference's `aligned_large_pages_free` before the new
-        // `aligned_large_pages_alloc`.
+        // A freshly allocated region is zeroed, so every entry is unoccupied;
+        // this stands in for the reference's post-resize `clear()`.
         self.table = ClusterArray::alloc(new_cluster_count);
     }
 
-    /// Zero every entry and reset the generation (`TranspositionTable::clear`).
-    /// A `&mut self` lifecycle operation (see the module docs' exclusivity
-    /// contract); the field writes are plain stores via `get_mut`, not atomic
-    /// ops.
+    /// Zero every entry and reset the generation
+    /// (`TranspositionTable::clear`).
     pub fn clear(&mut self) {
         *self.generation8.get_mut() = 0;
         for cluster in self.table.iter_mut() {
@@ -570,11 +454,8 @@ impl TranspositionTable {
     }
 
     /// Bump the generation at the start of a root search
-    /// (`TranspositionTable::new_search`). Wraps within
-    /// [`GENERATION_BITS`] so it never spills into the bound / pv bits of
-    /// `genBound8`. Takes `&self`: the (main) searcher advances the generation
-    /// through the shared table, matching the reference where `new_search` runs
-    /// on the shared `TranspositionTable` before the workers start.
+    /// (`TranspositionTable::new_search`), wrapping within [`GENERATION_BITS`]
+    /// so that it never spills into the bound / pv bits of `genBound8`.
     pub fn new_search(&self) {
         let next = self.generation8.load(REL).wrapping_add(1) & GENERATION_MASK;
         self.generation8.store(next, REL);
@@ -589,7 +470,7 @@ impl TranspositionTable {
 
     /// Approximate table occupancy in permille, counting only entries younger
     /// than `max_age` (`TranspositionTable::hashfull`). Samples the first 1000
-    /// clusters; the table must hold at least that many.
+    /// clusters, so the table must hold at least that many.
     pub fn hashfull(&self, max_age: u8) -> u32 {
         let generation = self.generation8.load(REL);
         let mut cnt = 0u32;
@@ -609,50 +490,37 @@ impl TranspositionTable {
     /// (`TranspositionTable::first_entry`).
     ///
     /// `mul_hi64(key, clusterCount)` lands in `0..clusterCount`; clearing bit 0
-    /// and OR-ing in the side keeps it in range (because `clusterCount` is
-    /// even) while guaranteeing the two sides never share a cluster.
+    /// and OR-ing in the side keeps it in range, `clusterCount` being even,
+    /// while guaranteeing the two sides never share a cluster.
     #[inline]
     fn cluster_index(&self, key: u64, side_to_move: u8) -> usize {
         let index = mul_hi64(key, self.table.len() as u64) as usize;
         (index & !1) | (side_to_move as usize & 1)
     }
 
-    /// Software-prefetch the cluster that [`Self::probe`] / [`Self::locate`]
-    /// would select for `(key, side_to_move)`, issuing an L1/L2 prefetch hint
-    /// (`_MM_HINT_T0`) for the cluster's cache line. Uses the *exact* same index
-    /// math as [`Self::cluster_index`], so the line brought in is the one the
-    /// subsequent probe will read.
+    /// Software-prefetch the cluster [`Self::probe`] would select for
+    /// `(key, side_to_move)`. A no-op on an unsized table and off x86-64.
     ///
-    /// The reference (`Position::do_move`,
-    /// `source/position.cpp` ~1837-1842 / ~1996-2001) issues
-    /// this prefetch mid-`do_move`, the instant the post-move hash key is known,
-    /// because its `Position` holds a TT pointer. This port's `Position`
-    /// (attic-state) must not depend on the TT (attic-storage) under the
-    /// layering rules, so the hint is issued from the Search layer just
-    /// after `do_move` returns — a few nanoseconds later than the reference, but
-    /// still well ahead of the child's TT probe. An accepted, output-preserving
-    /// placement difference: a prefetch has no architectural semantics.
-    ///
-    /// A no-op on an unsized table (`clusterCount == 0`) and on non-x86-64
-    /// targets.
+    /// The reference issues this mid-`do_move` (`position.cpp`), the
+    /// instant the post-move key is known, because its `Position` holds a TT
+    /// pointer. The layering rules forbid that here, so the hint comes from the
+    /// Search layer just after `do_move` returns — a few nanoseconds later, and
+    /// output-preserving, a prefetch having no architectural semantics.
     #[inline]
     pub fn prefetch(&self, key: u64, side_to_move: u8) {
         #[cfg(target_arch = "x86_64")]
         {
-            // Guard the unsized table: `cluster_index` would form an
-            // out-of-bounds pointer (bit 0 can be set with zero clusters).
+            // On an unsized table `cluster_index` would form an out-of-bounds
+            // pointer: bit 0 can be set with zero clusters.
             if self.table.is_empty() {
                 return;
             }
             let ci = self.cluster_index(key, side_to_move);
             // SAFETY: `_mm_prefetch` is a pure hardware hint — it neither reads
             // nor writes the pointed-to memory in any observable way and cannot
-            // fault, so it has no memory-safety effect. `ci` is in
-            // `0..table.len()` (guaranteed by `cluster_index`, whose result is
-            // `mul_hi64(key, len)` masked into range), so the pointer is a live,
-            // in-bounds address of an allocated `Cluster`. This is the sole
-            // `unsafe` block in the module; the prefetch is the whole reason for
-            // it. (`_mm_prefetch` itself carries no preconditions.)
+            // fault. `ci` is in `0..table.len()`, guaranteed by
+            // `cluster_index`, so the pointer is a live, in-bounds address of an
+            // allocated `Cluster`.
             unsafe {
                 use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
                 let ptr = self.table.as_ptr().add(ci) as *const i8;
@@ -687,16 +555,13 @@ impl TranspositionTable {
         let generation = self.generation8.load(REL);
         let cluster = &self.table[ci];
 
-        // The low 16 bits are the in-cluster key. On a match, return that
-        // entry's data and a writer to it.
         if let Some(i) = (0..CLUSTER_SIZE).find(|&i| cluster.entry[i].key.load(REL) == key16) {
             let found = cluster.entry[i].is_occupied();
             let data = cluster.entry[i].read();
             return (found, data, TTWriter::new(&cluster.entry[i]));
         }
 
-        // Miss: pick the entry to replace. Value = depth − 8·relative_age;
-        // lower is more replaceable.
+        // On a miss, replace the least valuable entry.
         let mut replace = 0;
         for i in 1..CLUSTER_SIZE {
             if cluster.entry[replace].replace_priority(generation)
@@ -713,16 +578,13 @@ impl TranspositionTable {
         )
     }
 
-    /// Like [`Self::probe`] but returns the chosen entry's *location*
-    /// ([`TtSlot`]) instead of a borrowing [`TTWriter`]. The location is a pair
-    /// of plain indices, so the caller can hold it across the recursive search
-    /// calls that also mutate the table and later write to the **same** physical
-    /// entry via [`Self::write_at`] — reproducing the reference, which obtains
-    /// one `TTWriter` at the node's Step-4 probe and writes through it at every
-    /// write site (Step 5 / Step 6 / ProbCut / the post-move-loop tail). A
-    /// re-probe at write time would re-run the replacement selection against a
-    /// cluster the children have since churned and could land on a different
-    /// slot, drifting the stored TT state and hence later probes.
+    /// Like [`Self::probe`] but returning the chosen entry's *location* rather
+    /// than a borrowing [`TTWriter`], so that the caller can hold it across the
+    /// recursive search calls that also mutate the table. The reference obtains
+    /// one `TTWriter` at a node's probe and writes through it at every write
+    /// site; a re-probe at write time would re-run the replacement selection
+    /// against a cluster the children have since churned, and could land on a
+    /// different slot.
     ///
     /// Panics if the table has not been sized (`clusterCount == 0`).
     pub fn locate(&self, key: u64, side_to_move: u8) -> (bool, TTData, TtSlot) {
@@ -768,10 +630,8 @@ impl TranspositionTable {
         )
     }
 
-    /// Store into the exact entry captured by [`Self::locate`], running the same
-    /// replacement policy as [`TTWriter::write`]. Because the entry is addressed
-    /// by index (not re-selected), a write here targets the reference's held-
-    /// writer slot even when a child has since overwritten that entry.
+    /// Store into the exact entry [`Self::locate`] captured, under the same
+    /// replacement policy as [`TTWriter::write`].
     #[inline]
     #[allow(clippy::too_many_arguments)]
     pub fn write_at(
@@ -790,10 +650,8 @@ impl TranspositionTable {
             .save(key as u16, value, pv, bound, depth, mv, eval, generation);
     }
 
-    /// A stable checksum over the whole table's raw bytes, for determinism
-    /// tests (two identical operation sequences must yield identical tables).
+    /// A stable checksum over the whole table, for determinism tests.
     pub fn checksum(&self) -> u64 {
-        // FNV-1a over every entry field, in declaration order.
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         let mut mix = |x: u64| {
             h ^= x;
@@ -814,8 +672,8 @@ impl TranspositionTable {
     }
 }
 
-/// The location of a resolved TT entry (cluster + in-cluster index), captured
-/// at [`TranspositionTable::locate`] time. Holds no borrow, so it survives the
+/// The location of a resolved TT entry, captured at
+/// [`TranspositionTable::locate`] time. Holds no borrow, so it survives the
 /// recursive search calls between a node's probe and its writes.
 #[derive(Clone, Copy, Debug)]
 pub struct TtSlot {
@@ -823,9 +681,8 @@ pub struct TtSlot {
     entry: usize,
 }
 
-/// A thin, single-use handle for writing one entry (`TTWriter`). Obtained from
-/// [`TranspositionTable::probe`]; it borrows the chosen entry `&self` and
-/// writes through the entry's atomics (racy in-place, like the reference).
+/// A single-use handle for writing one entry (`TTWriter`), obtained from
+/// [`TranspositionTable::probe`].
 pub struct TTWriter<'a> {
     entry: &'a TTEntry,
 }
@@ -860,16 +717,13 @@ impl<'a> TTWriter<'a> {
 
 #[cfg(test)]
 mod alloc_tests {
-    //! Low-level checks on the huge-page-aligned backing store
-    //! ([`ClusterArray`]), which the public API cannot observe directly:
+    //! Checks on the backing store that the public API cannot observe:
     //! base-pointer alignment, size round-up, zeroed initial contents, and the
-    //! unsized (`clusterCount == 0`) shape. The public resize/probe behaviour is
-    //! covered by the integration gates in `tests/tt_basic.rs`.
+    //! unsized shape.
 
     use super::*;
 
-    /// Alignment the current target uses for the TT allocation — 2 MiB on
-    /// Linux (huge-page boundary), 4 KiB elsewhere. Mirrors [`TT_ALLOC_ALIGN`].
+    /// The alignment the current target uses, mirroring [`TT_ALLOC_ALIGN`].
     const EXPECTED_ALIGN: usize = if cfg!(target_os = "linux") {
         2 * 1024 * 1024
     } else {
@@ -883,8 +737,6 @@ mod alloc_tests {
 
     #[test]
     fn base_pointer_is_aligned() {
-        // A range of sizes, including one whose byte size is far below the
-        // alignment and one spanning many huge pages.
         for &cc in &[2usize, 32768, 3 * 32768, 1024 * 1024 / size_of::<Cluster>()] {
             let a = ClusterArray::alloc(cc);
             assert_eq!(
@@ -898,14 +750,14 @@ mod alloc_tests {
 
     #[test]
     fn allocation_size_rounds_up_to_alignment() {
-        // Tiny request: byte size (64 B) is far below the alignment, so it must
-        // round up to exactly one alignment unit.
+        // A byte size far below the alignment must round up to exactly one
+        // alignment unit.
         let a = ClusterArray::alloc(2);
         assert_eq!(a.layout.size(), TT_ALLOC_ALIGN);
         assert_eq!(a.layout.align(), TT_ALLOC_ALIGN);
 
-        // Request whose exact byte size is not a whole multiple of the
-        // alignment must round strictly up, and always cover the live clusters.
+        // A byte size that is not a whole multiple of the alignment must round
+        // strictly up, and still cover the live clusters.
         let cc = 32768 + 1; // 32769 * 32 B = 1 MiB + 32 B
         let a = ClusterArray::alloc(cc);
         let bytes = cc * size_of::<Cluster>();
@@ -935,7 +787,6 @@ mod alloc_tests {
         let a = ClusterArray::empty();
         assert_eq!(a.len, 0);
         assert!(a.is_empty());
-        // `alloc(0)` takes the same unsized path.
         let z = ClusterArray::alloc(0);
         assert_eq!(z.len, 0);
         assert!(z.is_empty());
@@ -943,8 +794,8 @@ mod alloc_tests {
 
     #[test]
     fn repeated_alloc_and_drop_reuses_cleanly() {
-        // Exercise the alloc/Drop pair many times; under the matching-layout
-        // free, this neither leaks nor corrupts the allocator.
+        // Under a matching-layout free, repetition neither leaks nor corrupts
+        // the allocator.
         for _ in 0..64 {
             let a = ClusterArray::alloc(32768);
             assert_eq!(a.len, 32768);

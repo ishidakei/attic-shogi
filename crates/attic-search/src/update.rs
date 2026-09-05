@@ -1,21 +1,12 @@
-//! History-table **update** machinery — a faithful port of the reference
-//! `update_all_stats`, `update_quiet_histories`, `update_continuation_histories`
-//! and `update_correction_history`
-//! (`source/engine/yaneuraou-engine/yaneuraou-search.cpp`,
-//! lines 748-772 and 5284-5414 at the pinned submodule).
+//! History-table **update** machinery, ported from the reference's
+//! `update_all_stats`, `update_quiet_histories`,
+//! `update_continuation_histories` and `update_correction_history`
+//! (`yaneuraou-search.cpp`), which the line numbers in the
+//! comments below point into.
 //!
-//! # Shape
-//!
-//! The functions here are decoupled from the search body: they operate on a
-//! self-contained [`WorkerHistories`] bundle and a slice of
-//! [`SearchStackCell`]s, with the reference's `(ss-N)->continuationHistory`
-//! pointers modelled as flat indices into the continuation tables. `qsearch`
-//! reconciles [`SearchStackCell`] with its live search stack and supplies the
-//! real plane indices.
-//!
-//! Line numbers in the comments point into the reference file above; all
-//! arithmetic is integer (division truncates toward zero, as Rust's `/` does),
-//! matching the C++ exactly.
+//! These functions are decoupled from the search body: they take a
+//! [`WorkerHistories`] bundle and a slice of [`SearchStackCell`]s, with the
+//! reference's `(ss-N)->continuationHistory` pointers modelled as flat indices.
 
 use std::sync::Arc;
 
@@ -32,21 +23,17 @@ const MAIN_HISTORY_INIT: i16 = 0;
 const CAPTURE_HISTORY_INIT: i16 = -678;
 const CONTINUATION_INIT: i16 = -523;
 const CONTINUATION_CORRECTION_INIT: i16 = 6;
-/// The pawn-history init (`-1238`) is applied by the shared table
-/// ([`SharedHistories::new`]); the tests below assert the bundle exposes it.
+/// The pawn-history init is applied by [`SharedHistories::new`] instead.
 #[cfg(test)]
 const PAWN_HISTORY_INIT: i16 = -1238;
 
 /// Capacity of a searched-move list (`SEARCHEDLIST_CAPACITY`,
-/// `yaneuraou-search.cpp`): both `quietsSearched` and `capturesSearched`
-/// hold at most 32 moves.
+/// `yaneuraou-search.cpp`).
 pub const SEARCHED_LIST_CAPACITY: usize = 32;
 
-/// A fixed-capacity list of the moves tried at a node (the reference's
-/// `SearchedList quietsSearched` / `capturesSearched`, `movepick.h`). Backed by
-/// an inline `[Move; SEARCHED_LIST_CAPACITY]` array so it lives on the search
-/// stack with **no** per-node heap allocation; the search only ever
-/// pushes while `moveCount <= SEARCHED_LIST_CAPACITY`, so it never overflows.
+/// A fixed-capacity list of the moves tried at a node (`SearchedList`,
+/// `movepick.h`). Inline, so that it costs no per-node heap allocation; the
+/// search only pushes while the move count is under capacity.
 #[derive(Clone)]
 pub struct SearchedList {
     moves: [Move; SEARCHED_LIST_CAPACITY],
@@ -69,8 +56,7 @@ impl SearchedList {
     }
 
     /// Append `mv`. The caller guarantees at most [`SEARCHED_LIST_CAPACITY`]
-    /// pushes per node (`moveCount <= SEARCHED_LIST_CAPACITY`), matching the
-    /// reference's bounded `push_back`.
+    /// pushes per node, as the reference's bounded `push_back` does.
     pub fn push(&mut self, mv: Move) {
         debug_assert!(self.len < SEARCHED_LIST_CAPACITY, "searched list overflow");
         self.moves[self.len] = mv;
@@ -83,22 +69,15 @@ impl SearchedList {
     }
 }
 
-/// The full set of history tables an update touches — the reference's
-/// per-worker tables plus a handle to the node-shared correction / pawn tables
-/// ([`SharedHistories`]). Bundled so the update functions can borrow
-/// them together. [`WorkerHistories::new`] applies the reference `clear()` init.
-///
-/// The pawn and correction tables are not part of this bundle: they are SHARED
-/// between the worker threads of one NUMA node and reached through
-/// [`Self::shared`], a cheap [`Arc`] clone the driver hands each worker. At
-/// `thread_count == 1` the shared tables are byte-identical to per-worker
-/// copies, so single-thread search is unaffected by the sharing.
+/// The full set of history tables an update touches: the per-worker ones, plus
+/// a handle to the node-shared correction and pawn tables. At a thread count of
+/// 1 the shared ones are byte-identical to per-worker copies, so single-thread
+/// search is unaffected by the sharing.
 pub struct WorkerHistories {
     /// `mainHistory[us][move.raw16]` (init `0`).
     pub main: ButterflyHistory,
-    /// `lowPlyHistory[ply][move.raw16]`. The reference re-fills this per `go`
-    /// (to `98`); `clear()` itself leaves it, so this bundle leaves it zero and
-    /// the per-`go` fill happens at the root.
+    /// `lowPlyHistory[ply][move.raw16]`. The reference's `clear()` leaves this
+    /// alone, refilling it per `go` instead, so this bundle leaves it zero.
     pub low_ply: LowPlyHistory,
     /// `captureHistory[pc][to][captured type]` (init `-678`).
     pub capture: CapturePieceToHistory,
@@ -108,9 +87,8 @@ pub struct WorkerHistories {
     pub continuation_correction: ContinuationCorrectionHistory,
     /// `ttMoveHistory` — a single gravity entry (init `0`).
     pub tt_move: TtMoveHistory,
-    /// The node-shared `correctionHistory` and `pawnHistory`. Every
-    /// pawn / correction read and update routes here, so an interior update on
-    /// one worker is visible to every worker on the same node.
+    /// The node-shared `correctionHistory` and `pawnHistory`, so that an
+    /// interior update on one worker is visible to every worker on the node.
     pub shared: Arc<SharedHistories>,
 }
 
@@ -122,17 +100,14 @@ impl Default for WorkerHistories {
 
 impl WorkerHistories {
     /// A fresh bundle with its own single-thread [`SharedHistories`] and the
-    /// reference `clear()` init values applied. This is the single-worker /
-    /// test path; the shared tables are sized `thread_count == 1`, exactly the
-    /// former per-worker shape. The driver's multi-thread path uses
-    /// [`Self::with_shared`] to hand each worker its node's shared tables.
+    /// reference `clear()` init values. The multi-thread path uses
+    /// [`Self::with_shared`] instead.
     pub fn new() -> Self {
         Self::with_shared(Arc::new(SharedHistories::new(1)))
     }
 
-    /// A fresh bundle of per-worker tables (reference `clear()` init) attached to
-    /// the given node-shared tables. The driver builds one [`SharedHistories`]
-    /// per NUMA node and hands each worker on that node a cheap [`Arc`] clone.
+    /// A fresh bundle of per-worker tables attached to the given node-shared
+    /// ones.
     pub fn with_shared(shared: Arc<SharedHistories>) -> Self {
         let mut main = ButterflyHistory::new();
         main.fill(MAIN_HISTORY_INIT);
@@ -153,35 +128,28 @@ impl WorkerHistories {
         }
     }
 
-    /// Swap in a different node's shared tables, leaving the per-worker tables
-    /// untouched. The driver calls this on a pool rebuild so the session
-    /// (coordinator) worker keeps its game-scoped per-worker tables while picking
-    /// up freshly (re)built shared tables for its assigned node.
+    /// Swap in a different node's shared tables, leaving the per-worker ones
+    /// untouched — what a pool rebuild needs, the coordinator's game-scoped
+    /// per-worker tables having to survive it.
     pub fn set_shared(&mut self, shared: Arc<SharedHistories>) {
         self.shared = shared;
     }
 }
 
-/// One cell of the search stack, holding exactly the fields the update /
-/// correction functions read across plies. The search body writes these during
-/// search; the reference defaults let the update functions be exercised in
-/// isolation.
-///
-/// `cont_hist` / `cont_corr` are the flat plane indices the reference stores as
-/// `continuationHistory` / `continuationCorrectionHistory` *pointers*. Their
-/// pre-root defaults are the `[0][0][NO_PIECE][0]` / `[NO_PIECE][0]` sentinel
-/// planes (both index `0`).
+/// One cell of the search stack. `cont_hist` and `cont_corr` are the flat plane
+/// indices the reference stores as *pointers*; both default to the pre-root
+/// sentinel plane.
 #[derive(Clone, Debug)]
 pub struct SearchStackCell {
-    /// `ss->currentMove` — the move played from this ply (`Move::none()` when
-    /// unset; a null move counts as not-`is_ok`).
+    /// `ss->currentMove` — the move played from this ply. A null move counts as
+    /// not-`is_ok`.
     pub current_move: Move,
     /// `ss->inCheck` — whether the side to move at this ply is in check.
     pub in_check: bool,
     /// `ss->ttHit` — whether the TT probe at this ply hit.
     pub tt_hit: bool,
     /// `ss->ttPv` — whether this ply is on a TT principal variation. Persistent
-    /// across probes; the interior search reads `(ss-1)->ttPv` at fail-low.
+    /// across probes.
     pub tt_pv: bool,
     /// `ss->moveCount` — moves tried at this ply.
     pub move_count: i32,
@@ -189,15 +157,12 @@ pub struct SearchStackCell {
     pub stat_score: i32,
     /// `ss->ply` — distance from the search root.
     pub ply: i32,
-    /// `ss->staticEval` — the (corrected) static evaluation at this ply, read
-    /// across plies (`(ss-1)`/`(ss-2)`) by the interior search's improving /
-    /// hindsight / fail-low logic. Defaults to `VALUE_NONE`.
+    /// `ss->staticEval` — the corrected static evaluation at this ply, read
+    /// across plies by the improving, hindsight and fail-low logic.
     pub static_eval: Value,
-    /// `ss->reduction` — the reduction applied to this ply's move (read back as
-    /// `(ss-1)->reduction` = `priorReduction`).
+    /// `ss->reduction` — the reduction applied to this ply's move.
     pub reduction: i32,
-    /// `ss->cutoffCnt` — how many beta cutoffs happened at this ply; the parent
-    /// reads `(ss+1)->cutoffCnt` when scaling reductions.
+    /// `ss->cutoffCnt` — how many beta cutoffs happened at this ply.
     pub cutoff_cnt: i32,
     /// `ss->excludedMove` — the singular-extension excluded move.
     pub excluded_move: Move,
@@ -223,7 +188,6 @@ impl Default for SearchStackCell {
             move_count: 0,
             stat_score: 0,
             ply: 0,
-            // `VALUE_NONE` (`types.h`) — the reference pre-root sentinel.
             static_eval: 32002,
             reduction: 0,
             cutoff_cnt: 0,
@@ -452,8 +416,8 @@ mod tests {
 
     // ---- gravity primitive ------------------------------------------------
 
-    /// A small deterministic xorshift64* (the workspace bans `Math.random`-style
-    /// nondeterminism).
+    /// A small deterministic xorshift64*, keeping these tests dependency-free
+    /// and deterministic.
     struct Rng(u64);
     impl Rng {
         fn next(&mut self) -> u64 {

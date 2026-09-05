@@ -1,31 +1,23 @@
 //! `.ybb` opening-book reader — the YaneuraOu "YANE-BINBOOK-V1" binary book.
 //!
-//! The format is transcribed from the pinned reference
-//! (`source/book/book.cpp`). A `.ybb`
-//! file is a header, then a fixed-stride index region (one record per stored
-//! position, sorted ascending by the 32-byte packed key), then a variable moves
-//! region. A position is looked up by binary search over the index.
+//! The format is transcribed from `book.cpp`. A `.ybb` file
+//! is a header, then a fixed-stride index region sorted ascending by the
+//! 32-byte packed key, then a variable moves region; a position is looked up by
+//! binary search over the index. The two read modes,
+//! [`Book::open_in_memory`] and [`Book::open_on_the_fly`], return identical
+//! results.
 //!
-//! Two read modes are provided and return identical results:
-//! - [`Book::open_in_memory`] slurps the whole file (BookOnTheFly=false).
-//! - [`Book::open_on_the_fly`] keeps file handles and seeks per lookup
-//!   (BookOnTheFly=true).
-//!
-//! # Layering
-//!
-//! The Storage layer speaks only in primitives: this
-//! reader takes the packed key as a raw `&[u8; 32]` and the game ply as a
-//! `u16`, and returns raw move fragments ([`BookMove`]). Computing the packed
-//! key from a `Position` (the PackedSfen encoder) and widening a `move16` into a
-//! validated move both live above this layer.
+//! The Storage layer speaks only in primitives, so this reader takes the packed
+//! key as a raw `&[u8; 32]` and returns raw move fragments. Computing that key
+//! from a `Position` and widening a `move16` into a validated move both live
+//! above this layer.
 //!
 //! # Totality
 //!
 //! Malformed input never panics and never reads out of bounds. A corrupt or
-//! truncated *header* is reported as an [`BookError`] at open time; a truncated
-//! or out-of-range *index/moves* region degrades to a graceful miss
-//! (`Ok(None)`) at probe time, mirroring the reference (a failed stream read
-//! there yields "no book move").
+//! truncated *header* is a [`BookError`] at open time; a truncated or
+//! out-of-range *index or moves* region degrades to a graceful miss at probe
+//! time, as a failed stream read does in the reference.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -45,12 +37,8 @@ const FLAG_MOVE_DEPTH: u64 = 1;
 const KNOWN_FLAGS: u64 = FLAG_MOVE_DEPTH;
 
 /// One decoded move from a book position record (`read_ybb_moves`,
-/// `book.cpp`).
-///
-/// The reference's `BookMove` also carries a ponder move and an adoption count;
-/// a `.ybb` stores neither, so ponder is always none (omitted here) and `count`
-/// is always 0. `value` is the stored eval reinterpreted as a signed 16-bit
-/// integer; `depth` is 0 when the file's move-depth flag is clear.
+/// `book.cpp`). The reference's `BookMove` also carries a ponder move
+/// and an adoption count, neither of which a `.ybb` stores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BookMove {
     /// 16-bit move fragment (YaneuraOu `Move16`).
@@ -59,7 +47,7 @@ pub struct BookMove {
     pub value: i16,
     /// Search depth at which the move was recorded (0 if the file omits depth).
     pub depth: u16,
-    /// Adoption count — always 0 for a `.ybb` (the format stores no per-move count).
+    /// Adoption count, always 0: the format stores no per-move count.
     pub count: u16,
 }
 
@@ -126,9 +114,8 @@ struct IndexEntry {
 /// Backing store for a [`Book`] — the whole file in memory, or handles to seek.
 enum Source {
     Memory(Vec<u8>),
-    /// Two handles onto the same file: one for the index region, one for the
-    /// moves region, so index seeks and move seeks never fight over one
-    /// cursor (matches the reference's twin `fstream`s).
+    /// Two handles onto the same file, one per region, so that index seeks and
+    /// move seeks never fight over one cursor.
     File {
         index: File,
         moves: File,
@@ -154,8 +141,8 @@ impl Book {
         Self::from_memory(data)
     }
 
-    /// Build an in-memory book from an already-loaded byte buffer. Same
-    /// validation as [`open_in_memory`](Self::open_in_memory); useful for tests.
+    /// Build an in-memory book from an already-loaded byte buffer, with the
+    /// same validation as [`open_in_memory`](Self::open_in_memory).
     pub fn from_memory(data: Vec<u8>) -> Result<Self, BookError> {
         let head = data
             .get(..HEADER_SIZE as usize)
@@ -216,9 +203,8 @@ impl Book {
     /// index/moves region is truncated). `Err` is reserved for genuine I/O
     /// failures, never for malformed content.
     ///
-    /// Moves are returned in the file's stored order; the reference applies a
-    /// presentation sort (`sort_moves()`) that is move-selection policy and out
-    /// of scope for the raw reader.
+    /// Moves come back in the file's stored order. The reference's
+    /// `sort_moves()` is move-selection policy, above this layer.
     pub fn probe(
         &self,
         packed: &[u8; 32],
@@ -253,11 +239,11 @@ impl Book {
         if self.has_move_depth() { 6 } else { 4 }
     }
 
-    /// Read index record `index` (`index < record_count`). `Ok(None)` on a
-    /// truncated/out-of-range region (graceful miss); `Err` only on I/O error.
+    /// Read index record `index`. `Ok(None)` on a truncated or out-of-range
+    /// region; `Err` only on an I/O error.
     fn read_index_entry(&self, index: u64) -> Result<Option<IndexEntry>, BookError> {
-        // `index < record_count`, and `moves_base = 32 + record_count*44` was
-        // proven not to overflow, so this offset cannot overflow either.
+        // `moves_base` was proven not to overflow and `index < record_count`,
+        // so this offset cannot overflow either.
         let offset = HEADER_SIZE + index * INDEX_RECORD_SIZE;
         match &self.source {
             Source::Memory(data) => {
@@ -277,8 +263,8 @@ impl Book {
         }
     }
 
-    /// Decode the move list for `entry`. `Ok(None)` on a truncated/out-of-range
-    /// moves region (graceful miss); `Err` only on I/O error.
+    /// Decode the move list for `entry`. `Ok(None)` on a truncated or
+    /// out-of-range moves region; `Err` only on an I/O error.
     fn read_moves(&self, entry: &IndexEntry) -> Result<Option<Vec<BookMove>>, BookError> {
         let record_size = self.move_record_size();
         let absolute = match self.moves_base.checked_add(entry.moves_offset) {
@@ -384,11 +370,10 @@ fn decode_moves(
     moves
 }
 
-/// Seek `file` to `offset` and fill `buf`. `Ok(true)` on a full read, `Ok(false)`
-/// on a clean end-of-file (graceful miss), `Err` on any other I/O error.
+/// Seek `file` to `offset` and fill `buf`. `Ok(true)` on a full read,
+/// `Ok(false)` on a clean end-of-file, `Err` on any other I/O error.
 ///
-/// Reads through `&File` (which implements `Read`/`Seek`) so the caller keeps a
-/// shared borrow — the twin handles are never mutated through `&self`.
+/// Reads through `&File`, so that the caller keeps a shared borrow.
 fn read_at(mut file: &File, offset: u64, buf: &mut [u8]) -> Result<bool, BookError> {
     file.seek(SeekFrom::Start(offset))?;
     match file.read_exact(buf) {
@@ -419,9 +404,8 @@ mod tests {
     /// `(packed key, ply, moves)`.
     type RawRecord = ([u8; 32], u16, Vec<RawMove>);
 
-    /// Build a minimal well-formed `.ybb` from `(packed, ply, moves)` records.
-    /// Records are sorted by packed key (as the format requires). Each move is
-    /// `(move16, value, depth)`; `depth` is written iff `with_depth`.
+    /// Build a minimal well-formed `.ybb`, sorting the records by packed key as
+    /// the format requires. `depth` is written iff `with_depth`.
     fn build_ybb(records: &[RawRecord], with_depth: bool) -> Vec<u8> {
         let mut sorted = records.to_vec();
         sorted.sort_by_key(|r| r.0);
@@ -497,11 +481,8 @@ mod tests {
             ]
         );
 
-        // present key, wrong ply -> miss (ply enforced)
         assert!(book.probe(&key(3), 2, false).unwrap().is_none());
-        // present key, wrong ply, but ply ignored -> hit
         assert!(book.probe(&key(3), 2, true).unwrap().is_some());
-        // absent key -> miss
         assert!(book.probe(&key(9), 1, false).unwrap().is_none());
         assert!(book.probe(&key(0), 1, false).unwrap().is_none());
     }
@@ -531,7 +512,6 @@ mod tests {
         assert!(matches!(Book::from_memory(bytes), Err(BookError::BadMagic)));
 
         let mut bytes = build_ybb(&[(key(1), 1, vec![(1, 0, 0)])], true);
-        // set an unknown flag bit
         bytes[24] = 0x02;
         assert!(matches!(
             Book::from_memory(bytes),
@@ -561,8 +541,8 @@ mod tests {
     fn truncated_moves_region_is_a_miss_not_a_panic() {
         let recs = vec![(key(1), 1, vec![(0x1111u16, 5i16, 9u16)])];
         let mut bytes = build_ybb(&recs, true);
-        // Drop the last two bytes of the move record: header+index are intact,
-        // so open succeeds, but the moves read runs off the end -> miss.
+        // Header and index stay intact, so the open succeeds, but the moves read
+        // runs off the end.
         bytes.truncate(bytes.len() - 2);
         let book = Book::from_memory(bytes).unwrap();
         assert!(book.probe(&key(1), 1, false).unwrap().is_none());

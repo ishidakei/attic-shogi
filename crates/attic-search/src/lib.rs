@@ -1,19 +1,11 @@
-//! Search layer: greedy 1-ply NNUE move choice.
+//! Search layer. [`Search::go`] is a greedy 1-ply NNUE move choice: it
+//! enumerates the legal moves, scores each child with the real network from the
+//! mover's point of view, and returns the maximum. That function alone claims
+//! no alpha-beta, no quiescence, no transposition table, no time management and
+//! no reference parity; the full search that does is [`qsearch`] and [`root`].
 //!
-//! This crate is the Search layer. The layering rules permit Search to depend
-//! on Evaluation (`attic-eval`) and State (`attic-state`), never on
-//! Protocol; the Protocol
-//! layer, in turn, calls into this crate and never reaches Evaluation
-//! directly.
-//!
-//! The policy is the simplest NNUE-guided one: greedy
-//! 1-ply. [`Search::go`] enumerates the legal moves, scores each child with
-//! the real network from the mover's point of view, and returns the maximum.
-//! There is no alpha-beta, no quiescence, no transposition table, no time
-//! management, and no reference-parity claim. The
-//! point is a clean, tested search seam shaped like
-//! `Search::go(&pos, limits, info) -> SearchResult`, which the USI driver can
-//! call without importing the Evaluation layer.
+//! It may depend on Evaluation and State, never on Protocol. Protocol calls
+//! into this crate and so never reaches Evaluation directly.
 
 use std::path::Path;
 
@@ -32,9 +24,7 @@ pub mod update;
 
 pub use book::{BookConfig, BookHit, BookInfoLine, BookProbeResult, Prng, probe_book};
 // Re-exported so the Protocol layer can drive the NNUE fixed-point output scale
-// (the `FV_SCALE` USI option) without a direct Protocol -> Evaluation
-// dependency, which the layering rules forbid. `set_fv_scale` writes the
-// eval's live scale; `FV_SCALE_DEFAULT` is the reference default (16).
+// without the direct dependency on Evaluation the layering rules forbid.
 pub use attic_eval::{FV_SCALE_DEFAULT, fv_scale, set_fv_scale};
 pub use timeman::{TimeInput, TimeManagement};
 
@@ -57,19 +47,14 @@ pub use update::{
     update_correction_history, update_quiet_histories,
 };
 
-/// Search limits for one `go` invocation.
-///
-/// Greedy 1-ply consults no limit. The type exists so [`Search::go`]'s
-/// signature is stable once depth/time/node budgets are threaded in, and so the
-/// USI driver can map its `GoLimits` onto a Search-layer type without this
-/// crate depending on Protocol.
+/// Search limits for one `go` invocation. Greedy 1-ply consults none of them;
+/// the type exists so that the USI driver can map its own limits onto a
+/// Search-layer type without this crate depending on Protocol.
 #[derive(Debug, Clone, Default)]
 pub struct SearchLimits {}
 
-/// One progress report emitted through an [`InfoSink`] during a search.
-///
-/// Mirrors the fields a USI `info` line carries; the driver formats them into
-/// the wire syntax. Exact token order is not a parity target.
+/// One progress report emitted through an [`InfoSink`] during a search,
+/// carrying the fields a USI `info` line does.
 #[derive(Debug, Clone)]
 pub struct SearchInfo {
     /// Search depth this report describes. Always `1` for greedy 1-ply.
@@ -83,20 +68,14 @@ pub struct SearchInfo {
     pub pv: Vec<Move>,
 }
 
-/// Sink for search progress reports.
-///
-/// Abstracts where `info` output goes so [`Search`] never touches the Protocol
-/// layer. The USI driver supplies an implementation that formats each report
-/// as an `info` line; tests supply a recording sink.
+/// Sink for search progress reports, abstracting where `info` output goes so
+/// that [`Search`] never touches the Protocol layer.
 pub trait InfoSink {
     /// Receive one progress report.
     fn info(&mut self, info: &SearchInfo);
 }
 
 /// An [`InfoSink`] that discards every report.
-///
-/// Useful for callers (and tests) that only want the returned
-/// [`SearchResult`].
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NullInfoSink;
 
@@ -118,10 +97,6 @@ pub struct SearchResult {
 }
 
 /// A greedy 1-ply search that owns a loaded NNUE network.
-///
-/// Construct it from a network file with [`Search::from_network_file`] (the
-/// path the USI driver resolves from `EvalDir` at `isready`) or directly from
-/// an in-memory [`NnueNetwork`] with [`Search::new`].
 pub struct Search {
     net: NnueNetwork,
 }
@@ -132,18 +107,14 @@ impl Search {
         Self { net }
     }
 
-    /// Load and validate the network at `path`, then wrap it.
-    ///
-    /// Surfaces the loader's [`NnueError`] unchanged so the caller can report a
-    /// precise reason. Any non-fatal warnings are discarded; use
-    /// [`Search::from_network_file_with_warnings`] to surface them.
+    /// Load and validate the network at `path`, then wrap it, discarding any
+    /// non-fatal warnings.
     pub fn from_network_file(path: &Path) -> Result<Self, NnueError> {
         Ok(Self::new(load_network(path)?))
     }
 
-    /// Like [`Search::from_network_file`], but also returns the loader's
-    /// non-fatal warning bodies (hash mismatches) so the driver can emit them as
-    /// `info string` lines before `readyok`. An empty vector means a clean load.
+    /// [`Search::from_network_file`] returning the loader's non-fatal warning
+    /// bodies too; an empty vector means a clean load.
     pub fn from_network_file_with_warnings(path: &Path) -> Result<(Self, Vec<String>), NnueError> {
         let (net, warnings) = load_network_with_warnings(path)?;
         Ok((Self::new(net), warnings))
@@ -154,32 +125,20 @@ impl Search {
         &self.net
     }
 
-    /// A deep copy of this search with freshly allocated network storage
-    /// ([`NnueNetwork::replicate`]).
-    ///
-    /// The driver runs this inside a NUMA-node-bound thread to place the copy's
-    /// pages on that node (the in-process NNUE replication). The
-    /// replica evaluates every position identically to `self`.
+    /// A deep copy of this search with freshly allocated network storage. The
+    /// driver runs it inside a NUMA-node-bound thread to place the copy's pages
+    /// on that node.
     pub fn replicate(&self) -> Self {
         Self::new(self.net.replicate())
     }
 
-    /// Greedy 1-ply move choice.
+    /// Greedy 1-ply move choice: evaluate every child from the mover's point of
+    /// view — the child's own evaluation is from the opponent's, so it is
+    /// negated — and pick the maximum, tie-breaking on the first in generation
+    /// order.
     ///
-    /// For every legal move, evaluates the child position with the real network
-    /// from the mover's point of view — the child's [`evaluate_with`] is from
-    /// the opponent's perspective, so it is negated — and picks the maximum.
-    /// The tie-break is the first maximum in the deterministic legal-move
-    /// generation order (a strict `>` comparison keeps the earliest).
-    ///
-    /// The child accumulator is derived incrementally from the root
-    /// ([`Accumulator::update_after_move`]); the eval crate guarantees this is
-    /// bit-identical to a from-scratch refresh, and a unit test pins the greedy
-    /// choice to an independent full-refresh argmax.
-    ///
-    /// Emits one [`SearchInfo`] report (depth 1) through `info` when a move is
-    /// chosen. Returns [`SearchResult::best_move`] `= None` — and emits no
-    /// report — when the side to move has no legal move.
+    /// Emits one [`SearchInfo`] report when a move is chosen, and none, with a
+    /// `None` best move, when the side to move has no legal move.
     ///
     /// # Panics
     /// Panics if `pos` (or any child) is missing either king, via the eval
@@ -211,9 +170,9 @@ impl Search {
         let mut best_move = moves[0];
         let mut best_score = i32::MIN;
         for &mv in &moves {
-            // `update_after_move` leaves `work` unchanged; apply the move for
-            // real so `evaluate_with` sees the child's side to move and king
-            // ranks, then undo it.
+            // `update_after_move` leaves `work` unchanged, so the move is
+            // applied for real to give `evaluate_with` the child's side to move
+            // and king ranks.
             let child_acc = root_acc.update_after_move(&self.net, &mut work, mv);
             let undo = work.do_move(mv);
             let score = -evaluate_with(&self.net, &child_acc, &work);
@@ -251,25 +210,22 @@ mod tests {
     use attic_state::{Move, Position, format_usi_move, parse_sfen};
     use attic_storage::LargePageArray;
 
-    // --- HalfKA_hm2 feature-plane geometry (mirrors attic-eval's features.rs).
-    // A feature index is `E_KING_PERIOD * sq_k_code + p_adj`; board-piece
-    // planes occupy `p_adj in [BOARD_LO, BOARD_HI)`, hand planes `[0, BOARD_LO)`,
-    // and the shared king plane `[BOARD_HI, E_KING_PERIOD)`.
+    // The HalfKA_hm2 feature-plane geometry, mirroring `attic-eval`: a feature
+    // index is `E_KING_PERIOD * sq_k_code + p_adj`, with board-piece planes at
+    // `p_adj in [BOARD_LO, BOARD_HI)`, hand planes below and the shared king
+    // plane above.
     const BOARD_LO: usize = 90;
     const BOARD_HI: usize = 1548;
     const E_KING_PERIOD: usize = 1629;
 
-    // The two accumulator lanes ewm pairs into `transformed[0]`: the scalar
-    // `ewm_one_perspective` multiplies lane `j` by lane `j + HIDDEN_SIZE/2`.
+    // The two accumulator lanes the output transform pairs into
+    // `transformed[0]`.
     const LANE_A: usize = 0;
     const LANE_B: usize = HIDDEN_SIZE / 2;
 
-    /// Assemble a synthetic network from feature-transformer weights plus nine
-    /// identical shortcut stacks, all in one arena. Biases are zero, so the
-    /// accumulator is a pure sum of active feature columns; output row
-    /// `HIDDEN1_DIMS` of every stack's fc_0 (the raw pre-ReLU term added to
-    /// fc_2's output) reads `transformed[LANE_A]`/`transformed[LANE_B]` with
-    /// weight 1 and every other weight/bias is 0, so the network output is
+    /// A synthetic network whose zero biases make the accumulator a pure sum of
+    /// active feature columns, and whose only nonzero FC weights route the two
+    /// live lanes through the shortcut, so that the network output is
     /// `transformed[LANE_A] + transformed[LANE_B]`.
     fn net_with_ft(ft_weights: LargePageArray<i16>) -> NnueNetwork {
         let header = NetHeader {
@@ -293,13 +249,10 @@ mod tests {
         LargePageArray::zeroed(HIDDEN_SIZE * NUM_FEATURES)
     }
 
-    /// Material-counting FT: every board-piece feature contributes `w` to
-    /// lanes `LANE_A`/`LANE_B`; hand and king features contribute 0. Both
-    /// perspectives see the same board-piece count, so the network output is a
-    /// strictly increasing function of the number of pieces on the board (kept
-    /// under the ewm clamp by a modest `w`). A capture removes a board piece
-    /// (it moves to the mover's hand), lowering the child's eval, so negating
-    /// it makes captures the most attractive moves.
+    /// A material-counting FT: only board-piece features contribute, so the
+    /// network output increases strictly with the number of pieces on the board.
+    /// A capture moves a piece to a hand and so lowers the child's eval, which
+    /// negation turns into the most attractive move.
     fn material_ft(w: i16) -> LargePageArray<i16> {
         let mut ft = LargePageArray::<i16>::zeroed(HIDDEN_SIZE * NUM_FEATURES);
         for f in 0..NUM_FEATURES {
@@ -311,12 +264,10 @@ mod tests {
         ft
     }
 
-    /// Feature-index-dependent FT: every feature contributes a small,
-    /// index-varying weight to the two live lanes. Evals then vary richly
-    /// across sibling positions (both perspectives feed the score), which
-    /// gives the argmax-equality tests something to discriminate. Weights stay
-    /// small enough (`<= 5` per feature, `<= 40` active features) to keep the
-    /// accumulator lanes under the ewm clamp of 254.
+    /// An FT whose per-feature weight varies with the feature index, so that
+    /// evals vary richly across siblings and the argmax tests have something to
+    /// discriminate. The weights stay small enough to keep the accumulator lanes
+    /// under the output transform's clamp.
     fn patterned_ft() -> LargePageArray<i16> {
         let mut ft = LargePageArray::<i16>::zeroed(HIDDEN_SIZE * NUM_FEATURES);
         for f in 0..NUM_FEATURES {
@@ -348,10 +299,8 @@ mod tests {
         moves
     }
 
-    /// Independent full-refresh argmax: for each legal move, apply it, evaluate
-    /// the child from scratch, negate for the mover, and keep the first
-    /// maximum in generation order. Deliberately shares no code with the
-    /// incremental path inside [`Search::go`].
+    /// A full-refresh argmax, sharing no code with the incremental path inside
+    /// [`Search::go`].
     fn full_refresh_argmax(net: &NnueNetwork, p: &Position) -> Option<Move> {
         let mut work = p.clone();
         let mut best: Option<Move> = None;
@@ -368,19 +317,16 @@ mod tests {
         best
     }
 
-    /// Is `mv` a capture in `p`? Drops never capture; otherwise the
-    /// destination square is occupied by an enemy piece.
+    /// Is `mv` a capture in `p`?
     fn is_capture(p: &Position, mv: Move) -> bool {
         !mv.is_drop() && p.board().get(mv.to_sq()).is_some()
     }
 
     const MATE_SFEN: &str = "4k4/4G4/3S5/9/9/9/9/9/4K4 w - 1";
 
-    // A quiet-vs-one-capture position: the black gold on 5e can capture the
-    // white pawn on 5d (its only capture). A gold never promotes, so that is a
-    // single move — every other legal move (gold and king steps) is quiet, and
-    // with no black hand pieces there are no drops. Four board pieces; the
-    // capture is the only child with three.
+    // Exactly one capture is available, by a gold, which never promotes — so it
+    // is a single move, and with no hand pieces there are no drops either. Four
+    // board pieces, of which the capture is the only child with three.
     const ONE_CAPTURE_SFEN: &str = "4k4/9/9/4p4/4G4/9/9/9/4K4 b - 1";
 
     #[test]
@@ -398,7 +344,6 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn one_capture_is_chosen() {
         let p = pos(ONE_CAPTURE_SFEN);
-        // Sanity: exactly one legal capture is available.
         let captures: Vec<Move> = legal_moves(&p)
             .into_iter()
             .filter(|&m| is_capture(&p, m))
@@ -426,8 +371,8 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn tie_break_is_first_in_generation_order() {
-        // The zero network scores every child 0, so all legal moves tie; the
-        // strict-`>` tie-break must keep the first move in generation order.
+        // The zero network scores every child 0, so the tie-break must keep the
+        // first move in generation order.
         let p = pos("lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1");
         let moves = legal_moves(&p);
         assert!(moves.len() > 1);
@@ -454,8 +399,6 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn greedy_choice_equals_full_refresh_argmax() {
-        // Several positions, including drops (hand pieces) and promotion-zone
-        // moves, exercised against the incremental path inside `go`.
         const SFENS: &[&str] = &[
             "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1", // startpos
             "4k4/9/9/4p4/4G4/9/9/9/4K4 b - 1",                                 // one-capture

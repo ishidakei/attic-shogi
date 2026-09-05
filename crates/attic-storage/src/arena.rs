@@ -1,30 +1,21 @@
-//! One large-page allocation carved into many 64-byte-aligned typed sub-arrays.
-//!
-//! The reference routes each of its biggest parameter/state bundles through a
-//! *single* large-page allocation and then reads typed views out of it: the
-//! whole NNUE parameter set lives in one `make_unique_large_page<NnueNetworks>`
-//! (`evaluate_nnue.cpp`), and every per-worker history table is embedded
-//! inline in the one `make_unique_large_page<Search::Worker>` block
-//! (`search.h`, `thread.cpp`). This module is the port's one mechanism for
-//! that shape: an [`ArenaLayout`] computes a packed set of 64-byte-aligned
-//! [`Section`]s, a [`LargePageArena`] makes the single backing allocation, and
-//! each sub-array is reached either as a temporary `&mut [T]` (in-place fill,
-//! [`LargePageArena::slice_mut`]) or as a detached [`ArenaSlice`] view stored
-//! alongside the arena.
+//! One large-page allocation carved into many 64-byte-aligned typed sub-arrays,
+//! the shape the reference gets from `make_unique_large_page<NnueNetworks>`
+//! (`evaluate_nnue.cpp`) and `make_unique_large_page<Search::Worker>`
+//! (`thread.cpp`).
 //!
 //! # The self-referential shape
 //!
 //! An [`ArenaSlice`] is a raw-pointer view into the arena's heap buffer; it does
 //! **not** own or borrow-check against the arena. The intended use is that one
 //! struct owns *both* the [`LargePageArena`] and the [`ArenaSlice`]s carved from
-//! it (see `NnueNetwork` in attic-eval and `WorkerHistories` in attic-search).
-//! That is sound because the backing bytes live on the heap behind
-//! [`LargePageArray`]'s `NonNull`: moving the owning struct copies the pointer,
-//! never the bytes, so every view stays valid, and [`ArenaSlice`] has no `Drop`
-//! glue, so field-drop order cannot produce a use-after-free. The owner must
-//! simply keep the arena alive as long as the views and never hand out a `&mut`
-//! to the arena while a view aliases it — both of which fall out naturally from
-//! "fill through `slice_mut`, then only read through the views".
+//! it. That is sound because the backing bytes live on the heap behind a
+//! `NonNull`: moving the owning struct copies the pointer, never the bytes, so
+//! every view stays valid, and [`ArenaSlice`] has no `Drop` glue, so field-drop
+//! order cannot produce a use-after-free.
+//!
+//! The owner must keep the arena alive as long as the views, and never hand out
+//! a `&mut` to the arena while a view aliases it. Both fall out of "fill through
+//! `slice_mut`, then only read through the views".
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -39,9 +30,9 @@ use crate::large_page::{LargePageArray, Zeroable, rounded_size};
 /// AVX-512 NNUE kernels assume.
 pub const ARENA_SUB_ALIGN: usize = 64;
 
-/// The location of one carved sub-array within an arena: its byte offset and its
-/// element count. Pure `Copy` metadata (no pointer), so a layout can be recorded
-/// once and replayed against any arena built from it (e.g. a NUMA replica).
+/// The location of one carved sub-array within an arena. Pure `Copy` metadata,
+/// so a layout can be recorded once and replayed against any arena built from
+/// it — a NUMA replica, say.
 pub struct Section<T> {
     offset: usize,
     len: usize,
@@ -87,13 +78,8 @@ impl<T> Section<T> {
 }
 
 /// Accumulates a packed, [`ARENA_SUB_ALIGN`]-aligned layout of typed sub-arrays.
-///
-/// Each [`reserve`](Self::reserve) advances a cursor to the next 64-byte
-/// boundary and hands back the [`Section`] for `count` elements of `T`;
-/// [`total_bytes`](Self::total_bytes) is then the exact size the backing
-/// [`LargePageArena`] must cover. Because the cursor only ever moves forward,
-/// the reserved sections are provably non-overlapping and all fall inside
-/// `[0, total_bytes)`.
+/// Its cursor only ever moves forward, so the reserved sections are provably
+/// non-overlapping and all fall inside `[0, total_bytes)`.
 #[derive(Clone, Debug, Default)]
 pub struct ArenaLayout {
     cursor: usize,
@@ -137,17 +123,12 @@ impl ArenaLayout {
     }
 }
 
-/// A single large-page allocation carved into typed sub-arrays.
-///
-/// The one backing allocation is a zeroed, [`LARGE_PAGE_ALIGN`]-aligned,
-/// (on Linux) `MADV_HUGEPAGE`-hinted `[u8]` (via [`LargePageArray`]). Sub-arrays
-/// are reached by [`slice_mut`](Self::slice_mut) (a temporary `&mut [T]` for
-/// filling) or [`view`](Self::view) (a detached [`ArenaSlice`] to store).
-///
-/// [`LARGE_PAGE_ALIGN`]: crate::LARGE_PAGE_ALIGN
+/// A single large-page allocation carved into typed sub-arrays, reached either
+/// by [`slice_mut`](Self::slice_mut) for filling or [`view`](Self::view) for
+/// storing alongside the arena.
 pub struct LargePageArena {
-    /// The single backing allocation; its length is `total_bytes.max(1)` so a
-    /// (never-produced) zero-byte layout still has a real, non-dangling base.
+    /// The single backing allocation. Its length is `total_bytes.max(1)`, so
+    /// that a zero-byte layout still has a real, non-dangling base.
     backing: LargePageArray<u8>,
     /// The exact byte size the layout requested (`<= backing.len()`).
     total_bytes: usize,
@@ -163,18 +144,16 @@ impl fmt::Debug for LargePageArena {
 }
 
 impl LargePageArena {
-    /// Allocate a zeroed arena covering `layout` — one large-page allocation.
+    /// Allocate a zeroed arena covering `layout`.
     pub fn new(layout: &ArenaLayout) -> Self {
         Self::with_capacity(layout.total_bytes())
     }
 
-    /// Allocate a zeroed arena of exactly `total_bytes` requested bytes — one
-    /// large-page allocation. Equivalent to [`new`](Self::new) with a layout of
-    /// that total; useful when the layout total was recorded separately.
+    /// Allocate a zeroed arena of exactly `total_bytes`, for when the layout
+    /// total was recorded separately.
     pub fn with_capacity(total_bytes: usize) -> Self {
-        // At least one byte so the backing is a real allocation with a non-null,
-        // aligned base even for the degenerate empty layout (never hit in
-        // practice — every real net / worker reserves > 0).
+        // At least one byte, so that even a degenerate empty layout gets a
+        // real allocation with a non-null, aligned base.
         let backing = LargePageArray::<u8>::zeroed(total_bytes.max(1));
         Self {
             backing,
@@ -187,15 +166,14 @@ impl LargePageArena {
         self.total_bytes
     }
 
-    /// The reserved byte size actually committed by the allocator — the request
-    /// rounded up to a whole [`LARGE_PAGE_ALIGN`](crate::LARGE_PAGE_ALIGN)
-    /// multiple (the figure the allocation-disclosure table reports).
+    /// The byte size the allocator actually committed: the request rounded up
+    /// to a whole [`LARGE_PAGE_ALIGN`](crate::LARGE_PAGE_ALIGN) multiple.
     pub fn reserved_bytes(&self) -> usize {
         rounded_size(self.total_bytes.max(1))
     }
 
     /// A mutable view of `section` for in-place filling. Each call borrows the
-    /// arena exclusively, so the returned slices never alias.
+    /// arena exclusively, so two of these never alias.
     ///
     /// # Panics
     /// Panics if `section` is not fully inside this arena (only possible if it
@@ -222,17 +200,15 @@ impl LargePageArena {
         }
     }
 
-    /// A detached [`ArenaSlice`] view of `section`, valid as long as this arena's
-    /// backing allocation lives (see the module note on the self-referential
-    /// shape). Used to build the stored view fields of the owning struct.
+    /// A detached [`ArenaSlice`] view of `section`, valid as long as this
+    /// arena's backing allocation lives.
     ///
     /// # Contract
-    /// At most one live [`ArenaSlice`] view may exist per section, and no
+    /// At most one live view may exist per section, and no
     /// [`slice_mut`](Self::slice_mut) call may overlap a live view: an
-    /// `ArenaSlice` can hand out `&mut [T]` (via [`DerefMut`]), so a second
-    /// view or an overlapping `slice_mut` would alias it. The owning structs
-    /// uphold this by carving each section exactly once at construction
-    /// (`NnueNetwork` in attic-eval, `WorkerHistories` in attic-search).
+    /// `ArenaSlice` can hand out `&mut [T]`, so either would alias it. The
+    /// owning structs uphold this by carving each section exactly once at
+    /// construction.
     ///
     /// # Panics
     /// Panics if `section` is not fully inside this arena.
@@ -260,8 +236,8 @@ impl LargePageArena {
         &self.backing[..self.total_bytes]
     }
 
-    /// A fresh arena of the same size with byte-identical contents in a distinct
-    /// allocation — the whole-buffer copy a NUMA replica uses.
+    /// A fresh arena of the same size with byte-identical contents in a
+    /// distinct allocation.
     pub fn clone_backing(&self) -> Self {
         let mut out = Self::with_capacity(self.total_bytes);
         if self.total_bytes != 0 {
@@ -272,9 +248,8 @@ impl LargePageArena {
 }
 
 /// A raw-pointer view into a [`LargePageArena`] sub-array, exposing it as a
-/// `[T]` (via [`Deref`]/[`DerefMut`]). It does not own the backing bytes; the
-/// arena it was carved from must outlive it (guaranteed when both live in the
-/// same owning struct — see the module note).
+/// `[T]`. It does not own the backing bytes: the arena it was carved from must
+/// outlive it. See the module head.
 pub struct ArenaSlice<T> {
     ptr: NonNull<T>,
     len: usize,
@@ -327,7 +302,6 @@ mod tests {
         assert_eq!(a.offset(), 0);
         assert_eq!(b.offset(), 64);
         assert_eq!(c.offset(), 128);
-        // Non-overlap: each start is >= the previous end.
         assert!(b.offset() >= a.end());
         assert!(c.offset() >= b.end());
         assert!(c.end() <= layout.total_bytes());

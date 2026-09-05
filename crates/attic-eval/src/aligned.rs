@@ -1,5 +1,5 @@
-//! 64-byte-aligned heap buffer for NNUE weight/bias data: forces a 64-byte base
-//! so the AVX-512 kernels' unaligned 512-bit loads never split a cache line.
+//! 64-byte-aligned heap buffer for NNUE weight/bias data, so that the AVX-512
+//! kernels' unaligned 512-bit loads never split a cache line.
 
 use std::alloc::{self, Layout};
 use std::fmt;
@@ -11,7 +11,8 @@ const ALIGN: usize = 64;
 
 /// A heap-allocated `[T]` whose base pointer is 64-byte aligned (`T: Copy`).
 pub struct Aligned64<T: Copy> {
-    /// Non-null for every length; length 0 is a dangling, aligned sentinel.
+    /// Non-null for every length; a length of 0 leaves a dangling but aligned
+    /// sentinel.
     ptr: NonNull<T>,
     len: usize,
 }
@@ -30,7 +31,8 @@ impl<T: Copy> Aligned64<T> {
     /// Allocates a zeroed, 64-byte-aligned buffer of `len` elements.
     pub fn zeroed(len: usize) -> Self {
         if len == 0 {
-            // Use ALIGN as the sentinel so an empty buffer still reports a non-null, 64-aligned base.
+            // `ALIGN` as the sentinel, so that an empty buffer still reports a
+            // non-null, 64-aligned base.
             return Self {
                 ptr: NonNull::new(ALIGN as *mut T).expect("ALIGN sentinel is non-null"),
                 len: 0,

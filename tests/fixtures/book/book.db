@@ -1,5 +1,5 @@
 #YANEURAOU-DB2016 1.00
-# Hand-authored ground-truth book for the .ybb reader parity gate.
+# Hand-authored ground-truth book for the .ybb reader parity test.
 # Positions are drawn from the existing parity-fixture SFENs (see
 # tests/fixtures/perft/*.json). Move lines are `<bestmove> <ponder> <value>
 # <depth> <count>`; the .ybb format stores move16/value/depth only (no ponder,

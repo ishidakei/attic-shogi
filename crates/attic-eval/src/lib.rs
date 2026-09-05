@@ -1,13 +1,8 @@
-//! Evaluation-layer NNUE support for the SFNN-1536 architecture.
+//! Evaluation-layer NNUE support for the SFNN-1536 architecture: loading and
+//! validating the `nn.bin` network file, feature extraction, the accumulator,
+//! the forward pass and the SIMD kernels.
 //!
-//! This crate is the Evaluation layer: it may import State and Storage, never
-//! Protocol or Search. It covers loading and validating the `nn.bin` network
-//! file, feature extraction, the accumulator, the forward pass, and the SIMD
-//! kernels.
-//!
-//! The parsing logic is ported from a read-only Rust NNUE reference
-//! implementation (verified bit-identical against the reference C++
-//! engine), adapted to this workspace's std-only conventions.
+//! It may import State and Storage, never Protocol or Search.
 
 mod aligned;
 mod features;

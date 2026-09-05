@@ -1,24 +1,14 @@
-//! Opening-book probe and move-selection policy.
+//! Opening-book probe and move-selection policy, ported from
+//! `BookMoveSelector::probe_impl` / `find_in_books` / `MemoryBook::find`
+//! (`book/book.cpp`). It covers the BookOptions V2 profile and Multiple Book,
+//! where an ordered list is consulted in priority order and the first hit wins
+//! (`book.cpp`); the `.ybb8` rework is out of scope.
 //!
-//! This is the Search-layer half of the opening book: it turns raw `.ybb`
-//! readers ([`attic_storage::Book`]) plus a [`Position`] into a chosen
-//! book move, faithfully porting `BookMoveSelector::probe_impl` /
-//! `BookMoveSelector::find_in_books` / `MemoryBook::find` from the pinned
-//! reference (`source/book/book.cpp`), including the pin's
-//! BookOptions V2 profile (the black/white-split eval-diff and depth filters)
-//! and Multiple Book (an ordered list of books consulted in priority order,
-//! first hit wins — `book.cpp`). The `.ybb8` rework stays out of
-//! scope.
-//!
-//! The raw reader
-//! stays primitive (it speaks only packed keys and move fragments); everything
-//! that needs [`Position`] / movegen knowledge — packing, flipping, widening a
-//! `move16` into a validated [`Move`], the eval / depth / narrow filters, and
-//! the random selection — lives here, above Storage.
-//!
-//! The option surface itself is registered in the Protocol layer; this module
-//! consumes an already-parsed [`BookConfig`] snapshot and an injectable
-//! [`Prng`] so selection is deterministic under test.
+//! The raw reader speaks only packed keys and move fragments, so everything
+//! needing [`Position`] or movegen knowledge lives here, above Storage. The
+//! option surface is registered in Protocol; this module takes an already-parsed
+//! snapshot and an injectable [`Prng`], so that selection is deterministic under
+//! test.
 
 use attic_state::{
     Color, Move, PackedSfen, Piece, PieceKind, Position, Square, flip_move16, sfen_pack,
@@ -37,11 +27,8 @@ const HAND_KINDS: [PieceKind; 7] = [
     PieceKind::Rook,
 ];
 
-/// A small, seedable PRNG for book move selection.
-///
-/// The reference uses its own `PRNG` seeded per process; random-bit parity is
-/// explicitly *not* required (any decent PRNG is fine), but the seed must be
-/// injectable so tests are deterministic. This is a xorshift64* generator.
+/// A small, seedable xorshift64* PRNG for book move selection. Random-bit
+/// parity with the reference is explicitly *not* required.
 #[derive(Clone, Debug)]
 pub struct Prng(u64);
 
@@ -56,19 +43,14 @@ impl Prng {
         })
     }
 
-    /// A fresh process-entropy seed, mirroring the reference `PRNG()` default
-    /// constructor which mixes `time(NULL)`, the object address `(this << 32)`, and
-    /// `steady_clock::now()` (`misc.h`) so every process run differs. The
-    /// port's analogue mixes three sources: the wall clock (`SystemTime` nanos),
-    /// an ASLR-varied stack address (the reference's `(this << 32)`), and a
-    /// process-monotonic counter so two seeds drawn in the same nanosecond still
-    /// differ. No new dependency — dependency-free entropy is sufficient here since
-    /// book/`rtime` randomness is not security-sensitive.
+    /// A fresh process-entropy seed, mixing the wall clock, an ASLR-varied stack
+    /// address, and a process-monotonic counter so that two seeds drawn in the
+    /// same nanosecond still differ. The reference's default `PRNG()` mixes the
+    /// same three kinds of source (`misc.h`).
     pub fn random_seed() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        // A per-call sequence: guarantees two seeds differ even within one clock tick.
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
 
@@ -77,18 +59,15 @@ impl Prng {
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);
 
-        // A stack address: ASLR makes it vary across process runs (the reference's
-        // `(this << 32)`).
+        // ASLR makes a stack address vary across process runs.
         let anchor = 0u8;
         let addr = &anchor as *const u8 as u64;
 
         nanos ^ addr.rotate_left(32) ^ seq.wrapping_mul(0x9E37_79B9_7F4A_7C15)
     }
 
-    /// A generator seeded from process entropy ([`Self::random_seed`]) — the port's
-    /// stand-in for the reference's default-constructed `PRNG` / `AsyncPRNG`
-    /// (`book.h`, `timeman.cpp`). Tests inject a fixed seed via
-    /// [`Self::new`] for determinism.
+    /// A generator seeded from process entropy. Tests inject a fixed seed with
+    /// [`Self::new`] instead.
     pub fn from_entropy() -> Self {
         Prng::new(Self::random_seed())
     }
@@ -110,21 +89,17 @@ impl Prng {
 
 /// A snapshot of the book-relevant USI options for one probe.
 ///
-/// `ignore_book_ply` is *not* here: the reference captures it at load time
-/// (changing it requires a reload), so it travels with the loaded book, not the
-/// per-`go` config.
+/// `ignore_book_ply` is deliberately absent: the reference captures it at load
+/// time, so it travels with the loaded book rather than the per-`go` config.
 ///
-/// Both book-option profiles are represented: `book_options_v2` selects between
-/// the V1 fields (`narrow_book`, `eval_diff`, `depth_limit`,
-/// `consider_move_count`) and the V2 ones (the `*_black_*` / `*_white_*` pairs),
-/// exactly as the reference resolves the option NAME at probe time from the root
-/// side to move (`book.cpp`).
+/// `book_options_v2` selects between the V1 fields and the V2 `*_black_*` /
+/// `*_white_*` pairs, as the reference resolves the option *name* at probe time
+/// from the root side to move (`book.cpp`).
 #[derive(Clone, Debug)]
 pub struct BookConfig {
     /// Whether the options were registered under `BOOK_OPTIONS=V2`.
     pub book_options_v2: bool,
-    /// `NarrowBook` — drop moves under 10% adoption (no-op without counts).
-    /// V1 only; forced false under V2.
+    /// `NarrowBook` — drop moves under 10% adoption; V1 only.
     pub narrow_book: bool,
     /// `BookMoves` — maximum game ply at which the book is consulted.
     pub book_moves: i64,
@@ -141,14 +116,13 @@ pub struct BookConfig {
     /// `BookEvalWhiteLimit` — eval floor when White is to move.
     pub eval_white_limit: i64,
     /// `BookDepthLimit` — clear the whole entry if the best move's depth is
-    /// below this (0 disables). V1 only.
+    /// below this; V1 only.
     pub depth_limit: i64,
     /// `BookDepthBlackLimit` — the V2 depth floor when Black is to move.
     pub depth_black_limit: i64,
     /// `BookDepthWhiteLimit` — the V2 depth floor when White is to move.
     pub depth_white_limit: i64,
-    /// `ConsiderBookMoveCount` — weight selection by adoption count. V1 only;
-    /// forced false under V2.
+    /// `ConsiderBookMoveCount` — weight selection by adoption count; V1 only.
     pub consider_move_count: bool,
     /// `BookPvMoves` — how many plies of book PV to build for the info lines.
     pub pv_moves: i64,
@@ -167,9 +141,9 @@ impl BookConfig {
         !self.book_options_v2 && self.consider_move_count
     }
 
-    /// The depth-floor option actually consulted at the root, as a
-    /// `(name, value)` pair. Under V2 the NAME is side-to-move dependent
-    /// (`book.cpp`) and the name is what the info string reports.
+    /// The depth-floor option consulted at the root, as a `(name, value)` pair.
+    /// Under V2 the *name* is side-to-move dependent (`book.cpp`), and
+    /// it is what the info string reports.
     fn depth_limit_for(&self, stm: Color) -> (&'static str, i64) {
         match (self.book_options_v2, stm) {
             (false, _) => ("BookDepthLimit", self.depth_limit),
@@ -188,8 +162,8 @@ impl BookConfig {
         }
     }
 
-    /// The per-side eval floor and its option name — unchanged between profiles
-    /// (already side-to-move dependent under V1, `book.cpp`).
+    /// The per-side eval floor and its option name, already side-to-move
+    /// dependent under V1 (`book.cpp`).
     fn eval_limit_for(&self, stm: Color) -> (&'static str, i64) {
         if stm == Color::Black {
             ("BookEvalBlackLimit", self.eval_black_limit)
@@ -199,9 +173,8 @@ impl BookConfig {
     }
 }
 
-/// One `info` line's worth of book-PV data for a surviving candidate (the
-/// reference `isRoot` multipv block). Exact string equality with the reference
-/// is not required; the field shape must match USI.
+/// One `info` line's worth of book-PV data for a surviving candidate. Exact
+/// string equality with the reference is not required.
 #[derive(Clone, Debug)]
 pub struct BookInfoLine {
     /// 1-based candidate index (`multipv`).
@@ -228,9 +201,8 @@ pub struct BookHit {
     pub info_lines: Vec<BookInfoLine>,
 }
 
-/// The outcome of a probe: an optional hit plus any diagnostic `info string`
-/// bodies the reference would have emitted (illegal-entry, narrow-book, and
-/// eval/depth-filter notices). The driver prefixes each with `info string `.
+/// The outcome of a probe: an optional hit plus the diagnostic bodies the
+/// reference would have emitted, which the driver prefixes with `info string `.
 #[derive(Clone, Debug, Default)]
 pub struct BookProbeResult {
     /// The chosen move, or `None` on a miss.
@@ -248,20 +220,15 @@ struct Candidate {
     count: u16,
 }
 
-/// Probe `books` for `pos` and select a move under `config`.
+/// Probe `books` for `pos` and select a move under `config` — `probe_impl` for
+/// the root case.
 ///
-/// Ports `BookMoveSelector::probe_impl` for the root case (`isRoot = true`,
-/// `forceHit = false`). `books` is the Multiple Book priority list (the numbered
-/// `stem-000…` series followed by the plain base name); every lookup on this
-/// path — the root probe, the PV walk and the ponder fallback — goes through
-/// [`find_in_books`], which returns the FIRST non-empty hit and never merges
-/// across books (`book.cpp`). A single-element slice reproduces the
-/// pre-Multiple-Book behaviour exactly.
+/// `books` is the Multiple Book priority list, and every lookup on this path
+/// goes through [`find_in_books`], which returns the **first** non-empty hit and
+/// never merges across books (`book.cpp`).
 ///
-/// The `USI_OwnBook` gate is the caller's responsibility (the driver skips the
-/// whole book path when it is off). Returns a miss (`hit == None`) for every
-/// early-out the reference takes: ignore-rate skip, past `BookMoves`, key/ply
-/// miss, or an empty surviving candidate set.
+/// The `USI_OwnBook` gate is the caller's responsibility. Returns a miss for
+/// every early-out the reference takes.
 pub fn probe_book(
     books: &[Book],
     ignore_book_ply: bool,
@@ -271,7 +238,7 @@ pub fn probe_book(
 ) -> BookProbeResult {
     let mut result = BookProbeResult::default();
 
-    // Random skip (`BookIgnoreRate`). Rate 0 never skips; rate 100 always does.
+    // Random skip (`BookIgnoreRate`).
     if config.ignore_rate > 0 && (prng.rand(100) as i64) < config.ignore_rate {
         return result;
     }
@@ -281,7 +248,6 @@ pub fn probe_book(
         return result;
     }
 
-    // `find_in_books`: walk the priority list, first non-empty hit wins.
     let Some(raw) = find_in_books(books, ignore_book_ply, pos, config.flipped_book) else {
         return result;
     };
@@ -289,9 +255,8 @@ pub fn probe_book(
         return result;
     }
 
-    // Legality filter: widen each stored `move16` against the root's legal
-    // moves. An entry that does not widen is a subset-violating illegal move and
-    // is dropped with a diagnostic.
+    // An entry that does not widen against the root's legal moves is an illegal
+    // move, and is dropped with a diagnostic.
     let mut legal: Vec<Move> = Vec::new();
     pos.generate_legal_all(&mut legal);
     let mut candidates: Vec<Candidate> = Vec::with_capacity(raw.len());
@@ -313,14 +278,13 @@ pub fn probe_book(
         return result;
     }
 
-    // Info lines are built from the post-legality candidate set, before any
-    // narrow/eval/depth filtering removes moves.
+    // Built from the post-legality candidate set, before any narrow, eval or
+    // depth filtering removes moves.
     let info_lines = build_info_lines(books, ignore_book_ply, pos, config, &candidates);
 
     let move_count_total: u64 = candidates.iter().map(|c| u64::from(c.count)).sum();
     let has_move_count = move_count_total != 0;
 
-    // NarrowBook: drop moves under 10% adoption (only with real counts).
     if config.narrow_book_active() && has_move_count {
         let before = candidates.len();
         candidates.retain(|c| f64::from(c.count) / move_count_total as f64 >= 0.1);
@@ -335,10 +299,8 @@ pub fn probe_book(
         return result;
     }
 
-    // The depth floor clears the whole entry when the best move's depth is below
-    // the limit (a per-position skip, not a per-move filter). Otherwise apply the
-    // eval cutoffs. Under V2 both the depth floor and the eval gap come from the
-    // side-to-move-specific option, and the info strings name the option used.
+    // The depth floor clears the **whole entry** when the best move's depth is
+    // below the limit — a per-position skip, not a per-move filter.
     let stm = pos.side_to_move();
     let (depth_limit_name, depth_limit) = config.depth_limit_for(stm);
     if depth_limit != 0 && i64::from(candidates[0].depth) < depth_limit {
@@ -365,9 +327,8 @@ pub fn probe_book(
         return result;
     }
 
-    // Selection: a uniform baseline, refined to an adoption-count-weighted pick
-    // when `ConsiderBookMoveCount` is on (with the all-zero-counts => all-ones
-    // rule). `forceHit` is never set on this root path.
+    // A uniform baseline, refined to an adoption-count-weighted pick when
+    // `ConsiderBookMoveCount` is on.
     let mut best = candidates[prng.rand(candidates.len() as u64) as usize];
     if config.consider_move_count_active() {
         let sum: u64 = candidates.iter().map(|c| u64::from(c.count)).sum();
@@ -381,9 +342,8 @@ pub fn probe_book(
         }
     }
 
-    // Ponder fallback: `.ybb` stores no ponder, so play the best move and take
-    // the first sorted move of the resulting position, validated for legality
-    // there.
+    // A `.ybb` stores no ponder move, so one is derived by probing the position
+    // after the best move.
     let ponder = ponder_move(books, ignore_book_ply, pos, config.flipped_book, best.mv);
 
     result.hit = Some(BookHit {
@@ -481,12 +441,13 @@ fn build_pv(
 ///
 /// A hit in an upper book never falls through to a lower one and results are
 /// never merged — so a position present in book 0 is answered by book 0 alone,
-/// even when a lower book stores different (or more) moves for it. The pin skips
-/// a book whose `find` returns null *or* an empty move list; both map to
-/// "keep walking" here.
+/// even when a lower book stores different (or more) moves for it. The
+/// reference skips a book whose `find` returns null *or* an empty move list;
+/// both map to "keep walking" here.
 ///
-/// The per-book flipped-position fallback lives inside [`find_in_book`] (the pin
-/// does it inside `MemoryBook::find`, `book.cpp`), so a flipped hit in
+/// The per-book flipped-position fallback lives inside [`find_in_book`] (the
+/// reference does it inside `MemoryBook::find`, `book.cpp`), so a
+/// flipped hit in
 /// book 0 also stops the walk.
 fn find_in_books(
     books: &[Book],
@@ -721,8 +682,8 @@ mod tests {
         attic_state::format_usi_move(m)
     }
 
-    /// A one-element priority list — the shape every pre-Multiple-Book test
-    /// assumes (a single loaded book).
+    /// A one-element priority list, for the tests that exercise a single
+    /// loaded book.
     fn one(book: &Book) -> &[Book] {
         std::slice::from_ref(book)
     }

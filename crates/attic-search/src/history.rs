@@ -1,47 +1,23 @@
-//! History-table skeletons the [`MovePicker`] consults for move ordering.
+//! History tables the [`MovePicker`] consults for move ordering, mirroring the
+//! reference's (`movepick.h`, `history.h`).
 //!
-//! Each table is either zero-filled (via `new`) or filled once with the
-//! reference's `clear()` init constant (via
-//! [`fill`](CapturePieceToHistory::fill)). The init constants matter for parity:
-//! before any update lands, a uniformly filled table contributes a constant to
-//! every score, so first-search move ordering is a pure function of those
-//! constants and the static terms (MVV for captures, the capture bias for
-//! evasions) — which is what makes the depth-1 node counts reproducible.
+//! Each is either zero-filled or filled once with the reference's `clear()`
+//! init constant. **Those constants matter for parity**: before any update
+//! lands, a uniformly filled table contributes a constant to every score, so
+//! first-search move ordering is a pure function of them and the static terms —
+//! which is what makes the depth-1 node counts reproducible.
 //!
-//! The types mirror the reference tables the `MovePicker` constructors take
-//! (`source/movepick.h`, `history.h`):
+//! `pawnHistory` and `correctionHistory` do not live here: they are shared
+//! between the worker threads of one NUMA node, so they sit in
+//! [`SharedHistories`] with atomic entries. At a thread count of 1 that type is
+//! byte-identical to a per-worker copy, so single-thread node counts are
+//! unaffected by the sharing.
 //!
-//! * [`CapturePieceToHistory`] — `captureHistory[pc][to][type_of(captured)]`,
-//!   consulted by `score<CAPTURES>` (`movepick.cpp`). Init `-678`.
-//! * [`ButterflyHistory`] — `mainHistory[us][move]`, consulted by the quiet
-//!   branches of `score<QUIETS>` / `score<EVASIONS>` (`movepick.cpp`).
-//!   Init `0`.
-//! * [`PieceToHistory`] — one plane of the continuation history; the main-search
-//!   quiet score reads planes `[0][1][2][3][5]` and the evasion quiet score
-//!   reads plane `[0]` (`movepick.cpp`). Init `-523`.
-//! * [`LowPlyHistory`] — `lowPlyHistory[ply][move]`, consulted by `score<QUIETS>`
-//!   near the root (`movepick.cpp`). Init `98`, re-filled per `go`.
-//!
-//! The `pawnHistory` and `correctionHistory` tables do not live here: they are
-//! SHARED between the worker threads of one NUMA node, so they sit in
-//! [`SharedHistories`] with atomic entries. At `thread_count == 1` that type is
-//! byte-identical to a per-worker `PawnHistory` / `UnifiedCorrectionHistory`
-//! copy, so single-thread node counts are unaffected by the sharing.
-//!
-//! The entries are `i16` to match the reference's `StatsEntry` width. The
-//! indexing helpers below are sized to hold every index the picker can present.
-//!
-//! # Backing store
-//!
-//! Each table's heap array is allocated through the shared huge-page allocator
-//! ([`attic_storage::LargePageArray`] for the flat `i16` / atomic tables,
-//! [`attic_storage::LargePageBox`] for the fixed-shape continuation-correction
-//! table),
-//! mirroring the reference, which allocates every dynamically sized history
-//! table with `make_unique_large_page` (`history.h`) and carries the
-//! fixed-shape ones inside the large-page-allocated `Worker` object
-//! (`thread.cpp`). The allocator affects placement only — element type,
-//! index maths, init values, and clear semantics are those of the reference.
+//! Every table allocates through the shared huge-page allocator, as the
+//! reference allocates its dynamically sized ones with `make_unique_large_page`
+//! (`history.h`) and carries the fixed-shape ones inside its large-page
+//! `Worker`. That affects placement only; element type, index maths, init
+//! values and clear semantics are the reference's.
 
 use std::sync::atomic::{AtomicI16, Ordering};
 
@@ -53,8 +29,7 @@ use attic_storage::{LargePageArray, LargePageBox};
 pub const LOW_PLY_HISTORY_SIZE: usize = 5;
 
 /// Per-table gravity limits `D` (the `StatsEntry<T, D>` template parameter,
-/// `history.h`), one constant per history table. Every update is clamped and
-/// pulled toward zero relative to its table's `D` — see [`apply_gravity`].
+/// `history.h`). See [`apply_gravity`].
 pub const MAIN_HISTORY_D: i32 = 7183;
 /// `lowPlyHistory` gravity limit (`ButterflyHistory` shares `D = 7183`).
 pub const LOW_PLY_HISTORY_D: i32 = 7183;
@@ -69,52 +44,44 @@ pub const CORRECTION_HISTORY_D: i32 = 1024;
 /// `ttMoveHistory` gravity limit (`history.h`).
 pub const TT_MOVE_HISTORY_D: i32 = 8192;
 
-/// Number of pawn-structure planes in [`PawnHistory`]
-/// (`PAWN_HISTORY_BASE_SIZE`, `history.h`; a power of two, thread count 1 ×
-/// base 8192). The reference multiplies this by the thread count; this engine
-/// shares one table per NUMA node instead, so the base size stands.
+/// Number of pawn-structure planes in one [`PawnHistory`] plane block
+/// (`PAWN_HISTORY_BASE_SIZE`, `history.h`).
 pub const PAWN_HISTORY_BASE_SIZE: usize = 8192;
 
-/// Number of correction-history slots (`CORRHIST_BASE_SIZE`, `history.h`;
-/// `u16::MAX + 1`, a power of two, thread count 1).
+/// Number of correction-history slots (`CORRHIST_BASE_SIZE`, `history.h`).
 pub const CORRHIST_BASE_SIZE: usize = 65536;
 
-/// The reference `StatsEntry::operator<<` gravity update
-/// (`history.h`): clamp `bonus` to `[-d, d]`, then
-/// `entry += clampedBonus − entry·|clampedBonus|/d`, all integer arithmetic
-/// (division truncates toward zero, as Rust's `/` does). The result is
-/// guaranteed to satisfy `|entry| ≤ d`, so it always fits back into `i16`
-/// (every `d` here is `< i16::MAX`). Implemented once, parameterised by `d`.
+/// The reference `StatsEntry::operator<<` gravity update (`history.h`):
+/// clamp `bonus` to `[-d, d]`, then `entry += clamped − entry·|clamped|/d` in
+/// integer arithmetic, whose division truncates toward zero as Rust's does.
+///
+/// The result satisfies `|entry| <= d`, so it always fits back into `i16`.
 pub fn apply_gravity(entry: i16, bonus: i32, d: i32) -> i16 {
     debug_assert!(d > 0);
     let clamped = bonus.clamp(-d, d);
     let val = entry as i32;
-    // `val * clamped.abs()` peaks at d² ≈ 9·10⁸ for the largest table, well
-    // within i32.
+    // `val * clamped.abs()` peaks at `d²`, well within `i32` for every table.
     let updated = val + clamped - val * clamped.abs() / d;
     debug_assert!(updated.abs() <= d, "gravity result {updated} exceeds D={d}");
     updated as i16
 }
 
 /// Number of distinct colored piece codes: `(kind, promoted, color)`.
-/// `kind` (0..8) + `promoted` (×8) + `color` (×16) ⇒ 0..32.
 const PIECE_NB: usize = 32;
 /// Number of board squares.
 const SQ_NB: usize = Square::COUNT;
-/// Distinct captured-piece type codes: `kind` (0..8) + `promoted` (×8) ⇒ 0..16.
+/// Distinct captured-piece type codes: `(kind, promoted)`.
 const CAPTURED_NB: usize = 16;
 
-/// Dense index for a colored, possibly-promoted piece (the `pc` index). Unique
-/// per `(kind, color, promoted)`, in `0..PIECE_NB`.
+/// Dense index for a colored, possibly-promoted piece — the `pc` index.
 fn piece_code(p: Piece) -> usize {
     p.kind.index() + if p.promoted { 8 } else { 0 } + if p.color == Color::White { 16 } else { 0 }
 }
 
-/// Dense index for a captured piece's *type* (`type_of(captured)`), collapsing
-/// colour but keeping the promoted distinction, in `1..CAPTURED_NB`. Index `0`
-/// is reserved for `NO_PIECE` (an empty target), matching the reference where
-/// `type_of(NO_PIECE) == NO_PIECE_TYPE == 0` — the main search reads that slot
-/// for a non-capturing check's `captHist` (`yaneuraou-search.cpp`).
+/// Dense index for a captured piece's *type*, collapsing colour but keeping the
+/// promoted distinction. Index `0` is reserved for an empty target, as the
+/// reference's `type_of(NO_PIECE) == 0` is: the main search reads that slot for
+/// a non-capturing check (`yaneuraou-search.cpp`).
 fn captured_code(p: Piece) -> usize {
     1 + p.kind.index() + if p.promoted { 8 } else { 0 }
 }
@@ -139,8 +106,8 @@ impl CapturePieceToHistory {
         Self::default()
     }
 
-    /// Overwrite every entry with `v` — the reference's `captureHistory.fill(v)`
-    /// (`yaneuraou-search.cpp`, init `-678`).
+    /// Overwrite every entry with `v`; the reference's init is `-678`
+    /// (`yaneuraou-search.cpp`).
     pub fn fill(&mut self, v: i16) {
         self.table.iter_mut().for_each(|e| *e = v);
     }
@@ -149,32 +116,27 @@ impl CapturePieceToHistory {
         (piece_code(moved) * SQ_NB + to.index() as usize) * CAPTURED_NB + captured_code(captured)
     }
 
-    /// The bonus for `moved` capturing `captured` on `to`. `0` for the
-    /// zero-filled table.
+    /// The bonus for `moved` capturing `captured` on `to`.
     pub fn get(&self, moved: Piece, to: Square, captured: Piece) -> i32 {
         self.table[Self::index(moved, to, captured)] as i32
     }
 
-    /// The entry for `moved` moving to an **empty** `to` — the `NO_PIECE`
-    /// (index `0`) victim slot the main search reads for a non-capturing check
-    /// (`captureHistory[movedPiece][to][type_of(NO_PIECE)]`,
-    /// `yaneuraou-search.cpp`).
+    /// The entry for `moved` moving to an **empty** `to` — the index-`0` victim
+    /// slot the main search reads for a non-capturing check.
     pub fn get_empty(&self, moved: Piece, to: Square) -> i32 {
         self.table[(piece_code(moved) * SQ_NB + to.index() as usize) * CAPTURED_NB] as i32
     }
 
-    /// Gravity-update the entry for `moved` capturing `captured` on `to`
-    /// (`D = 10692`).
+    /// Gravity-update the entry for `moved` capturing `captured` on `to`.
     pub fn update(&mut self, moved: Piece, to: Square, captured: Piece, bonus: i32) {
         let i = Self::index(moved, to, captured);
         self.table[i] = apply_gravity(self.table[i], bonus, CAPTURE_HISTORY_D);
     }
 }
 
-/// `mainHistory[us][move]` — the butterfly (from-to) quiet-move history for the
-/// side to move. Indexed by the low 16 bits of the packed move, which encode
-/// exactly the `(from-or-dropped-type, to)` pair the reference's `move.raw()`
-/// uses.
+/// `mainHistory[us][move]` — the butterfly quiet-move history for the side to
+/// move, indexed by the low 16 bits of the packed move, which encode exactly
+/// the pair the reference's `move.raw()` uses.
 pub struct ButterflyHistory {
     table: LargePageArray<i16>,
 }
@@ -193,8 +155,7 @@ impl ButterflyHistory {
         Self::default()
     }
 
-    /// Overwrite every entry with `v` — the reference's `mainHistory.fill(v)`
-    /// (`yaneuraou-search.cpp`, init `0`).
+    /// Overwrite every entry with `v`; the reference's init is `0`.
     pub fn fill(&mut self, v: i16) {
         self.table.iter_mut().for_each(|e| *e = v);
     }
@@ -203,22 +164,19 @@ impl ButterflyHistory {
         us.index() * (1 << 16) + (m.to_bits() & 0xFFFF) as usize
     }
 
-    /// The quiet-move history for `m` played by `us`. `0` for the zero-filled
-    /// table.
+    /// The quiet-move history for `m` played by `us`.
     pub fn get(&self, us: Color, m: Move) -> i32 {
         self.table[Self::index(us, m)] as i32
     }
 
-    /// Gravity-update `mainHistory[us][move.raw16]` (`D = 7183`).
+    /// Gravity-update `mainHistory[us][move.raw16]`.
     pub fn update(&mut self, us: Color, m: Move, bonus: i32) {
         let i = Self::index(us, m);
         self.table[i] = apply_gravity(self.table[i], bonus, MAIN_HISTORY_D);
     }
 }
 
-/// `PieceToHistory[pc][to]` — one continuation-history plane. The qsearch
-/// evasion quiet score reads only `continuationHistory[0]`, i.e. one such
-/// plane.
+/// `PieceToHistory[pc][to]` — one continuation-history plane.
 pub struct PieceToHistory {
     table: Box<[i16]>,
 }
@@ -237,14 +195,13 @@ impl PieceToHistory {
         Self::default()
     }
 
-    /// Overwrite every entry with `v` — the reference fills each
-    /// `continuationHistory` plane with `-523` (`yaneuraou-search.cpp`).
+    /// Overwrite every entry with `v`; the reference's init is `-523`
+    /// (`yaneuraou-search.cpp`).
     pub fn fill(&mut self, v: i16) {
         self.table.iter_mut().for_each(|e| *e = v);
     }
 
-    /// Overwrite this plane's entries from `src` (a `PIECE_NB * SQ_NB` slice, the
-    /// plane layout). Used by [`ContinuationHistory::clone_plane`].
+    /// Overwrite this plane's entries from `src`, a `PIECE_NB * SQ_NB` slice.
     fn copy_from_slice(&mut self, src: &[i16]) {
         self.table.copy_from_slice(src);
     }
@@ -253,28 +210,21 @@ impl PieceToHistory {
         piece_code(pc) * SQ_NB + to.index() as usize
     }
 
-    /// The continuation bonus for piece `pc` moving to `to`. `0` for the
-    /// zero-filled plane.
+    /// The continuation bonus for piece `pc` moving to `to`.
     pub fn get(&self, pc: Piece, to: Square) -> i32 {
         self.table[Self::index(pc, to)] as i32
     }
 
-    /// Gravity-update the `[pc][to]` continuation entry (`D = 30000`).
+    /// Gravity-update the `[pc][to]` continuation entry.
     pub fn update(&mut self, pc: Piece, to: Square, bonus: i32) {
         let i = Self::index(pc, to);
         self.table[i] = apply_gravity(self.table[i], bonus, CONTINUATION_HISTORY_D);
     }
 }
 
-/// `lowPlyHistory[ply][move]` — the near-root quiet bonus, consulted by
-/// `score<QUIETS>` for `ply < LOW_PLY_HISTORY_SIZE` as
-/// `8 * lowPlyHistory[ply][move] / (1 + ply)` (`movepick.cpp`). Init
-/// `98`, re-filled per `go` in the reference (`yaneuraou-search.cpp`); the
-/// per-`go` fill goes through [`fill`](LowPlyHistory::fill) at the root.
-///
-/// Indexed by `ply` (0..[`LOW_PLY_HISTORY_SIZE`]) and the low 16 bits of the
-/// packed move (`move.raw()`), exactly like [`ButterflyHistory`] but with a ply
-/// axis instead of a colour axis.
+/// `lowPlyHistory[ply][move]` — the near-root quiet bonus
+/// (`movepick.cpp`), re-filled per `go` as the reference does. Indexed
+/// like [`ButterflyHistory`] but with a ply axis instead of a colour one.
 pub struct LowPlyHistory {
     table: LargePageArray<i16>,
 }
@@ -293,8 +243,8 @@ impl LowPlyHistory {
         Self::default()
     }
 
-    /// Overwrite every entry with `v` — the reference's `lowPlyHistory.fill(v)`
-    /// (`yaneuraou-search.cpp`, init `98`).
+    /// Overwrite every entry with `v`; the reference's init is `98`
+    /// (`yaneuraou-search.cpp`).
     pub fn fill(&mut self, v: i16) {
         self.table.iter_mut().for_each(|e| *e = v);
     }
@@ -304,13 +254,13 @@ impl LowPlyHistory {
     }
 
     /// The near-root bonus for `m` at `ply`. The caller guarantees
-    /// `ply < LOW_PLY_HISTORY_SIZE`. `0` for the zero-filled table.
+    /// `ply < LOW_PLY_HISTORY_SIZE`.
     pub fn get(&self, ply: usize, m: Move) -> i32 {
         self.table[Self::index(ply, m)] as i32
     }
 
-    /// Gravity-update `lowPlyHistory[ply][move.raw16]` (`D = 7183`). The caller
-    /// guarantees `ply < LOW_PLY_HISTORY_SIZE`.
+    /// Gravity-update `lowPlyHistory[ply][move.raw16]`. The caller guarantees
+    /// `ply < LOW_PLY_HISTORY_SIZE`.
     pub fn update(&mut self, ply: usize, m: Move, bonus: i32) {
         let i = Self::index(ply, m);
         self.table[i] = apply_gravity(self.table[i], bonus, LOW_PLY_HISTORY_D);
@@ -344,16 +294,11 @@ impl CorrChannel {
 const CORRECTION_INIT: i16 = 0;
 const PAWN_INIT: i16 = -1238;
 
-/// The atomic gravity update — the reference `StatsEntry<T, D, true>::operator<<`
-/// (`history.h`) on an atomic entry. Identical arithmetic to
-/// [`apply_gravity`], but a plain RELAXED load-modify-store rather than a CAS
-/// loop: the reference (`history.h`) uses `memory_order_relaxed` for both
-/// the load and the store and does **not** guard the read-modify-write against a
-/// concurrent update. Two threads updating the same entry can therefore lose one
-/// update — this is accepted by design (the histories are a heuristic), so this
-/// port matches it byte-for-byte and takes the same relaxed, non-atomic-RMW
-/// path. The result still satisfies `|entry| <= d`, so it always fits back into
-/// `i16`.
+/// [`apply_gravity`] on an atomic entry: a plain relaxed load-modify-store
+/// rather than a CAS loop, because the reference leaves its read-modify-write
+/// unguarded too (`history.h`). **Two threads updating the same entry can
+/// lose one update**, which is accepted by design — the histories are a
+/// heuristic — so this port matches it rather than tightening it.
 fn apply_gravity_atomic(cell: &AtomicI16, bonus: i32, d: i32) {
     debug_assert!(d > 0);
     let clamped = bonus.clamp(-d, d);
@@ -364,7 +309,7 @@ fn apply_gravity_atomic(cell: &AtomicI16, bonus: i32, d: i32) {
 }
 
 /// Number of `i16` channels a correction slot holds: one [`CorrChannel`] per
-/// side to move (`MultiArray<CorrectionBundle, COLOR_NB>`, `history.h`).
+/// side to move.
 const CORR_SLOT_LEN: usize = Color::COUNT * CorrChannel::COUNT;
 /// Number of `i16` entries a pawn-history slot holds (`[pc][to]`,
 /// `history.h`).
@@ -372,45 +317,31 @@ const PAWN_SLOT_LEN: usize = PIECE_NB * SQ_NB;
 
 /// The reference `SharedHistories` (`history.h`): the unified correction
 /// history and the pawn history, **shared between the worker threads of one NUMA
-/// node** and sized by that node's thread count.
+/// node** and sized by that node's thread count, so that a larger node gets a
+/// proportionally larger, less-contended table.
 ///
-/// Both tables are `DynStats` of atomic entries: their slot count is
-/// `thread_count * BASE` (`BASE` = [`CORRHIST_BASE_SIZE`] / [`PAWN_HISTORY_BASE_SIZE`]),
-/// so a larger node gets a proportionally larger, less-contended table.
-/// `thread_count` must be a non-zero power of two (asserted) so slot selection is
-/// a single mask — `key & (slots - 1)` — over the full 64-bit key. At
-/// `thread_count == 1` the masks are `65535` / `8191`, exactly this port's
-/// former per-worker `UnifiedCorrectionHistory` / `PawnHistory` shape, so
-/// single-thread search is byte-identical (the parity gate).
-///
-/// Entries are [`AtomicI16`] with RELAXED access ([`apply_gravity_atomic`]);
-/// concurrent lost updates are accepted by design. Held behind an [`Arc`] by the
-/// driver and handed to every worker on the node.
+/// `thread_count` must be a non-zero power of two, which is what makes slot
+/// selection a single mask over the full 64-bit key.
 pub struct SharedHistories {
-    /// The node's thread count (a power of two); the slot multiplier of both
-    /// tables.
+    /// The node's thread count, the slot multiplier of both tables.
     thread_count: usize,
-    /// Correction table: `thread_count * CORRHIST_BASE_SIZE` slots, each
-    /// [`CORR_SLOT_LEN`] atomic `i16`. Layout `[slot][color][channel]`, flat.
+    /// Correction table, flat over `[slot][color][channel]`.
     correction: LargePageArray<AtomicI16>,
     /// `correctionHistory.get_size() - 1` — the correction slot mask.
     corr_mask: usize,
-    /// Pawn table: `thread_count * PAWN_HISTORY_BASE_SIZE` slots, each
-    /// [`PAWN_SLOT_LEN`] atomic `i16`. Layout `[plane][pc][to]`, flat.
+    /// Pawn table, flat over `[plane][pc][to]`.
     pawn: LargePageArray<AtomicI16>,
     /// `pawnHistory.get_size() - 1` — the pawn slot mask.
     pawn_mask: usize,
 }
 
 impl SharedHistories {
-    /// Build the shared tables for a node of `thread_count` workers, applying the
-    /// reference `clear()` init (correction `0`, pawn `-1238`). `thread_count`
-    /// must be a non-zero power of two (the reference `assert`,
-    /// `history.h`) — the driver passes `next_power_of_two(count)`.
+    /// Build the shared tables for a node of `thread_count` workers, applying
+    /// the reference `clear()` init. `thread_count` must be a non-zero power of
+    /// two, as the reference asserts (`history.h`).
     ///
-    /// The allocation **and** the initial fill run here, so when the driver calls
-    /// this inside a node-bound thread (`execute_on_numa_node`) the first-touch
-    /// policy places every page on that node.
+    /// The allocation **and** the initial fill run here, so that calling this
+    /// inside a node-bound thread first-touches every page on that node.
     pub fn new(thread_count: usize) -> Self {
         assert!(
             thread_count.is_power_of_two() && thread_count != 0,
@@ -426,7 +357,7 @@ impl SharedHistories {
             pawn_mask: pawn_slots - 1,
         };
         // The correction fill of `0` is a no-op on the zeroed allocation, but is
-        // written explicitly so every page is first-touched on the (bound) node.
+        // written explicitly so that every page is first-touched on the node.
         out.fill_correction(CORRECTION_INIT);
         out.fill_pawn(PAWN_INIT);
         out
@@ -437,24 +368,24 @@ impl SharedHistories {
         self.thread_count
     }
 
-    /// Number of correction slots (`thread_count * CORRHIST_BASE_SIZE`).
+    /// Number of correction slots.
     pub fn correction_slots(&self) -> usize {
         self.corr_mask + 1
     }
 
-    /// Number of pawn slots (`thread_count * PAWN_HISTORY_BASE_SIZE`).
+    /// Number of pawn slots.
     pub fn pawn_slots(&self) -> usize {
         self.pawn_mask + 1
     }
 
-    /// Overwrite every correction entry with `v` (atomic RELAXED stores).
+    /// Overwrite every correction entry with `v`.
     pub fn fill_correction(&self, v: i16) {
         for e in self.correction.iter() {
             e.store(v, Ordering::Relaxed);
         }
     }
 
-    /// Overwrite every pawn entry with `v` (atomic RELAXED stores).
+    /// Overwrite every pawn entry with `v`.
     pub fn fill_pawn(&self, v: i16) {
         for e in self.pawn.iter() {
             e.store(v, Ordering::Relaxed);
@@ -469,13 +400,13 @@ impl SharedHistories {
     }
 
     /// The `channel` correction value for side-to-move `color` in the slot keyed
-    /// by `key`. `0` on a fresh table.
+    /// by `key`.
     pub fn correction_get(&self, key: u64, color: Color, channel: CorrChannel) -> i32 {
         self.correction[self.corr_index(key, color, channel)].load(Ordering::Relaxed) as i32
     }
 
     /// Gravity-update the `channel` entry for side-to-move `color` in the slot
-    /// keyed by `key` (`D = 1024`).
+    /// keyed by `key`.
     pub fn correction_update(&self, key: u64, color: Color, channel: CorrChannel, bonus: i32) {
         apply_gravity_atomic(
             &self.correction[self.corr_index(key, color, channel)],
@@ -492,13 +423,12 @@ impl SharedHistories {
     }
 
     /// The pawn-structure bonus for piece `pc` moving to `to` in the plane keyed
-    /// by `pawn_key`. `-1238` on a fresh table.
+    /// by `pawn_key`.
     pub fn pawn_get(&self, pawn_key: u64, pc: Piece, to: Square) -> i32 {
         self.pawn[self.pawn_index(pawn_key, pc, to)].load(Ordering::Relaxed) as i32
     }
 
-    /// Gravity-update the `[pc][to]` entry in the plane keyed by `pawn_key`
-    /// (`D = 8192`).
+    /// Gravity-update the `[pc][to]` entry in the plane keyed by `pawn_key`.
     pub fn pawn_update(&self, pawn_key: u64, pc: Piece, to: Square, bonus: i32) {
         apply_gravity_atomic(
             &self.pawn[self.pawn_index(pawn_key, pc, to)],
@@ -509,27 +439,17 @@ impl SharedHistories {
 }
 
 /// `CorrectionHistory<Continuation>` (`history.h`): a `[pc][to]`
-/// table whose every cell is itself a `[pc][to]` `i16` table, each a gravity
-/// entry with `D = 1024`. Init fill `6` (`yaneuraou-search.cpp`).
-///
-/// The outer `[pc][to]` selects a *plane* (via [`Self::plane_index`], the plane
-/// the search stack points a cell's `continuationCorrectionHistory` at); the
-/// inner `[pc][to]` indexes within it. The `[NO_PIECE][0]` plane
-/// ([`Self::SENTINEL_PLANE`]) is the reference's default the search stack seeds
-/// pre-root cells with.
+/// table whose every cell is itself a `[pc][to]` table. The outer pair selects
+/// a *plane*, the inner indexes within it, and [`Self::SENTINEL_PLANE`] is the
+/// reference's default for pre-root search-stack cells.
 pub struct ContinuationCorrectionHistory {
-    /// Layout: `[plane = outer_pc*SQ_NB + outer_to][inner_pc][inner_to]`. Fixed
-    /// inner dimensions so each access carries a compile-time length: the outer
-    /// `plane` (a stored index) keeps a bounds check against the constant plane
-    /// count, but the per-access length load is gone. `inner_pc` (from the
-    /// bounded piece code) is provably in range.
+    /// Flat over `[plane][inner_pc][inner_to]`, with the inner dimensions fixed
+    /// so that each access carries a compile-time length.
     table: LargePageBox<[[[i16; SQ_NB]; PIECE_NB]; ContinuationCorrectionHistory::NUM_PLANES]>,
 }
 
 impl Default for ContinuationCorrectionHistory {
     fn default() -> Self {
-        // Huge-page-backed, zero-initialised; the compile-time dimensions are
-        // preserved by [`LargePageBox`].
         Self {
             table: LargePageBox::zeroed(),
         }
@@ -537,21 +457,19 @@ impl Default for ContinuationCorrectionHistory {
 }
 
 impl ContinuationCorrectionHistory {
-    /// Number of outer planes (`PIECE_NB * SQ_NB`).
+    /// Number of outer planes.
     const NUM_PLANES: usize = PIECE_NB * SQ_NB;
-    /// The `[NO_PIECE][0]` sentinel plane index (reference default). `NO_PIECE`
-    /// has piece code `0` in this port's dense encoding, so the sentinel is
-    /// plane `0`.
+    /// The `[NO_PIECE][0]` sentinel plane, which this port's dense piece
+    /// encoding places at index `0`.
     pub const SENTINEL_PLANE: usize = 0;
 
-    /// A fresh, zero-filled table. Use [`Self::fill`] to apply the reference's
-    /// init value of `6`.
+    /// A fresh, zero-filled table.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Overwrite every entry with `v` — the reference fills each continuation
-    /// correction plane with `6` (`yaneuraou-search.cpp`).
+    /// Overwrite every entry with `v`; the reference's init is `6`
+    /// (`yaneuraou-search.cpp`).
     pub fn fill(&mut self, v: i16) {
         self.table
             .iter_mut()
@@ -560,35 +478,29 @@ impl ContinuationCorrectionHistory {
             .for_each(|e| *e = v);
     }
 
-    /// The plane index selected by the outer `[pc][to]` (the plane a search
-    /// stack cell's `continuationCorrectionHistory` points at).
+    /// The plane index selected by the outer `[pc][to]`.
     pub fn plane_index(pc: Piece, to: Square) -> usize {
         piece_code(pc) * SQ_NB + to.index() as usize
     }
 
-    /// The inner `[pc][to]` value in `plane`. The fill value on a filled table.
+    /// The inner `[pc][to]` value in `plane`.
     pub fn get_at(&self, plane: usize, pc: Piece, to: Square) -> i32 {
         self.table[plane][piece_code(pc)][to.index() as usize] as i32
     }
 
-    /// Gravity-update the inner `[pc][to]` entry in `plane` (`D = 1024`).
+    /// Gravity-update the inner `[pc][to]` entry in `plane`.
     pub fn update_at(&mut self, plane: usize, pc: Piece, to: Square, bonus: i32) {
         let cell = &mut self.table[plane][piece_code(pc)][to.index() as usize];
         *cell = apply_gravity(*cell, bonus, CORRECTION_HISTORY_D);
     }
 }
 
-/// The worker's `continuationHistory` (`history.h` selectors):
-/// `[in_check][capture]` copies of a `ContinuationHistory`
-/// (`MultiArray<PieceToHistory, PIECE_NB, SQUARE_NB>`), i.e. planes keyed by
-/// `(in_check, capture, moved_piece, to)`, each plane a `PieceToHistory`
-/// (`[pc][to]` `i16`, gravity `D = 30000`). Init fill `-523`
-/// (`yaneuraou-search.cpp`).
-///
-/// A search stack cell's `continuationHistory` points at one such plane; the
-/// update primitives write `[pc][to]` (the current move) within it.
+/// The worker's `continuationHistory`: planes keyed by
+/// `(in_check, capture, moved_piece, to)`, each a [`PieceToHistory`]. A search
+/// stack cell points at one such plane, and the update primitives write the
+/// current move's `[pc][to]` within it.
 pub struct ContinuationHistory {
-    /// Layout: `[plane][inner_pc][inner_to]`, `plane` from [`Self::plane_index`].
+    /// Flat over `[plane][inner_pc][inner_to]`.
     table: LargePageArray<i16>,
 }
 
@@ -601,24 +513,23 @@ impl Default for ContinuationHistory {
 }
 
 impl ContinuationHistory {
-    /// Entries per plane (`PIECE_NB * SQ_NB`).
+    /// Entries per plane.
     const PLANE_LEN: usize = PIECE_NB * SQ_NB;
-    /// Plane count: `[in_check][capture][pc][to]` == `2 * 2 * PIECE_NB * SQ_NB`.
+    /// Plane count, over `[in_check][capture][pc][to]`.
     const NUM_PLANES: usize = 2 * 2 * PIECE_NB * SQ_NB;
 
-    /// A fresh, zero-filled table. Use [`Self::fill`] for the reference init.
+    /// A fresh, zero-filled table.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Overwrite every entry with `v` — the reference fills each continuation
-    /// plane with `-523` (`yaneuraou-search.cpp`).
+    /// Overwrite every entry with `v`; the reference's init is `-523`
+    /// (`yaneuraou-search.cpp`).
     pub fn fill(&mut self, v: i16) {
         self.table.iter_mut().for_each(|e| *e = v);
     }
 
-    /// The plane index selected by `(in_check, capture, pc, to)` — the plane a
-    /// search stack cell's `continuationHistory` points at after a move.
+    /// The plane index selected by `(in_check, capture, pc, to)`.
     pub fn plane_index(in_check: bool, capture: bool, pc: Piece, to: Square) -> usize {
         let ic = in_check as usize;
         let cap = capture as usize;
@@ -634,18 +545,14 @@ impl ContinuationHistory {
         self.table[Self::cell(plane, pc, to)] as i32
     }
 
-    /// Gravity-update the inner `[pc][to]` entry in `plane` (`D = 30000`).
+    /// Gravity-update the inner `[pc][to]` entry in `plane`.
     pub fn update_at(&mut self, plane: usize, pc: Piece, to: Square, bonus: i32) {
         let i = Self::cell(plane, pc, to);
         self.table[i] = apply_gravity(self.table[i], bonus, CONTINUATION_HISTORY_D);
     }
 
-    /// Copy `plane` out into a standalone [`PieceToHistory`]. The main-search
-    /// [`crate::MovePicker`] reads continuation planes as `&PieceToHistory`
-    /// references (the reference stores a pointer to a plane on the search
-    /// stack); this materialises one such plane so a search that keeps its
-    /// continuation table in this multi-plane form can hand the picker the six
-    /// planes its `contHist` array names.
+    /// Copy `plane` out into a standalone [`PieceToHistory`], which is the form
+    /// [`crate::MovePicker`] reads continuation planes in.
     pub fn clone_plane(&self, plane: usize) -> PieceToHistory {
         let mut out = PieceToHistory::new();
         let base = plane * Self::PLANE_LEN;
@@ -654,8 +561,7 @@ impl ContinuationHistory {
     }
 }
 
-/// `TTMoveHistory` (`history.h`): a single gravity entry with `D = 8192`,
-/// init `0` (cleared at `yaneuraou-search.cpp`).
+/// `TTMoveHistory` (`history.h`): a single gravity entry.
 #[derive(Default)]
 pub struct TtMoveHistory {
     entry: i16,
@@ -672,7 +578,7 @@ impl TtMoveHistory {
         self.entry as i32
     }
 
-    /// Gravity-update the entry (`D = 8192`).
+    /// Gravity-update the entry.
     pub fn update(&mut self, bonus: i32) {
         self.entry = apply_gravity(self.entry, bonus, TT_MOVE_HISTORY_D);
     }
@@ -737,9 +643,8 @@ mod shared_tests {
         }
     }
 
-    /// Mask widening: two pawn keys equal mod `8192` but different mod `16384`
-    /// alias at `thread_count == 1` (mask `8191`) and separate at `thread_count
-    /// == 2` (mask `16383`).
+    /// Two pawn keys equal mod the base size but differing above it must alias
+    /// at one thread and separate at two.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn pawn_mask_widens_with_thread_count() {
@@ -770,7 +675,7 @@ mod shared_tests {
         );
     }
 
-    /// The same widening for the correction table (`65536` slot base).
+    /// The same widening for the correction table.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn correction_mask_widens_with_thread_count() {

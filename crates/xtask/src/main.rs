@@ -23,7 +23,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Print a greeting that proves the xtask wiring is working end-to-end.
+    /// Print a greeting, proving the xtask wiring works end-to-end.
     Hello,
     /// Build the YaneuraOu reference binary used as parity ground truth.
     BuildReference(BuildReferenceArgs),
@@ -54,9 +54,9 @@ struct BuildReferenceArgs {
     /// Python interpreter used by the upstream NNUE arch generator.
     #[arg(long, default_value = "python3")]
     python: String,
-    /// Skip `make clean`. The default rebuilds from a clean tree because the
-    /// upstream targets reuse object files compiled under different CPPFLAGS,
-    /// which silently mixes configurations.
+    /// Skip `make clean`. The default rebuilds from a clean tree: the upstream
+    /// targets reuse object files compiled under different CPPFLAGS, which
+    /// silently mixes configurations.
     #[arg(long)]
     skip_clean: bool,
 }
@@ -84,89 +84,73 @@ struct CapturePerftArgs {
     #[arg(long, default_value = REFERENCE_BINARY_DEFAULT)]
     binary: PathBuf,
     /// Path to the evaluation network file the reference loads on `isready`.
-    /// The file is obtained out-of-band and never committed; the engine refuses
-    /// to proceed past `isready` without it.
+    /// It is obtained out-of-band and never committed, and the engine refuses to
+    /// proceed past `isready` without it.
     #[arg(long, default_value = EVAL_FILE_DEFAULT)]
     eval_file: PathBuf,
-    /// Maximum perft depth to capture. Depths 1..=max are recorded.
     #[arg(long, default_value_t = 5)]
     max_depth: u32,
-    /// SFEN of the position from which to capture perft. Defaults to startpos
-    /// so existing invocations remain byte-compatible.
+    /// SFEN of the position from which to capture perft.
     #[arg(long, default_value = STARTPOS_SFEN)]
     sfen: String,
     /// Optional space-separated USI moves to play after `position sfen <SFEN>`
-    /// before each `go perft <D>`. Mirrors USI's
-    /// `position sfen <SFEN> moves <m1> <m2> ...` shape. Empty by default so
-    /// every existing capture invocation regenerates byte-identically.
+    /// before each `go perft <D>`.
     #[arg(long, default_value = "")]
     moves: String,
-    /// Where to write the JSON fixture (workspace-relative path is resolved
-    /// against the workspace root).
+    /// Where to write the JSON fixture; a relative path resolves against the
+    /// workspace root.
     #[arg(long, default_value = "tests/fixtures/perft/startpos.json")]
     fixture: PathBuf,
 }
 
 #[derive(clap::Args, Debug)]
 struct CaptureEvalArgs {
-    /// Path to the reference binary. Build with `cargo xtask build-reference`
-    /// (default `tournament` target, which loads nn.bin on `isready`).
+    /// Path to the reference binary, built at the default `tournament` target.
     #[arg(long, default_value = REFERENCE_BINARY_DEFAULT)]
     binary: PathBuf,
     /// Path to the evaluation network file the reference loads on `isready`.
-    /// The file is obtained out-of-band and never committed; the engine refuses
-    /// to proceed past `isready` without it.
     #[arg(long, default_value = EVAL_FILE_DEFAULT)]
     eval_file: PathBuf,
-    /// SFEN of the position to evaluate. Defaults to startpos.
     #[arg(long, default_value = STARTPOS_SFEN)]
     sfen: String,
     /// Optional space-separated USI moves to play after `position sfen <SFEN>`
-    /// before sending the `e` (static-eval) command. Mirrors USI's
-    /// `position sfen <SFEN> moves <m1> <m2> ...` shape. Empty by default.
+    /// before sending the static-eval command.
     #[arg(long, default_value = "")]
     moves: String,
-    /// Where to write the JSON fixture (workspace-relative path is resolved
-    /// against the workspace root).
+    /// Where to write the JSON fixture; a relative path resolves against the
+    /// workspace root.
     #[arg(long, default_value = "tests/fixtures/eval/startpos.json")]
     fixture: PathBuf,
 }
 
 #[derive(clap::Args, Debug)]
 struct CaptureSearchArgs {
-    /// Path to the reference binary. Build with `cargo xtask build-reference`
-    /// (default `tournament` target, which loads nn.bin on `isready`).
+    /// Path to the reference binary, built at the default `tournament` target.
     #[arg(long, default_value = REFERENCE_BINARY_DEFAULT)]
     binary: PathBuf,
     /// Path to the evaluation network file the reference loads on `isready`.
-    /// The file is obtained out-of-band and never committed; the engine refuses
-    /// to proceed past `isready` without it.
     #[arg(long, default_value = EVAL_FILE_DEFAULT)]
     eval_file: PathBuf,
-    /// SFEN of the position to search from. Defaults to startpos.
     #[arg(long, default_value = STARTPOS_SFEN)]
     sfen: String,
     /// Optional space-separated USI moves to play after `position sfen <SFEN>`
-    /// before sending `go depth`. Mirrors USI's
-    /// `position sfen <SFEN> moves <m1> <m2> ...` shape. Empty by default.
+    /// before sending `go depth`.
     #[arg(long, default_value = "")]
     moves: String,
-    /// Fixed search depth. Single-thread fixed-depth search is reproducible
-    /// byte-for-byte: same submodule pin + same nn.bin → identical fixture.
+    /// Fixed search depth. A single-thread fixed-depth search is reproducible
+    /// byte for byte against the same reference build and network file.
     #[arg(long, default_value_t = 3)]
     depth: u32,
     /// Number of search threads. Must be 1 for deterministic fixture capture.
     #[arg(long, default_value_t = 1)]
     threads: u32,
-    /// `USI_Hash` in MiB. Omit to leave the engine default (1024) in place,
-    /// which is what every fixture captured before this option used. When given,
-    /// the value is also recorded in the fixture as `hash_mb`, because the
-    /// transposition table size changes node counts and a `nodes` gate is only
-    /// meaningful against a table of the same size.
+    /// `USI_Hash` in MiB; omit to leave the engine default in place. A given
+    /// value is also recorded in the fixture, since the table size changes node
+    /// counts and a `nodes` comparison is only meaningful against the same size.
     #[arg(long)]
     hash: Option<u32>,
-    /// Where to write the JSON fixture (workspace-relative path is resolved
-    /// against the workspace root).
+    /// Where to write the JSON fixture; a relative path resolves against the
+    /// workspace root.
     #[arg(long, default_value = "tests/fixtures/search/startpos.json")]
     fixture: PathBuf,
 }
@@ -182,8 +166,8 @@ struct CaptureBookArgs {
     /// Where to write the expected-results JSON.
     #[arg(long, default_value = "tests/fixtures/book/expected.json")]
     expected: PathBuf,
-    /// Emit a per-move `depth` field (sets `.ybb` flags bit 0 → 6-byte records).
-    /// Defaults on so the fixture exercises the depth-carrying path.
+    /// Emit a per-move `depth` field, setting `.ybb` flags bit 0 for 6-byte
+    /// records.
     #[arg(long, default_value_t = true)]
     with_depth: bool,
 }
@@ -261,7 +245,7 @@ fn build_reference(args: &BuildReferenceArgs) -> Result<PathBuf, String> {
     let source_dir = workspace_root.join(REFERENCE_SOURCE_DIR);
     if !source_dir.join("Makefile").is_file() {
         return Err(format!(
-            "missing Makefile under {}; run `git submodule update --init --recursive` first",
+            "no Makefile under {}: the YaneuraOu sources this subcommand builds are not present there",
             source_dir.display()
         ));
     }
@@ -572,10 +556,8 @@ fn write_eval_script<W: Write>(out: &mut W, sfen: &str, moves: &str) -> std::io:
     } else {
         writeln!(out, "position sfen {sfen} moves {trimmed_moves}")?;
     }
-    // The `e` command (YaneuraOu-specific, non-Stockfish) calls engine.evaluate()
-    // and prints a single `eval = <integer>` line to stdout. It is available in
-    // both `tournament` and `normal` builds (guarded only by the !STOCKFISH block
-    // in usi.cpp). The `eval` command is a different, unrelated TODO stub.
+    // The `e` command calls `engine.evaluate()` and prints a single
+    // `eval = <integer>` line. `eval` is a different, unrelated stub.
     writeln!(out, "e")?;
     writeln!(out, "quit")?;
     Ok(())
@@ -615,10 +597,6 @@ fn render_eval_fixture(sfen: &str, moves: &str, eval: i32) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
-// capture-search
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 enum SearchScore {
     Cp(i32),
@@ -633,12 +611,9 @@ struct SearchResult {
     nodes: u64,
     pv: Vec<String>,
     /// The `FV_SCALE` the reference actually searched with, when it announced an
-    /// override. The engine reads `eval/eval_options.txt` at `isready` and
-    /// reports every override it applies as
-    /// `info string engine option override. name = FV_SCALE , value = <N>`
-    /// (`usi.cpp`); that file is a local, uncommitted knob, so the only reliable
-    /// source for the value is the engine's own announcement. `None` means no
-    /// override was announced and the engine default (16) was in force.
+    /// override. `eval/eval_options.txt` is a local, uncommitted knob, so the
+    /// engine's own `info string` announcement is the only reliable source.
+    /// `None` means the engine default was in force.
     fv_scale: Option<i32>,
 }
 
@@ -713,12 +688,10 @@ fn drive_search(
         .take()
         .ok_or_else(|| "failed to capture engine stdin".to_string())?;
 
-    // Write the search script but do NOT drop stdin yet.
-    // `go depth N` starts the search asynchronously on a separate thread inside
-    // the engine. If stdin is closed (EOF) before bestmove is output, the
-    // engine's command loop receives a synthetic "quit" (misc.cpp)
-    // and aborts the search after the first completed depth. Keeping stdin open
-    // prevents that early termination; we close it only after reading bestmove.
+    // stdin must stay open until bestmove is read: `go depth N` searches
+    // asynchronously, and an EOF reaches the engine's command loop as a
+    // synthetic "quit" (misc.cpp) that aborts the search after the
+    // first completed depth.
     write_search_script(&mut stdin, sfen, moves, depth, threads, hash)
         .map_err(|e| format!("failed to drive engine stdin: {e}"))?;
 
@@ -737,8 +710,7 @@ fn drive_search(
         }
     };
 
-    // Drop stdin now that bestmove has been read. This sends EOF to the engine,
-    // which the command loop interprets as "quit" and exits cleanly.
+    // The EOF this sends is the engine's "quit".
     drop(stdin);
 
     let status = child
@@ -760,17 +732,15 @@ fn write_search_script<W: Write>(
 ) -> std::io::Result<()> {
     writeln!(out, "usi")?;
     writeln!(out, "setoption name Threads value {threads}")?;
-    // Disable the opening book so the search always runs the alpha-beta routine.
-    // BookFile "no_book" is the sentinel value recognised by book.cpp.
+    // `no_book` is the sentinel recognised by book.cpp; without it a book
+    // hit would replace the search.
     writeln!(out, "setoption name BookFile value no_book")?;
-    // `USI_Hash` is only sent when explicitly requested, so the script for a
-    // default-hash capture is byte-identical to the pre-`--hash` one.
     if let Some(mb) = hash {
         writeln!(out, "setoption name USI_Hash value {mb}")?;
     }
     writeln!(out, "isready")?;
-    // usinewgame clears the transposition table (threads.clear() → clear_worker())
-    // so the search always starts from a clean hash state.
+    // `usinewgame` clears the transposition table, so the search always starts
+    // from a clean hash state.
     writeln!(out, "usinewgame")?;
     let trimmed_moves = moves.trim();
     if trimmed_moves.is_empty() {
@@ -823,8 +793,7 @@ fn parse_info_line(line: &str) -> Option<ParsedInfo> {
     }
 
     if is_bound {
-        // Aspiration-window fail-high / fail-low lines are not exact; skip them
-        // so only the final exact info line for each depth is captured.
+        // Aspiration-window fail-high / fail-low lines are not exact scores.
         return None;
     }
 
@@ -838,16 +807,13 @@ fn parse_info_line(line: &str) -> Option<ParsedInfo> {
 
 /// Extract `N` from
 /// `info string engine option override. name = FV_SCALE , value = N`, the line
-/// the reference prints at `isready` for every `eval/eval_options.txt` entry it
-/// applies. Any other line yields `None`.
+/// the reference prints at `isready` for every override it applies.
 fn parse_fv_scale_override(line: &str) -> Option<i32> {
     let rest = line.strip_prefix("info string engine option override.")?;
     let mut tokens = rest.split_ascii_whitespace();
-    // `name = FV_SCALE , value = 28`
     if tokens.next()? != "name" || tokens.next()? != "=" || tokens.next()? != "FV_SCALE" {
         return None;
     }
-    // The engine emits a standalone `,` between the two clauses.
     if tokens.next()? != "," || tokens.next()? != "value" || tokens.next()? != "=" {
         return None;
     }
@@ -919,16 +885,13 @@ fn render_search_fixture(
         out.push_str("],\n");
     }
     out.push_str(&format!("  \"depth\": {},\n", result.depth));
-    // Emitted only for an explicit `--hash`, so a default-hash capture keeps the
-    // exact byte layout it had before the option existed.
+    // Emitted only for an explicit `--hash`.
     if let Some(mb) = hash {
         out.push_str(&format!("  \"hash_mb\": {mb},\n"));
     }
-    // Emitted only when the reference announced an override — i.e. only when
-    // `eval/eval_options.txt` exists and sets `FV_SCALE`. A `nodes` / `score`
-    // gate is meaningless unless the Rust side divides by the same number, so
-    // record what the capture actually ran with rather than assuming the
-    // engine default.
+    // Emitted only when the reference announced an override. A `nodes` /
+    // `score` comparison is meaningless unless the Rust side divides by the same
+    // number, so record what the capture actually ran with.
     if let Some(scale) = result.fv_scale {
         out.push_str(&format!("  \"fv_scale\": {scale},\n"));
     }
@@ -954,11 +917,7 @@ fn render_search_fixture(
     out
 }
 
-// ---------------------------------------------------------------------------
-// capture-book
-// ---------------------------------------------------------------------------
-
-/// `.ybb` magic (`YbbMagic`, `source/book/book.cpp`).
+/// `.ybb` magic (`YbbMagic`, `book.cpp`).
 const YBB_MAGIC: &[u8; 16] = b"YANE-BINBOOK-V1\0";
 /// `.ybb` flags bit 0 — per-move depth present (`YbbFlagMoveDepth`).
 const YBB_FLAG_MOVE_DEPTH: u64 = 1;
@@ -985,7 +944,7 @@ fn capture_book(args: &CaptureBookArgs) -> Result<(PathBuf, PathBuf), String> {
 
     let mut records = parse_db(&text)?;
     // The index is binary-searched by packed key, so it must be sorted ascending
-    // under byte-wise (memcmp) order — exactly `[u8; 32]` lexicographic order.
+    // under byte-wise order.
     records.sort_by_key(|r| r.packed);
 
     let ybb_bytes = serialize_ybb(&records, args.with_depth);
@@ -1047,8 +1006,7 @@ fn parse_db(text: &str) -> Result<Vec<BookRecordSrc>, String> {
             let _ponder = toks.next(); // required slot in the .db grammar; ignored
             let value = parse_opt::<i32>(toks.next(), "value")?.unwrap_or(0);
             let depth = parse_opt::<u16>(toks.next(), "depth")?.unwrap_or(0);
-            // The remaining `count` token is intentionally dropped: the .ybb move
-            // record has no per-move count field.
+            // The `.ybb` move record has no per-move count field.
             let mv = parse_usi_move(best, &pending.pos)
                 .map_err(|e| format!("bad move {best:?} in {}: {e}", pending.sfen))?;
             pending.moves.push(BookMoveSrc {
@@ -1168,10 +1126,7 @@ Nodes searched: 900\n\
 
     #[test]
     fn renders_fixture_for_arbitrary_sfen_and_depth_set() {
-        // Arbitrary non-startpos SFEN: the renderer must thread the SFEN
-        // through verbatim and produce the same schema. Counts are
-        // synthetic (not the result of a perft) — this test pins the
-        // serialisation, not the engine math.
+        // Synthetic counts: this pins the serialisation, not the engine math.
         let sfen = "k8/1P7/G8/1N2P4/9/9/9/9/8K b 2PG2pg 1";
         let json = render_fixture(sfen, "", &[1, 3], &[42, 12345]);
         let expected = "{\n  \"sfen\": \"k8/1P7/G8/1N2P4/9/9/9/9/8K b 2PG2pg 1\",\n  \"results\": [\n    { \"depth\": 1, \"expected_nodes\": 42 },\n    { \"depth\": 3, \"expected_nodes\": 12345 }\n  ]\n}\n";
@@ -1180,9 +1135,6 @@ Nodes searched: 900\n\
 
     #[test]
     fn renders_fixture_with_moves_prefix() {
-        // Non-empty `moves` must serialise as a JSON array between `sfen`
-        // and `results`, with each USI move quoted and separated by `, `.
-        // Synthetic counts; this test pins the serialisation, not the engine.
         let sfen = "9/4k4/9/9/9/9/9/4K4/9 b 9P9p 1";
         let moves = "5h4h 5b4b 4h5h 4b5b";
         let json = render_fixture(sfen, moves, &[1, 2], &[78, 5950]);
@@ -1192,10 +1144,8 @@ Nodes searched: 900\n\
 
     #[test]
     fn whitespace_only_moves_renders_no_moves_field() {
-        // Trim-empty `moves` (e.g., `"   "`) must behave identically to the
-        // default empty string: no `"moves"` field in the output. Guards the
-        // byte-identical regeneration of every existing fixture against any
-        // accidental whitespace passed through clap's `--moves` arg.
+        // Whitespace-only `moves` must behave like the empty default, so a
+        // stray space in `--moves` cannot change a regenerated fixture.
         let json = render_fixture(STARTPOS_SFEN, "   ", &[1], &[30]);
         let expected = "{\n  \"sfen\": \"lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1\",\n  \"results\": [\n    { \"depth\": 1, \"expected_nodes\": 30 }\n  ]\n}\n";
         assert_eq!(json, expected);
@@ -1215,23 +1165,14 @@ Nodes searched: 900\n\
 
     #[test]
     fn write_perft_script_omits_moves_when_empty() {
-        // No `moves <…>` clause appended when the prefix is empty — required
-        // for byte-identical regeneration of every existing fixture.
         let mut buf = Vec::new();
         write_perft_script(&mut buf, STARTPOS_SFEN, "", &[3]).unwrap();
         let expected = format!("usi\nisready\nposition sfen {STARTPOS_SFEN}\ngo perft 3\nquit\n");
         assert_eq!(String::from_utf8(buf).unwrap(), expected);
     }
 
-    // --- capture-eval tests ---
-
     #[test]
     fn parses_eval_line_positive() {
-        // Sample observed from: usi / isready / position sfen <startpos> / e / quit
-        // Engine stdout excerpt (irrelevant lines omitted):
-        //   readyok
-        //   eval = -103
-        // This test pins parsing of a positive value (synthetic).
         let stdout = "\
 usiok\n\
 readyok\n\
@@ -1243,7 +1184,7 @@ eval = 47\n\
 
     #[test]
     fn parses_eval_line_negative() {
-        // Pins parsing of the negative value actually observed for startpos.
+        // The value actually observed for startpos.
         let stdout = "\
 usiok\n\
 readyok\n\
@@ -1278,8 +1219,6 @@ eval = -103\n\
 
     #[test]
     fn renders_eval_fixture_whitespace_moves_omitted() {
-        // Whitespace-only moves must produce no `"moves"` field, mirroring
-        // the perft renderer's behaviour for byte-identical regeneration.
         let json = render_eval_fixture(STARTPOS_SFEN, "   ", 0);
         let expected = "{\n  \"sfen\": \"lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1\",\n  \"eval\": 0\n}\n";
         assert_eq!(json, expected);
@@ -1303,17 +1242,9 @@ eval = -103\n\
         assert_eq!(String::from_utf8(buf).unwrap(), expected);
     }
 
-    // --- capture-search tests ---
-
     #[test]
     fn parses_search_info_cp_score() {
-        // Sample observed from the reference engine (YaneuraOu NNUE 9.40git, tournament
-        // build, single thread, BookFile=no_book, go depth 1 on startpos):
-        //
-        //   info depth 1 multipv 1 score cp 0 nodes 0 nps 0 hashfull 0 time 1 pv 1g1f
-        //   bestmove 1g1f
-        //
-        // This test pins parsing of a cp score from the exact observed line shape.
+        // The exact line shape observed from the reference engine.
         let stdout = "\
 usiok\n\
 readyok\n\
@@ -1334,10 +1265,8 @@ bestmove 1g1f\n\
 
     #[test]
     fn parses_search_info_mate_score() {
-        // Synthetic line in the same format emitted by format_score() / on_update_full()
-        // in usi.cpp for a mate-in-N result:
-        //   "mate " + std::to_string(m)   (no division by 2 in the non-STOCKFISH build)
-        // Positive value = mate for the side to move.
+        // The reference emits `"mate " + m` with no division by 2, positive for
+        // a mate for the side to move.
         let stdout = "\
 readyok\n\
 info depth 5 seldepth 5 multipv 1 score mate 3 nodes 42 nps 8400 hashfull 0 time 5 pv 2g2f 8b2b 2h2b+\n\
@@ -1357,8 +1286,6 @@ bestmove 2g2f\n\
 
     #[test]
     fn parse_search_skips_lowerbound_lines() {
-        // Aspiration-window fail-high lines carry `lowerbound` and must be skipped;
-        // only the subsequent exact info line counts.
         let stdout = "\
 info depth 3 multipv 1 score cp 150 lowerbound nodes 1000 nps 50000 hashfull 0 time 20 pv 7g7f\n\
 info depth 3 multipv 1 score cp 80 nodes 1200 nps 60000 hashfull 0 time 20 pv 2g2f\n\
@@ -1390,9 +1317,8 @@ bestmove 2g2f\n\
 
     #[test]
     fn write_search_script_no_moves() {
-        // Pins the exact script emitted to the engine stdin for a startpos search.
-        // The script omits `quit` — stdin is closed by the caller after bestmove
-        // is read, which triggers the engine's EOF→quit path (misc.cpp).
+        // The script omits `quit`: the caller closes stdin after reading
+        // bestmove, which the engine reads as one (misc.cpp).
         let mut buf = Vec::new();
         write_search_script(&mut buf, STARTPOS_SFEN, "", 3, 1, None).unwrap();
         let expected = format!(
@@ -1417,9 +1343,9 @@ bestmove 2g2f\n\
 
     #[test]
     fn write_search_script_sets_usi_hash_when_requested() {
-        // `USI_Hash` must be set before `isready` — the engine allocates and
-        // clears the table there, and a later resize would not reproduce the
-        // `usinewgame`-clean state the fixture is captured in.
+        // `USI_Hash` must be set before `isready`, where the engine allocates
+        // and clears the table; a later resize would not reproduce the clean
+        // state the fixture is captured in.
         let mut buf = Vec::new();
         write_search_script(&mut buf, STARTPOS_SFEN, "", 3, 1, Some(256)).unwrap();
         let expected = format!(
@@ -1492,8 +1418,6 @@ bestmove 2g2f\n\
             fv_scale: None,
         };
         let json = render_search_fixture(STARTPOS_SFEN, "   ", None, &result);
-        // Whitespace-only moves must produce no "moves" field, mirroring perft/eval
-        // renderers for byte-identical regeneration.
         assert!(
             !json.contains("\"moves\""),
             "unexpected moves field in: {json}"
@@ -1507,11 +1431,9 @@ bestmove 2g2f\n\
 
     #[test]
     fn parses_fv_scale_override_line() {
-        // Verbatim from the tournament reference at `isready` with an
-        // `eval/eval_options.txt` containing `FV_SCALE 28`.
+        // Verbatim from the reference at `isready`.
         let line = "info string engine option override. name = FV_SCALE , value = 28";
         assert_eq!(parse_fv_scale_override(line), Some(28));
-        // Overrides of other options must not be mistaken for FV_SCALE.
         assert_eq!(
             parse_fv_scale_override(
                 "info string engine option override. name = Threads , value = 4"

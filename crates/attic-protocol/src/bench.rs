@@ -1,12 +1,6 @@
 //! The `bench` command's argument parsing and default position set — a port of
-//! the reference `setup_bench` (`source/benchmark.cpp`,
-//! the non-Stockfish branch) and its `Defaults` list (`benchmark.cpp`).
-//!
-//! This module owns only the *semantic parse* of the `bench` argument tokens
-//! (TT size, threads, per-position limit, position source, limit type) into a
-//! [`BenchConfig`]. The driver ([`crate::driver`]) consumes the config: it
-//! applies the two `setoption` lines, does the `search_clear` equivalent, and
-//! runs each position through the ordinary coordinator path.
+//! the reference `setup_bench` (`benchmark.cpp`, the non-Stockfish
+//! branch) and its `Defaults` list (`benchmark.cpp`).
 //!
 //! Reference syntax (`benchmark.cpp`):
 //!
@@ -14,19 +8,13 @@
 //! bench [ttSizeMB] [threads] [limit] [default|current|<fenFile>] [limitType]
 //! ```
 //!
-//! The reference's non-Stockfish defaults are `ttSize=1024`, `threads=1`,
-//! `limit=15000`, `fenFile=default`, `limitType=movetime` — yaneuraou changed
-//! the default limit type from Stockfish's `depth` to a one-minute fixed-time
-//! bench (`benchmark.cpp`; the code, not the stale comment example, is the
-//! ground truth). This port mirrors those exact defaults.
+//! The defaults mirrored here are the reference's non-Stockfish ones
+//! (`benchmark.cpp`): `ttSize=1024`, `threads=1`, `limit=15000`,
+//! `fenFile=default`, `limitType=movetime` — the code, not the stale comment
+//! example beside it, is the ground truth.
 //!
-//! SCOPE DIVERGENCE from the pin: the reference `limitType` also accepts
-//! `perft` and `eval`. `perft` would need a `go perft` search path this crate
-//! does not own (perft lives in the top `attic` crate), and `eval` needs
-//! `trace_eval`; neither is part of the NPS-bench scope. They parse to a loud
-//! [`BenchParseError`] rather than panicking — the `depth` / `nodes` / `movetime`
-//! types cover every optimization-measurement need. THE PIN WINS elsewhere; this
-//! one divergence is reported in the PR.
+//! The reference `limitType` also accepts `perft` and `eval`; those are outside
+//! this NPS bench's scope and parse to a [`BenchParseError`].
 
 use std::fs;
 
@@ -35,8 +23,7 @@ use attic_state::format_sfen;
 use crate::parser::GoLimits;
 
 /// The reference `Defaults` position list (`benchmark.cpp`), transcribed
-/// verbatim (every SFEN, same order). Used when the position source is
-/// `default` (or omitted).
+/// verbatim. Used when the position source is `default` or omitted.
 pub const BENCH_DEFAULT_POSITIONS: [&str; 4] = [
     // 初期局面に近い曲面。
     "lnsgkgsnl/1r7/p1ppp1bpp/1p3pp2/7P1/2P6/PP1PPPP1P/1B3S1R1/LNSGKG1NL b - 9",
@@ -55,8 +42,7 @@ const DEFAULT_LIMIT: &str = "15000";
 const DEFAULT_FEN_SOURCE: &str = "default";
 const DEFAULT_LIMIT_TYPE: &str = "movetime";
 
-/// A `bench` argument-parse failure, surfaced by the driver as an `info string`
-/// so a garbage argument fails loudly without panicking.
+/// A `bench` argument-parse failure, surfaced by the driver as an `info string`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BenchParseError(pub String);
 
@@ -66,29 +52,21 @@ impl std::fmt::Display for BenchParseError {
     }
 }
 
-/// A fully-resolved `bench` invocation: the option values to apply, the search
-/// limit for every position, and the position list to run.
+/// A fully-resolved `bench` invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BenchConfig {
-    /// The `USI_Hash` value (MiB) to `setoption`.
+    /// The `USI_Hash` value in MiB to `setoption`.
     pub tt_mb: i64,
-    /// The `Threads` value to `setoption`.
     pub threads: i64,
-    /// The per-position search limit, applied to every position exactly as a
-    /// normal `go` would consume it.
+    /// The per-position search limit, consumed exactly as a normal `go` would.
     pub limits: GoLimits,
-    /// The positions to search, as SFEN strings (each parsed by the driver).
+    /// The positions to search, as SFEN strings.
     pub fens: Vec<String>,
 }
 
 /// Parse the `bench` argument tokens into a [`BenchConfig`], filling missing
-/// trailing arguments with the reference defaults. `current_sfen` is the current
-/// session position's SFEN, used only when the position source is `current`.
-///
-/// Errors (never panics):
-/// - a non-integer `ttSizeMB`, `threads`, or `limit`;
-/// - an unsupported `limitType` (see the scope-divergence note above);
-/// - a `<fenFile>` that cannot be opened.
+/// trailing arguments with the reference defaults. `current_sfen` is used only
+/// when the position source is `current`.
 pub fn parse_bench(tokens: &[String], current_sfen: &str) -> Result<BenchConfig, BenchParseError> {
     let arg = |i: usize, default: &str| -> String {
         tokens
@@ -159,9 +137,7 @@ pub fn parse_bench(tokens: &[String], current_sfen: &str) -> Result<BenchConfig,
     })
 }
 
-/// The SFEN of a position, for the `current` position source. A thin re-export
-/// of [`attic_state::format_sfen`] so the driver expresses intent at the call
-/// site (`bench::current_sfen(&self.pos)`).
+/// The SFEN of a position, for the `current` position source.
 pub fn current_sfen(pos: &attic_state::Position) -> String {
     format_sfen(pos)
 }
@@ -175,7 +151,6 @@ mod tests {
         let cfg = parse_bench(&[], "startsfen").expect("defaults parse");
         assert_eq!(cfg.tt_mb, 1024);
         assert_eq!(cfg.threads, 1);
-        // Default limit type is movetime 15000 (yaneuraou's one-minute bench).
         assert_eq!(cfg.limits.movetime, Some(15000));
         assert_eq!(cfg.limits.depth, None);
         assert_eq!(cfg.fens.len(), 4);

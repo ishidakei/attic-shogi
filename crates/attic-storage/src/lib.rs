@@ -1,9 +1,9 @@
-//! Storage layer: a substrate that may depend on std and utility crates only,
-//! never on the State, Evaluation, Search, or Protocol layers.
+//! Storage layer: the transposition table ([`tt`]), the `.ybb` opening-book
+//! reader ([`book`]), and the huge-page-backed allocator ([`large_page`]) the
+//! other layers reuse for their big allocations.
 //!
-//! This crate hosts the transposition table ([`tt`]), the `.ybb` opening-book
-//! reader ([`book`]), and the shared huge-page-backed allocator ([`large_page`])
-//! the other layers reuse for their big allocations.
+//! It depends on std and utility crates only, never on the State, Evaluation,
+//! Search or Protocol layers.
 
 pub mod arena;
 pub mod book;

@@ -11,7 +11,7 @@ the reference's, so the hash-indexed pawn history (`pawnHistory`, 8192 planes)
 and the correction histories aliased differently, flipping a quiet move's
 ordering on the first colliding pawn structure. `crates/attic-state/src/key.rs`
 now reproduces the reference Zobrist bit-for-bit, so the aliasing — and the node
-counts — match. `tests/depth2_parity.rs` gates **bestmove, score, and nodes**
+counts — match. `tests/depth2_parity.rs` pins **bestmove, score, and nodes**
 exactly.
 
 The fixture was captured with Threads=1, no book, `usinewgame`, `go depth 2`,
@@ -23,7 +23,7 @@ cargo xtask capture-search --moves "7g7f" --depth 2 \
 ```
 
 Re-capturing leaves the git diff empty (single-thread fixed-depth search is
-byte-reproducible against the pinned submodule + `nn.bin`).
+byte-reproducible against the same reference build + `nn.bin`).
 
 ## Schema
 

@@ -1,9 +1,8 @@
-//! Integration test: load the real SFNN-1536 `nn.bin` when it is present.
+//! Load the real SFNN-1536 `nn.bin` when it is present.
 //!
-//! The network file is staged locally at
-//! `eval/nn.bin` and is never committed. When it is
-//! absent (e.g. a checkout without it staged) the test prints a notice and
-//! passes, so the default `cargo test` run stays green everywhere.
+//! The network file is staged locally and never committed, so when it is absent
+//! the test prints a notice and passes and the default `cargo test` run stays
+//! green everywhere.
 
 use std::path::PathBuf;
 
@@ -20,7 +19,7 @@ fn loads_real_network_if_present() {
     let path = nn_bin_path();
     if !path.exists() {
         eprintln!(
-            "skipping loads_real_network_if_present: {} is not present (staged only on the dev VM)",
+            "skipping loads_real_network_if_present: {} is not present (obtained out-of-band)",
             path.display()
         );
         return;
@@ -28,7 +27,6 @@ fn loads_real_network_if_present() {
 
     let net = load_network(&path).expect("real nn.bin should load and validate");
 
-    // Shape checks: the loader must have consumed the file into the SFNN-1536 layout.
     assert_eq!(net.stacks.len(), LAYER_STACKS, "layer-stack count");
     assert_eq!(net.ft_biases.len(), HIDDEN_SIZE, "ft bias count");
     assert_eq!(
@@ -37,7 +35,7 @@ fn loads_real_network_if_present() {
         "ft weight count"
     );
 
-    // Every weight/bias buffer must land on a 64-byte boundary for the SIMD kernels.
+    // Every buffer must land on a 64-byte boundary for the SIMD kernels.
     let is_aligned = |ptr: *const u8| (ptr as usize).is_multiple_of(64);
     assert!(is_aligned(net.ft_biases.as_ptr() as *const u8));
     assert!(is_aligned(net.ft_weights.as_ptr() as *const u8));

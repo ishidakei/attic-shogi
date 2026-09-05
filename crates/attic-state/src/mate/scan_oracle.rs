@@ -1,17 +1,11 @@
-//! `#[cfg(test)]` scan oracles for the bitboard attacker plumbing in [`super`],
-//! plus the squarewise-equivalence test over them.
+//! Scan oracles for the bitboard attacker plumbing in [`super`], and the
+//! squarewise-equivalence test over them.
 //!
-//! The production mate detector reads the board **only** through a handful of
-//! helpers backed by the bitboard substrate
-//! ([`crate::movegen::attackers_bb_occ`], the slider queries, and
-//! [`crate::see::slider_blockers`]) — the mate-search logic itself touches no
-//! squares directly, so those helpers are the only surface on which the detector
-//! could drift from a square-by-square derivation. This module holds
-//! 81-square-scan forms of them, and the test below asserts, over fixture
-//! playouts, that the production helpers agree with the scan oracles squarewise
-//! on every argument the search can pass — attacker sets, sniper sets,
-//! pinned/blocker sets, and the piece-set snapshots. Total helper equivalence
-//! over the reachable argument space ⇒ an identical `mate_1ply` result.
+//! The mate-search logic touches no squares directly: it reads the board only
+//! through a handful of bitboard-backed helpers. Those helpers are therefore
+//! the entire surface on which the detector could drift from a square-by-square
+//! derivation, so agreeing with these oracles over every argument the search
+//! can pass implies an identical `mate_1ply` result.
 
 use super::{Bb, between_bb, is_pawn_unpromoted};
 use crate::board::Board;
@@ -20,8 +14,8 @@ use crate::movegen::{dr_sign_for, movement, step_signed, try_find_king};
 use crate::piece::{Piece, PieceKind};
 use crate::square::Square;
 
-/// A raw board-index occupancy (`u128`, this oracle's sampling representation)
-/// materialized as a [`Bb`] for the production helpers under test.
+/// A raw board-index occupancy materialised as a [`Bb`] for the production
+/// helpers under test.
 fn occ_bb(bits: u128) -> Bb {
     let mut bb = Bb::EMPTY;
     let mut b = bits;
@@ -32,8 +26,6 @@ fn occ_bb(bits: u128) -> Bb {
     }
     bb
 }
-
-// -- board-wide snapshots (81-square scans) ---------------------------------
 
 fn occupied_scan(board: &Board) -> Bb {
     let mut bb = Bb::EMPTY;
@@ -87,7 +79,6 @@ fn color_pieces_where(board: &Board, color: Color, pred: impl Fn(Piece) -> bool)
     bb
 }
 
-// The reference `pieces(Us, PT)` buckets used by the move loops.
 fn is_dragon(p: Piece) -> bool {
     p.kind == PieceKind::Rook && p.promoted
 }
@@ -109,8 +100,7 @@ fn is_silver_unpromoted(p: Piece) -> bool {
 fn is_knight_unpromoted(p: Piece) -> bool {
     p.kind == PieceKind::Knight && !p.promoted
 }
-/// `pieces(Us, GOLDS)` — plain gold and every promoted {pawn, lance, knight,
-/// silver}.
+/// `pieces(Us, GOLDS)` — plain gold and every promoted minor.
 fn is_golds(p: Piece) -> bool {
     if p.kind == PieceKind::Gold {
         return true;
@@ -121,8 +111,6 @@ fn is_golds(p: Piece) -> bool {
             PieceKind::Pawn | PieceKind::Lance | PieceKind::Knight | PieceKind::Silver
         )
 }
-
-// -- attacker / sniper / pin scans ------------------------------------------
 
 /// Squares attacked by `piece` sitting on `from`, under occupancy `occ`.
 fn attacks_from(piece: Piece, from: Square, occ: Bb) -> Bb {
@@ -197,14 +185,8 @@ fn lance_step_effect(c: Color, sq: Square) -> Bb {
     ray_effect(sq, &[(0, forward_dr(c))])
 }
 
-// -- scalar effect oracles (square-stepping forms) --------------------------
-//
-// Scalar counterparts of the table-lookup / Qugiy-slider effect functions in
-// [`super`], sharing none of their data. The
-// `effect_primitives_match_scalar_oracle` gate below asserts each production
-// primitive equals its scalar oracle bit-for-bit.
-
-// Black-orientation step tables (rank axis multiplied by `dr_sign_for`).
+// Square-stepping counterparts of the table-lookup effect functions in
+// [`super`], sharing none of their data.
 const PAWN_D: &[(i8, i8)] = &[(0, -1)];
 const KNIGHT_D: &[(i8, i8)] = &[(-1, -2), (1, -2)];
 const SILVER_D: &[(i8, i8)] = &[(0, -1), (-1, -1), (1, -1), (-1, 1), (1, 1)];
@@ -356,8 +338,6 @@ fn pinned_pieces_avoid_scan(board: &Board, c: Color, avoid: Option<Square>) -> B
     result
 }
 
-// -- production helpers == scan oracles --------------------------------------
-
 use crate::position::Position;
 use crate::sfen::parse_sfen;
 
@@ -391,23 +371,18 @@ fn all_squares() -> impl Iterator<Item = Square> {
     (0..Square::COUNT as u8).map(|i| Square::from_index(i).unwrap())
 }
 
-/// The occupancies the mate search can pass to `attackers_of_color`: the full
-/// board occupancy, every single-square removal (the mover's `from` cleared),
-/// and deterministic random board-masked patterns (covering the multi-removal +
-/// `to`-added occupancies of `can_king_escape`, since `attackers_of_color` is a
-/// pure function of `occ`).
+/// The occupancies the mate search can pass to `attackers_of_color`. It is a
+/// pure function of `occ`, so random board-masked patterns cover the
+/// multi-removal and square-added occupancies `can_king_escape` builds.
 fn attacker_occupancies(board: &Board, rng: &mut Rng) -> Vec<u128> {
     const BOARD_MASK: u128 = (1u128 << Square::COUNT) - 1;
     let occ_all = board.occupied().raw();
     let mut out = vec![occ_all];
-    // Every single-square removal (the mover's `from` cleared).
     for sq in all_squares() {
         if occ_all & (1u128 << sq.index()) != 0 {
             out.push(occ_all & !(1u128 << sq.index()));
         }
     }
-    // Deterministic random board-masked patterns, plus `occ_all` perturbed by a
-    // random mask (bits toggled) — covering multi-removal + added-square occs.
     let rand_u128 =
         |rng: &mut Rng| ((rng.next() as u128) ^ ((rng.next() as u128) << 64)) & BOARD_MASK;
     for _ in 0..16 {
@@ -420,7 +395,6 @@ fn attacker_occupancies(board: &Board, rng: &mut Rng) -> Vec<u128> {
 fn check_helpers(pos: &Position, rng: &mut Rng) {
     let board = pos.board();
 
-    // Board-wide snapshots.
     assert_eq!(super::occupied(board), occupied_scan(board), "occupied");
     assert_eq!(
         super::both_kings(board),
@@ -435,7 +409,6 @@ fn check_helpers(pos: &Position, rng: &mut Rng) {
         );
     }
 
-    // Pattern buckets vs the `is_<kind>` predicate scan.
     use crate::board::pat;
     type PredCase = (usize, fn(Piece) -> bool);
     let cases: [PredCase; 9] = [
@@ -459,7 +432,6 @@ fn check_helpers(pos: &Position, rng: &mut Rng) {
         }
     }
 
-    // Sniper / blocker / pinned sets, both colours, every `avoid`.
     for c in [Color::Black, Color::White] {
         assert_eq!(
             super::blockers_for_king(board, c),
@@ -484,7 +456,6 @@ fn check_helpers(pos: &Position, rng: &mut Rng) {
         }
     }
 
-    // Attacker sets: every target square × colour × occupancy variant.
     let occs = attacker_occupancies(board, rng);
     for sq in all_squares() {
         for color in [Color::Black, Color::White] {
@@ -499,13 +470,10 @@ fn check_helpers(pos: &Position, rng: &mut Rng) {
     }
 }
 
-/// Mate-rich, king-exposed seeds (droppable hands, promoted pieces near the
-/// king) layered on top of the parity fixtures, used by the candidate-filter
-/// equivalence gate. Includes positions where the reference-faithful *misses*
-/// occur (distant-drop / double-check mates the detector never finds) so both
+/// Mate-rich, king-exposed seeds layered on top of the parity fixtures.
+/// Includes positions where the reference-faithful *misses* occur, so that both
 /// implementations must miss identically.
 const FILTER_SEEDS: &[&str] = &[
-    // The three head-mate fixtures from `tests/mate_1ply.rs`.
     "k8/9/G1N6/9/9/9/9/9/8K b G 1",
     "k8/1G7/9/9/9/9/9/9/8K b R 1",
     "k8/9/G8/9/9/9/9/9/L7K b - 1",
@@ -515,19 +483,16 @@ const FILTER_SEEDS: &[&str] = &[
     // Promoted minors clustered in front of an exposed enemy king.
     "4k4/3+P+P+P3/9/9/9/9/9/4K4/9 b GSNLRBrb 1",
     "4k4/3+S+N+L3/9/9/9/9/9/4K4/9 b GSNLPrbg 1",
-    // Silver / knight / lance origins near a 3rd-4th rank king (the SILVER
-    // rank-4/rank-5 promotion candidates and lance skewer band).
+    // Silver / knight / lance origins near a 3rd-4th rank king: the silver
+    // promotion candidates and the lance skewer band.
     "9/9/4k4/2SSS4/2NNN4/2LLL4/9/4K4/9 b GP2g2s 1",
 ];
 
-/// Every occupancy-free effect primitive equals its scalar oracle on every
-/// square (and both colours where colour-dependent), and every occupancy-aware
-/// slider equals its scalar oracle over occupancies sampled from fixture
-/// playouts plus deterministic random board masks.
+/// Every effect primitive equals its scalar oracle: the occupancy-free ones
+/// exhaustively, the sliders over sampled occupancies.
 #[test]
 #[cfg_attr(miri, ignore)]
 fn effect_primitives_match_scalar_oracle() {
-    // -- Occupancy-free step / ray effects: square × colour, exhaustive.
     for sq in all_squares() {
         assert_eq!(
             super::king_effect(sq),
@@ -578,7 +543,6 @@ fn effect_primitives_match_scalar_oracle() {
         }
     }
 
-    // -- Occupancy-aware sliders: sample occupancies and compare per square.
     let check_sliders = |occ: Bb| {
         for sq in all_squares() {
             assert_eq!(
@@ -611,7 +575,6 @@ fn effect_primitives_match_scalar_oracle() {
         }
     };
 
-    // Real board occupancies from fixture playouts.
     let mut rng = Rng(0xD1CE_F00D_BEEF_1234);
     for (fi, sfen) in FIXTURE_SFENS.iter().enumerate() {
         let mut pos = parse_sfen(sfen).expect("fixture sfen parses");
@@ -628,8 +591,7 @@ fn effect_primitives_match_scalar_oracle() {
         }
         let _ = fi;
     }
-    // Deterministic random board-masked occupancies (edge cases the playouts
-    // may not reach: crowded / sparse boards).
+    // Crowded and sparse boards the playouts may not reach.
     const BOARD_MASK: u128 = (1u128 << Square::COUNT) - 1;
     for _ in 0..24 {
         let bits = ((rng.next() as u128) ^ ((rng.next() as u128) << 64)) & BOARD_MASK;
@@ -644,7 +606,6 @@ fn filtered_mate_matches_unfiltered_twin_over_playouts() {
 
     let seeds = FIXTURE_SFENS.iter().chain(FILTER_SEEDS.iter());
     for (fi, sfen) in seeds.enumerate() {
-        // Two independent playout streams per seed widen the sampled reach.
         for stream in 0..2u64 {
             let mut p = parse_sfen(sfen).expect("seed sfen parses");
             let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((fi as u64) << 8) ^ stream);

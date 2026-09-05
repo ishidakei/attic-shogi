@@ -1,24 +1,18 @@
-//! Driver-level session tests for the runtime `FV_SCALE` option and the
-//! `eval_options.txt` override file, against a **synthetic** all-zero SFNN-1536
-//! network (hermetic — no staged `nn.bin` required).
+//! Session tests for the runtime `FV_SCALE` option and the `eval_options.txt`
+//! override file, against a synthetic all-zero network.
 //!
-//! The synthetic network evaluates every position to 0 regardless of the scale,
-//! so these tests assert the *override mechanism* — the isready-time info
-//! string, silence when the file is absent, and the FIXED lock that makes a
-//! later `setoption name FV_SCALE` a no-op — rather than a numeric eval effect
-//! (that is covered on the real network by `attic-eval/tests/fv_scale.rs`).
+//! That network evaluates every position to 0 regardless of the scale, so these
+//! assert the override mechanism rather than a numeric eval effect.
 //!
-//! The FIXED-lock test reads the process-global eval scale after a `go`; it is
-//! the only test in this binary that runs a `go`, so that global is never raced
-//! by a sibling test. The byte layout mirrors `crates/attic-eval/src/loader.rs`
-//! (as in `tests/eval_session.rs`).
+//! The FIXED-lock test reads the process-global eval scale after a `go`, and is
+//! the only test in this binary that runs one, so that global is never raced.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use attic_protocol::UsiDriver;
 
-// --- SFNN-1536 file-format constants (mirror attic-eval/src/loader.rs).
+// SFNN-1536 file-format constants, mirroring `attic-eval`'s loader.
 const NNUE_VERSION: u32 = 0x7AF3_2F16;
 const NNUE_HASH_VALUE: u32 = 0x3C20_3B32;
 const FT_HASH: u32 = 0x5F13_4AB8;
@@ -26,7 +20,7 @@ const NET_HASH: u32 = 0x6333_718A;
 const LEB128_MAGIC: &[u8; 17] = b"COMPRESSED_LEB128";
 const ARCH_STRING: &str = "ModelType=SFNNWithoutPsqt;Features=HalfKA_hm(Friend)[73305->1536x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-15](ClippedReLU[15](AffineTransform[15<-3072](InputSlice[3072(0:3072)]))))){LayerStack=9}";
 
-// --- Dimensions (mirror attic-eval/src/types.rs).
+// Dimensions.
 const HIDDEN_SIZE: usize = 1_536;
 const NUM_FEATURES: usize = 73_305;
 const LAYER_STACKS: usize = 9;
@@ -122,8 +116,6 @@ fn eval_options_override_applies_at_isready() {
         "usi\nsetoption name EvalDir value {evaldir}\nisready\nquit\n"
     ));
 
-    // The "read engine options" notice names the eval_options.txt path, and the
-    // override info string for FV_SCALE=24 is emitted.
     assert!(
         out.contains("info string read engine options, path = ")
             && out.contains("eval_options.txt"),
@@ -133,7 +125,7 @@ fn eval_options_override_applies_at_isready() {
         out.contains(OVERRIDE_LINE),
         "missing FV_SCALE override info string in:\n{out}"
     );
-    // The network still loads (override runs before eval load).
+    // The override runs before the eval load, which still succeeds.
     assert!(out.contains("readyok"), "expected readyok in:\n{out}");
     assert!(
         !out.contains("eval load failed"),
@@ -146,15 +138,13 @@ fn eval_options_override_applies_at_isready() {
 fn absent_eval_options_is_silent() {
     let dir = TempDir::new("absent");
     write_synthetic_nn_bin(dir.path());
-    // Deliberately do NOT create eval_options.txt.
+    // No eval_options.txt is created.
     let evaldir = dir.path().to_str().expect("utf-8 temp path");
 
     let out = drive(&format!(
         "usi\nsetoption name EvalDir value {evaldir}\nisready\nquit\n"
     ));
 
-    // No override notice at all when neither engine_options.txt (cwd) nor
-    // eval_options.txt (EvalDir) exists.
     assert!(
         !out.contains("read engine options"),
         "absent override files must be silent, got:\n{out}"
@@ -174,9 +164,8 @@ fn setoption_after_override_is_fixed() {
     std::fs::write(dir.path().join("eval_options.txt"), "FV_SCALE 24\n").expect("write file");
     let evaldir = dir.path().to_str().expect("utf-8 temp path");
 
-    // Override to 24 (locking it FIXED), then try to setoption back to 16, then
-    // run a `go` — which pushes the *current* FV_SCALE option to the eval's live
-    // scale. If the FIXED lock held, that value is still 24.
+    // The `go` pushes the current `FV_SCALE` option to the eval's live scale, so
+    // if the FIXED lock held that value is still the overridden one.
     let out = drive(&format!(
         "usi\n\
          setoption name Threads value 1\n\
@@ -189,14 +178,11 @@ fn setoption_after_override_is_fixed() {
     ));
 
     assert!(out.contains(OVERRIDE_LINE), "missing override in:\n{out}");
-    // setoption on a fixed option is a silent no-op (no rejection message).
+    // A silent no-op: not even a rejection message.
     assert!(
         !out.contains("rejected"),
         "fixed setoption must be silent:\n{out}"
     );
-    // The `go` propagated the still-24 option to the eval global, proving the
-    // `setoption name FV_SCALE value 16` was ignored. This is the only test in
-    // the binary that runs a `go`, so the global is not raced.
     assert_eq!(
         attic_search::fv_scale(),
         24,

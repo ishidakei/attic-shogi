@@ -4,14 +4,12 @@ use crate::piece::{Piece, PieceKind};
 use crate::square::Square;
 
 /// The number of distinct attack patterns tracked by [`Board`]'s per-colour
-/// piece sets — the same ten-slot partition the check-info cache keys on (see
-/// [`pattern_of`]).
+/// piece sets (see [`pattern_of`]).
 pub(crate) const PATTERN_COUNT: usize = 10;
 
 /// The attack-pattern slot indices, named. The four promoted minors collapse to
-/// [`pat::GOLD`]; horse and dragon are distinct; the king has its own slot. This
-/// is the reference `type_of(...)` index into `st->checkSquares[]` and the SEE
-/// attacker-bucket partition.
+/// [`pat::GOLD`]; horse and dragon are distinct. This is the reference
+/// `type_of(...)` index into `st->checkSquares[]`.
 pub(crate) mod pat {
     pub const PAWN: usize = 0;
     pub const LANCE: usize = 1;
@@ -25,8 +23,7 @@ pub(crate) mod pat {
     pub const KING: usize = 9;
 }
 
-/// Map a concrete piece to its [`pat`] attack-pattern slot. Shared so the
-/// board's piece sets and [`crate::search_movegen`] never drift.
+/// Map a concrete piece to its [`pat`] attack-pattern slot.
 pub(crate) const fn pattern_of(piece: Piece) -> usize {
     match (piece.kind, piece.promoted) {
         (PieceKind::Pawn, false) => pat::PAWN,
@@ -47,10 +44,9 @@ pub(crate) const fn pattern_of(piece: Piece) -> usize {
 
 /// The 81-square board and the piece-set bitboards maintained incrementally
 /// alongside it. `squares` is the source of truth; `occupied`, `by_color`, and
-/// `by_pattern` are derived caches kept in sync by [`Board::set`] (the single
-/// mutation funnel, mirroring the reference's `put_piece` / `remove_piece`
-/// XOR maintenance of `byColorBB` / `byTypeBB`). Every attack query reads the
-/// sets instead of scanning the 81 squares.
+/// `by_pattern` are derived caches, and [`Board::set`] is the single mutation
+/// funnel that keeps them in sync (the reference's `put_piece` / `remove_piece`
+/// XOR maintenance of `byColorBB` / `byTypeBB`).
 #[derive(Debug, Clone, Copy)]
 pub struct Board {
     squares: [Option<Piece>; Square::COUNT],
@@ -62,11 +58,8 @@ pub struct Board {
     by_pattern: [[Bitboard; PATTERN_COUNT]; Color::COUNT],
 }
 
-/// Board equality compares only the piece placement — `occupied` / `by_color`
-/// / `by_pattern` are a pure function of `squares`, so two boards with equal
-/// squares have equal sets. Excluding the sets keeps repetition equality (which
-/// compares boards) scanning the array only, not the ~360 bytes of derived
-/// bitboards.
+/// Equality compares only the piece placement: the derived sets are a pure
+/// function of `squares`, so equal squares imply equal sets.
 impl PartialEq for Board {
     fn eq(&self, other: &Self) -> bool {
         self.squares == other.squares
@@ -100,9 +93,8 @@ impl Board {
         }
     }
 
-    /// XOR `piece`'s bit into the derived piece sets. Self-inverse, so the same
-    /// call both adds (bit currently clear) and removes (bit currently set) the
-    /// piece from `occupied`, its colour set, and its pattern set.
+    /// XOR `piece`'s bit into the derived piece sets. Self-inverse: the same
+    /// call both adds and removes.
     fn toggle_sets(&mut self, piece: Piece, sq: Square) {
         let bit = Bitboard::from_square(sq);
         self.occupied ^= bit;
@@ -110,14 +102,10 @@ impl Board {
         self.by_pattern[piece.color.index()][pattern_of(piece)] ^= bit;
     }
 
-    /// Every occupied square.
     pub(crate) fn occupied(&self) -> Bitboard {
         self.occupied
     }
 
-    /// The occupied squares of `color`. Maintained as part of the bitboard
-    /// piece-set substrate (and checked by the set-consistency gate); consumed by
-    /// the SEE / mate attacker machinery ([`crate::see`], [`crate::mate`]).
     pub(crate) fn pieces_color(&self, color: Color) -> Bitboard {
         self.by_color[color.index()]
     }
@@ -169,8 +157,8 @@ mod tests {
         assert!(b.get(sq_b).is_none());
     }
 
-    /// Rebuild the piece sets from the `squares` array — the from-scratch oracle
-    /// the incremental maintenance in `set` must always agree with.
+    /// The from-scratch oracle the incremental maintenance in `set` must agree
+    /// with.
     fn sets_from_scan(
         b: &Board,
     ) -> (
@@ -220,13 +208,10 @@ mod tests {
         let horse = Piece::promoted(PieceKind::Bishop, Color::White).unwrap();
         b.set(sq, Some(Piece::new(PieceKind::Gold, Color::Black)));
         assert_sets_consistent(&b);
-        // Overwrite in place (a capture): the gold must leave every set, the
-        // horse must enter the White horse pattern.
         b.set(sq, Some(horse));
         assert_sets_consistent(&b);
         assert!(b.pieces_pattern(Color::White, pattern_of(horse)).test(sq));
         assert!(!b.pieces_color(Color::Black).test(sq));
-        // Clear it.
         b.set(sq, None);
         assert_sets_consistent(&b);
         assert!(b.occupied().is_empty());

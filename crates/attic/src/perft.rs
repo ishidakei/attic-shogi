@@ -1,6 +1,5 @@
-//! Perft: total number of leaf nodes reachable from a position at exactly
-//! `depth` plies of legal play. Used as a parity gate against the reference
-//! engine — see `crates/attic/tests/parity/perft.rs`.
+//! Perft: the total number of leaf nodes reachable from a position at exactly
+//! `depth` plies of legal play.
 
 use attic_state::{Move, Position};
 

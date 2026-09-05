@@ -4,11 +4,8 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
-# Protocol layer. The dependency rules permit
-# Protocol to import Search, Storage, and State, never Evaluation directly: the
-# driver owns the transposition table (Storage) next to the loaded network and
-# drives the depth-1 root search (`attic-search`); only a direct Protocol ->
-# Evaluation dependency is forbidden.
+# Protocol layer: may import Search, Storage, and State, never Evaluation
+# directly.
 [dependencies]
 attic-numa = { path = "../attic-numa" }
 attic-search = { path = "../attic-search", default-features = false }

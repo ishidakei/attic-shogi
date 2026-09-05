@@ -1,8 +1,8 @@
 # ybb opening-book fixtures
 
-Ground truth for the `.ybb` opening-book reader parity gate
+Ground truth for the `.ybb` opening-book reader parity test
 (`crates/attic-search/tests/book_probe.rs`). The `.ybb` format is the
-YaneuraOu "YANE-BINBOOK-V1" binary book, derived from the pinned reference
+YaneuraOu "YANE-BINBOOK-V1" binary book, derived from the reference build in
 `upstream YaneuraOu` (`book/book.cpp`).
 
 ## Files
@@ -20,7 +20,7 @@ YaneuraOu "YANE-BINBOOK-V1" binary book, derived from the pinned reference
 
 ## How `sample.ybb` was produced (and anchored to the reference)
 
-There is **no `.db → .ybb` converter in the pinned reference** (the only ybb
+There is **no `.db → .ybb` converter in the reference** (the only ybb
 writers are the low-level `write_ybb_*` helpers in `makebook2025.cpp`, and
 `makebook peta_shock` only does `.db → .db` or `.ybb → .ybb`). So the sample was
 **hand-constructed** per the derived binary format and then **validated through

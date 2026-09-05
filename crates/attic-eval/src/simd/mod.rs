@@ -1,39 +1,28 @@
 //! Scalar/SIMD kernel selection for the NNUE forward pass.
 //!
-//! Ported from the read-only Rust NNUE reference implementation's SIMD kernels.
-//! Like the reference, the backend is chosen **at compile time** from the CPU
-//! features the build itself enables (`cfg(target_feature = ...)`). This repo
-//! builds with `-C target-cpu=native` (see `.cargo/config.toml`) and runs each
+//! The backend is chosen **at compile time** from the CPU features the build
+//! itself enables. This repo builds with `-C target-cpu=native` and runs each
 //! binary on the machine that produced it, so "what the build enables" is the
-//! host CPU's feature set; a run-time probe could never pick anything the build
-//! had not already fixed. Two feature sets matter:
+//! host CPU's feature set, and a run-time probe could never pick anything the
+//! build had not already fixed. Two feature sets matter: `avx512f` + `avx512bw`
+//! for the feature-transformer and element-wise kernels, and those plus
+//! `avx512vnni` for the fused fc chain.
 //!
-//! - `avx512f` + `avx512bw` — the feature-transformer accumulate/update kernels
-//!   ([`avx512`]) and the element-wise post-FT kernels ([`avx512_post_ft`]).
-//! - the above plus `avx512vnni` — the fused fc_0/fc_1/fc_2 chain
-//!   ([`avx512_post_ft::fused_fc_chain`], called from [`crate::network`]).
-//!
-//! Both backends stay **compiled unconditionally** (only the call sites are
-//! `cfg`-gated) so the SIMD == scalar bit-equality tests in each backend module
-//! keep exercising both. Those tests, and only those, still probe the CPU at run
-//! time with `is_x86_feature_detected!` so they skip gracefully on a host
-//! without the features. The kernels are exact, not approximate: whichever the
-//! build selects, the evaluation output is bit-identical.
+//! Both backends stay **compiled unconditionally**, only the call sites being
+//! `cfg`-gated, so that the SIMD-equals-scalar tests in each backend module keep
+//! exercising both. Those tests, and only those, probe the CPU at run time, so
+//! that they skip gracefully on a host without the features. Whichever backend
+//! a build selects, the evaluation output is bit-identical.
 //!
 //! ## Safety invariants
 //!
 //! Every AVX-512 entry point is an `unsafe fn` carrying a
-//! `#[target_feature(enable = ...)]` attribute: calling it is sound only when
+//! `#[target_feature(enable = ...)]` attribute, so calling it is sound only when
 //! the named features are present on the running CPU. The wrappers in this
 //! module are the sole callers in non-test code, and each `unsafe` call sits
-//! behind a `cfg(target_feature = ...)` gate naming exactly the features its
-//! callee enables — the code is compiled only into a build that already
-//! requires those features of its host, so no `unsafe` escapes the SIMD modules.
+//! behind a `cfg` gate naming exactly the features its callee enables.
 
-use crate::features::FeatureIndex;
-
-// `allow(dead_code)`: both backends are compiled unconditionally so the
-// equivalence tests can compare them, which leaves whichever one this build did
+// Compiling both backends unconditionally leaves whichever one this build did
 // not select without a caller outside `cfg(test)`.
 #[allow(dead_code)]
 pub mod scalar;
@@ -58,13 +47,10 @@ pub enum Backend {
 
 /// The kernel backend baked into this build.
 ///
-/// [`Backend::Avx512Vnni`] means the full forward pass (accumulator, output
-/// transform, and layer stack) runs on AVX-512; [`Backend::Scalar`] means the
-/// portable path — including the partial case of an `avx512f`+`avx512bw` build
+/// [`Backend::Scalar`] covers the partial case of an `avx512f`+`avx512bw` build
 /// without VNNI, where the feature transformer is SIMD but the layer stack is
-/// not. The eval-parity gate uses this to assert that a build produced on an
-/// AVX-512-VNNI host really did select the SIMD path (i.e. that
-/// `-C target-cpu=native` was in effect) rather than silently compiling scalar.
+/// not. The eval-parity test reads this to catch a build that silently compiled
+/// scalar on a VNNI-capable host.
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx512f",
@@ -75,8 +61,7 @@ pub const fn active_backend() -> Backend {
     Backend::Avx512Vnni
 }
 
-/// The kernel backend baked into this build — non-VNNI arm (the VNNI arm above
-/// carries the documentation).
+/// The kernel backend baked into this build, non-VNNI arm.
 #[cfg(not(all(
     target_arch = "x86_64",
     target_feature = "avx512f",
@@ -88,28 +73,21 @@ pub const fn active_backend() -> Backend {
 }
 
 /// Feature-transformer accumulate/update kernels, selected at compile time.
-///
-/// The AVX-512 arm is compiled only when the build enables `avx512f` +
-/// `avx512bw` (exactly the features [`super::avx512`]'s kernels declare); every
-/// other build gets the scalar baseline. These two `cfg` arms are the only
-/// place that condition is spelled out for the FT family.
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx512f",
     target_feature = "avx512bw"
 ))]
 pub mod transformer_kernel {
-    use super::FeatureIndex;
     use super::avx512;
+    use crate::features::FeatureIndex;
 
     /// Add each active feature's FT weight column into `out`.
     #[inline]
     pub fn add_features(out: &mut [i16], weights: &[i16], indices: &[FeatureIndex]) {
-        // SAFETY: this module is compiled only into a build that enables
-        // avx512f + avx512bw — exactly the features the callee's
-        // `#[target_feature]` attribute names — and such a build only ever runs
-        // on a host providing them (`-C target-cpu=native`; build and run happen
-        // on the same machine).
+        // SAFETY: this module is compiled only into a build enabling avx512f +
+        // avx512bw, exactly the features the callee names, and such a build only
+        // ever runs on a host providing them.
         unsafe { avx512::add_features(out, weights, indices) }
     }
 
@@ -146,8 +124,7 @@ pub mod transformer_kernel {
     }
 }
 
-/// Feature-transformer accumulate/update kernels — scalar arm (the AVX-512 arm
-/// above carries the selection rule).
+/// Feature-transformer accumulate/update kernels, scalar arm.
 #[cfg(not(all(
     target_arch = "x86_64",
     target_feature = "avx512f",
@@ -158,9 +135,7 @@ pub mod transformer_kernel {
 }
 
 /// Output-transform and layer element-wise kernels, selected at compile time on
-/// the same `avx512f` + `avx512bw` condition as [`transformer_kernel`]. The
-/// affine and whole-chain forward paths live in [`crate::network`], which calls
-/// [`avx512_post_ft::fused_fc_chain`] directly on a VNNI-enabled build.
+/// the same condition as [`transformer_kernel`].
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "avx512f",
@@ -172,10 +147,9 @@ pub mod post_ft_kernel {
     /// Pairwise element-wise multiply for one perspective half.
     #[inline]
     pub fn ewm_one_perspective(half: &[i16], out: &mut [u8]) {
-        // SAFETY: this module is compiled only into a build that enables
-        // avx512f + avx512bw — exactly the features the callee's
-        // `#[target_feature]` attribute names — and such a build only ever runs
-        // on a host providing them.
+        // SAFETY: this module is compiled only into a build enabling avx512f +
+        // avx512bw, exactly the features the callee names, and such a build only
+        // ever runs on a host providing them.
         unsafe { avx512_post_ft::ewm_one_perspective(half, out) }
     }
 
@@ -194,9 +168,8 @@ pub mod post_ft_kernel {
     }
 
     /// Integer affine transform. The AVX-512 form needs VNNI and is only worth
-    /// its setup at the wide fc_0 shape, where the whole chain runs through
-    /// [`avx512_post_ft::fused_fc_chain`]; this per-layer entry point therefore
-    /// always uses the scalar kernel.
+    /// its setup at the wide fc_0 shape, which the fused chain already covers,
+    /// so this per-layer entry point always uses the scalar kernel.
     #[inline]
     pub fn affine(
         output: &mut [i32],
@@ -210,8 +183,7 @@ pub mod post_ft_kernel {
     }
 }
 
-/// Output-transform and layer element-wise kernels — scalar arm (the AVX-512 arm
-/// above carries the selection rule).
+/// Output-transform and layer element-wise kernels, scalar arm.
 #[cfg(not(all(
     target_arch = "x86_64",
     target_feature = "avx512f",
@@ -228,11 +200,9 @@ mod tests {
     #[test]
     fn active_backend_is_avx512_when_cpu_supports_vnni() {
         // Backend selection is compile-time, so this checks the *build* was
-        // configured for its host: with `-C target-cpu=native` (this repo's
-        // standing setting) a VNNI-capable CPU must yield a VNNI build, and
-        // hence the SIMD backend. A scalar backend here means the build did not
-        // enable the host's features — the silent-fallback case worth catching.
-        // Runtime detection survives here because this is test code.
+        // configured for its host: under `-C target-cpu=native` a VNNI-capable
+        // CPU must yield the SIMD backend, and a scalar one here means the build
+        // did not enable the host's features.
         #[cfg(target_arch = "x86_64")]
         {
             let has_vnni = std::arch::is_x86_feature_detected!("avx512f")

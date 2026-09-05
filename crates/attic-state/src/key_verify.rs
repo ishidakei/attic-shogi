@@ -1,32 +1,12 @@
-//! Formal, independent verification that the port's Zobrist tables and composed
-//! position keys are bit-identical to the pinned reference
-//! (`upstream YaneuraOu` @ `76d58ef`, `source/position.cpp`).
+//! Independent verification that the port's Zobrist tables and composed
+//! position keys are bit-identical to the reference `Position::init`
+//! (`position.cpp`).
 //!
-//! This module is **test-only** and deliberately re-derives the reference's
-//! Zobrist generation *from scratch* — it does **not** call, read, or copy any
-//! of [`crate::key`]'s generation internals (`rand64`, `set_rand`, `build`,
-//! `ref_code_to_slot`). The only things it touches from the port are the tables
-//! *under test*, read through their public-in-crate accessors
-//! ([`crate::key::psq`], [`crate::key::hand_step`], [`crate::key::side`],
-//! [`crate::key::NO_PAWNS_SEED`]). The whole point is that a future transcription
-//! regression in `key.rs` — a shifted draw, a mis-mapped piece code, a dropped
-//! `noPawns` draw — is caught here by an *independent* second opinion rather than
-//! passing silently just because both sides share a bug.
-//!
-//! The reference algorithm (`Position::init`, verified against the pin's actual
-//! loop structure and draw counts, `position.cpp`, `misc.h`,
-//! `extra/key128.h`, `types.h`):
-//!
-//! - `PRNG` is `xorshift64*` seeded `20151225`. One draw advances the state with
-//!   `x ^= x>>12; x ^= x<<25; x ^= x>>27` and returns `x * 2685821657736338717`.
-//! - `set_rand` draws **four** words per entry; the 64-bit `SET_HASH` config
-//!   keeps the **first** and discards the other three (they still advance the
-//!   stream).
-//! - Fill order: `Zobrist::zero` (no draw) → `side` → `noPawns`
-//!   (`USE_PARTIAL_KEY` is defined for this config) → `psq[pc][sq]` over
-//!   reference `Piece()` `pc = 1..=31` (`if (pc)` skips `0`) × `SQ` `sq = 0..=80`
-//!   → `hand[c][pr]` over `COLOR` × `pr = 1..=7` (`if (pr)` skips
-//!   `NO_PIECE_TYPE`, loop stops before `PIECE_HAND_NB == KING == 8`).
+//! Nothing here may call, read, or copy [`crate::key`]'s generation internals:
+//! the reference algorithm is re-derived from scratch, and the only things
+//! touched from the port are the tables *under test*, read through their
+//! accessors. Sharing code would let a transcription regression pass because
+//! both sides carry the same bug.
 
 #![cfg(test)]
 
@@ -35,15 +15,13 @@ use crate::piece::{Piece, PieceKind};
 use crate::position::Position;
 use crate::square::Square;
 
-/// The reference PRNG seed (`position.cpp`): 電王トーナメント 2015 の開発開始日.
+/// The reference PRNG seed (`position.cpp`).
 const SEED: u64 = 20151225;
 /// The `xorshift64*` output multiplier (`misc.h`).
 const MULT: u64 = 2685821657736338717;
 
-/// Reference `PieceType` order (`types.h`): `NO_PIECE_TYPE, PAWN, LANCE,
-/// KNIGHT, SILVER, BISHOP, ROOK, GOLD, KING`. This is the reference's numbering,
-/// **not** the port's [`PieceKind`] numbering (which puts `Gold` before
-/// `Bishop`) — kept separate on purpose so the mapping is exercised.
+/// Every [`PieceKind`] in the port's own index order, which is what
+/// [`serialize_port_tables`] walks.
 const ALL_KINDS: [PieceKind; PieceKind::COUNT] = [
     PieceKind::Pawn,
     PieceKind::Lance,
@@ -55,8 +33,7 @@ const ALL_KINDS: [PieceKind; PieceKind::COUNT] = [
     PieceKind::King,
 ];
 
-/// The reference `PRNG` — a standalone stepping state, independent of
-/// [`crate::key`]'s `const fn rand64`.
+/// The reference `PRNG`.
 struct Prng {
     state: u64,
 }
@@ -66,8 +43,7 @@ impl Prng {
         Self { state: seed }
     }
 
-    /// One `PRNG::rand64()` step (`misc.h`): mutate the state, return
-    /// `state * MULT`.
+    /// One `PRNG::rand64()` step (`misc.h`).
     fn rand64(&mut self) -> u64 {
         let mut x = self.state;
         x ^= x >> 12;
@@ -78,7 +54,7 @@ impl Prng {
     }
 
     /// The reference `set_rand` (`position.cpp`, `SET_HASH` at
-    /// `extra/key128.h`): draw four words, keep the first.
+    /// `key128.h`): draw four words, keep the first.
     fn set_rand(&mut self) -> u64 {
         let r1 = self.rand64();
         let _r2 = self.rand64();
@@ -88,8 +64,8 @@ impl Prng {
     }
 }
 
-/// Independently re-derived reference tables, indexed by the *reference's* own
-/// conventions (reference `Piece` code, reference `PieceType`, reference `SQ`).
+/// Re-derived reference tables, indexed by the *reference's* own conventions,
+/// not the port's.
 struct RefTables {
     side: u64,
     no_pawns: u64,
@@ -103,12 +79,9 @@ struct RefTables {
 
 /// Decode a reference `Piece` code (`types.h`) into `(promoted, color,
 /// kind)`, or `None` for a code that never lands on a board — `NO_PIECE` (`0`),
-/// the unnamed gap at `16`, and the `B_GOLDS` / `W_GOLDS` gold-equivalent meta
-/// pieces (`15` / `31`). `None` codes are still *drawn* (to keep the PRNG stream
-/// aligned) but carry no port entry to compare against.
-///
-/// Re-derived here from the reference enum layout — deliberately *not* sharing
-/// code with [`crate::key`]'s `ref_code_to_slot`.
+/// the unnamed gap at `16`, and the `B_GOLDS` / `W_GOLDS` meta pieces
+/// (`15` / `31`). `None` codes are still *drawn*, to keep the PRNG stream
+/// aligned, but carry no port entry to compare against.
 fn decode_ref_piece(pc: usize) -> Option<(bool, Color, PieceKind)> {
     if pc == 0 || pc == 16 {
         return None; // NO_PIECE and the 16 gap between B_GOLDS and W_PAWN.
@@ -118,12 +91,11 @@ fn decode_ref_piece(pc: usize) -> Option<(bool, Color, PieceKind)> {
     } else {
         (Color::White, pc - 16)
     };
-    // `local` is now 1..=15 within one colour's block.
     if local == 15 {
         return None; // B_GOLDS / W_GOLDS meta piece.
     }
-    // 1..=8 are the unpromoted PieceTypes (PAWN..KING); 9..=14 are the promoted
-    // forms PRO_PAWN..DRAGON, i.e. PieceType (local - 8) = PAWN..ROOK promoted.
+    // Within a colour's block, `1..=8` are the unpromoted PieceTypes and
+    // `9..=14` are PRO_PAWN..DRAGON, i.e. PieceType `local - 8` promoted.
     let (promoted, ref_pt) = if local <= 8 {
         (false, local)
     } else {
@@ -134,9 +106,8 @@ fn decode_ref_piece(pc: usize) -> Option<(bool, Color, PieceKind)> {
 }
 
 /// Map a reference `PieceType` (`1..=8`) to this port's [`PieceKind`]. The
-/// reference order is `PAWN, LANCE, KNIGHT, SILVER, BISHOP, ROOK, GOLD, KING`
-/// (`types.h`); the port puts `Gold` at index 4 and `Bishop`/`Rook` after
-/// it, so the remap is not the identity.
+/// reference order (`types.h`) puts `GOLD` after `ROOK`, so the remap is
+/// not the identity.
 fn ref_piece_type_to_kind(pt: usize) -> Option<PieceKind> {
     Some(match pt {
         1 => PieceKind::Pawn,
@@ -151,20 +122,18 @@ fn ref_piece_type_to_kind(pt: usize) -> Option<PieceKind> {
     })
 }
 
-/// Re-derive every reference Zobrist table from the pinned algorithm, drawing in
-/// the exact reference order so the stream stays aligned entry-for-entry.
+/// Re-derive every reference Zobrist table, drawing in the exact reference
+/// order so the stream stays aligned entry-for-entry.
 fn derive_reference_tables() -> RefTables {
     let mut rng = Prng::new(SEED);
 
-    // `Zobrist::zero` — literal zeros, no draw (`position.cpp`).
-    // First live draw: `side`. Second: `noPawns` (USE_PARTIAL_KEY).
+    // `Zobrist::zero` is literal zeros and draws nothing, so `side` and
+    // `noPawns` are the first two live draws (`position.cpp`).
     let side = rng.set_rand();
     let no_pawns = rng.set_rand();
 
-    // psq: `for (pc : Piece()) for (sq : SQ) if (pc) set_rand(...)`. `Piece()`
-    // runs `0..PIECE_NB` (`PIECE_NB == 32`); `if (pc)` skips `0`, so every code
-    // `1..=31` draws once per square — even the never-realised gap / meta codes,
-    // which keeps the stream aligned.
+    // Every code `1..=31` draws once per square, even the never-realised gap and
+    // meta codes, which is what keeps the stream aligned.
     let mut psq = [[0u64; Square::COUNT]; 32];
     for row in psq.iter_mut().skip(1) {
         for sq in row.iter_mut() {
@@ -172,9 +141,7 @@ fn derive_reference_tables() -> RefTables {
         }
     }
 
-    // hand: `for (c : COLOR) for (pr = NO_PIECE_TYPE; pr < PIECE_HAND_NB; ++pr)
-    // if (pr) set_rand(...)`. `PIECE_HAND_NB == KING == 8`, so `pr` draws for
-    // `1..=7` (PAWN..GOLD); no king in hand.
+    // `PIECE_HAND_NB == KING == 8`, so `pr` draws for `1..=7`; no king in hand.
     let mut hand = [[0u64; 8]; Color::COUNT];
     for hand_c in hand.iter_mut() {
         for pr in hand_c.iter_mut().take(8).skip(1) {
@@ -190,9 +157,8 @@ fn derive_reference_tables() -> RefTables {
     }
 }
 
-/// Read the port's `psq` value for a `(promoted, color, kind, sq)`, returning `0`
-/// for the never-realised promoted Gold / King combinations the port leaves
-/// unset (and never reads).
+/// Read the port's `psq` value, returning `0` for the never-realised promoted
+/// Gold / King combinations the port leaves unset.
 fn port_psq(promoted: bool, color: Color, kind: PieceKind, sq: Square) -> u64 {
     let piece = if promoted {
         Piece::promoted(kind, color)
@@ -202,9 +168,8 @@ fn port_psq(promoted: bool, color: Color, kind: PieceKind, sq: Square) -> u64 {
     piece.map_or(0, |p| crate::key::psq(p, sq))
 }
 
-/// Every table the port exposes, compared entry-by-entry against the independent
-/// re-derivation. Any mismatch fails loudly with the table name and index; the
-/// constants are never adjusted to make this pass.
+/// A mismatch means `key.rs` was mis-transcribed; never adjust its constants to
+/// make this pass.
 #[test]
 fn tables_match_independent_reference_derivation() {
     let refs = derive_reference_tables();
@@ -224,10 +189,6 @@ fn tables_match_independent_reference_derivation() {
         refs.no_pawns
     );
 
-    // psq: walk every reference code that maps to a realised port piece and
-    // compare all 81 squares. Codes with no port piece (NO_PIECE, the 16 gap,
-    // the GOLDS meta pieces) are drawn by the reference to keep the stream
-    // aligned but carry nothing to compare — the port never stores them.
     for pc in 1..32usize {
         let Some((promoted, color, kind)) = decode_ref_piece(pc) else {
             continue;
@@ -244,7 +205,6 @@ fn tables_match_independent_reference_derivation() {
         }
     }
 
-    // hand: reference PieceType 1..=7 (PAWN..GOLD) per colour.
     for color in [Color::Black, Color::White] {
         for pr in 1..=7usize {
             let kind = ref_piece_type_to_kind(pr).unwrap();
@@ -259,18 +219,12 @@ fn tables_match_independent_reference_derivation() {
     }
 }
 
-/// Compose a full position key directly from the independently re-derived raw
-/// tables, mirroring the reference's `key = board_key ^ hand_key` split
-/// (`position.cpp` / `position.h`): `board_key` is the XOR of `psq[piece][sq]`
-/// over occupied squares plus the `side` term while White is to move; `hand_key`
-/// is the wrapping sum of `hand[color][kind]` once per held copy.
+/// Compose a full position key from the re-derived raw tables alone.
 fn compose_key(pos: &Position, refs: &RefTables) -> u64 {
     let mut board_key = 0u64;
     for sq_idx in 0..Square::COUNT as u8 {
         let sq = Square::from_index(sq_idx).unwrap();
         if let Some(piece) = pos.board().get(sq) {
-            // Re-encode the port piece into its reference code, then index the
-            // independent table — no reliance on the port's own psq storage.
             let pc = ref_code_for_port_piece(piece);
             board_key ^= refs.psq[pc][sq_idx as usize];
         }
@@ -291,9 +245,8 @@ fn compose_key(pos: &Position, refs: &RefTables) -> u64 {
     board_key ^ hand_key
 }
 
-/// Encode a port [`Piece`] into its reference `Piece` code — the inverse of
-/// [`decode_ref_piece`], derived independently from the reference enum layout
-/// (`types.h`, `PIECE_WHITE == 16`).
+/// Encode a port [`Piece`] into its reference `Piece` code (`types.h`,
+/// `PIECE_WHITE == 16`).
 fn ref_code_for_port_piece(piece: Piece) -> usize {
     let ref_pt = match piece.kind {
         PieceKind::Pawn => 1,
@@ -305,32 +258,25 @@ fn ref_code_for_port_piece(piece: Piece) -> usize {
         PieceKind::Gold => 7,
         PieceKind::King => 8,
     };
-    // Promoted forms are PRO_PAWN..DRAGON = PieceType + 8 (PAWN promoted -> 9).
     let local = if piece.promoted { ref_pt + 8 } else { ref_pt };
     let color_offset = if piece.color == Color::White { 16 } else { 0 };
     color_offset + local
 }
 
-/// Composed-key cross-check on real positions: for a spread of positions
-/// (startpos, promotions on board, drops in hand, both sides to move), the key
-/// recomposed from the raw tables must equal the incrementally / recompute
-/// maintained `pos.key()`.
+/// The key recomposed from the raw tables must equal the maintained
+/// `pos.key()`, on both the recompute path (`parse_sfen`) and the incremental
+/// one (`do_move`).
 #[test]
 fn composed_keys_match_maintained_keys() {
     let refs = derive_reference_tables();
 
-    // SFEN positions covering promotions, drops, and both sides to move. Parsed
-    // via `parse_sfen`, whose direct board/hand mutations reseed the key through
-    // `refresh_keys` (the recompute path).
     let sfens = [
-        // Startpos, Black to move, empty hands.
         crate::sfen::STARTPOS_SFEN,
-        // Promoted pieces of both colours on the board, Black to move.
+        // Promoted pieces of both colours on the board.
         "+P+L+N+S1+p+l+n+s/9/9/9/4k4/9/9/9/4K4 b - 1",
-        // Hand pieces for both colours (drops available), White to move.
+        // Hand pieces for both colours, White to move.
         "4k4/9/9/9/9/9/9/9/4K4 w RBGSNLP2r2b3p 1",
-        // Horse and dragon (promoted bishop/rook) on the board, with hands,
-        // White to move.
+        // Horse and dragon on the board, with hands.
         "+r4+b2k/9/9/9/9/9/9/9/K3+R3+B b Gg5P 1",
     ];
     for sfen in sfens {
@@ -342,9 +288,7 @@ fn composed_keys_match_maintained_keys() {
         );
     }
 
-    // Incremental path: from startpos, walk a real opening line that exercises a
-    // capture-with-promotion (8h2b+), a recapture (3a2b) and a drop (B*5e), each
-    // ply cross-checked against the independent composition.
+    // A capture-with-promotion, a recapture and a drop.
     let mut pos = crate::sfen::parse_sfen(crate::sfen::STARTPOS_SFEN).unwrap();
     for usi in ["7g7f", "3c3d", "8h2b+", "3a2b", "B*5e"] {
         let mv = crate::move_::parse_usi_move(usi, &pos).unwrap();
@@ -357,8 +301,8 @@ fn composed_keys_match_maintained_keys() {
     }
 }
 
-/// Minimal, self-contained SHA-256 (FIPS 180-4). Test-only; avoids pulling a
-/// crypto dependency into the crate just to anchor a golden digest.
+/// Minimal SHA-256 (FIPS 180-4), so that anchoring a golden digest does not
+/// pull a crypto dependency into the crate.
 fn sha256(data: &[u8]) -> [u8; 32] {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
@@ -385,8 +329,8 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     }
     msg.extend_from_slice(&bit_len.to_be_bytes());
 
-    // Padding above makes the length an exact multiple of 64, so the remainder
-    // half of `as_chunks` is always empty.
+    // The padding above makes the length an exact multiple of 64, so the
+    // remainder half of `as_chunks` is always empty.
     for chunk in msg.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
         for (i, word) in w.iter_mut().enumerate().take(16) {
@@ -449,18 +393,16 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 /// Canonical byte serialisation of every table the port exposes, in a fixed
-/// order: `side`, `noPawns`, then `psq` in port piece-code order (each entry's
-/// 81 squares), then `hand` in `(color, kind)` order. Every `u64` is emitted
-/// little-endian. Reading through the port accessors means an accidental
-/// regeneration of `key.rs` changes these bytes and thus the digest.
+/// order — `side`, `noPawns`, `psq` in port piece-code order, then `hand` in
+/// `(color, kind)` order — with every `u64` little-endian. Changing this order
+/// changes [`GOLDEN_TABLES_SHA256`].
 fn serialize_port_tables() -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&crate::key::side().to_le_bytes());
     bytes.extend_from_slice(&crate::key::NO_PAWNS_SEED.to_le_bytes());
 
-    // The `(promoted, color, kind)` nesting matches the port's `piece_code`
-    // index arithmetic (`(promoted*2 + color)*8 + kind`), so this walks the psq
-    // table in ascending port code order.
+    // This nesting matches the port's `piece_code` index arithmetic, so the psq
+    // table is walked in ascending port code order.
     for promoted in [false, true] {
         for color in [Color::Black, Color::White] {
             for kind in ALL_KINDS {
@@ -481,13 +423,9 @@ fn serialize_port_tables() -> Vec<u8> {
     bytes
 }
 
-/// Golden checksum. A SHA-256 over the canonical serialisation of all port
-/// tables, pinned to the reference `upstream YaneuraOu` @ `76d58ef`
-/// (`source/position.cpp`). Any accidental regeneration of the Zobrist
-/// tables changes this digest and fails loudly — do **not** edit the constant to
-/// make the test pass; investigate the table change instead. The value is
-/// anchored by [`tables_match_independent_reference_derivation`], which proves
-/// the serialised tables equal the independent reference derivation.
+/// SHA-256 over [`serialize_port_tables`]. Any regeneration of the Zobrist
+/// tables changes this digest; do **not** edit the constant to make the test
+/// pass, investigate the table change instead.
 const GOLDEN_TABLES_SHA256: &str =
     "5f5c5937aadc1b12c824824d2d595fa2fd893b956c4bfb54aa1bcd02a53502a0";
 
@@ -510,7 +448,7 @@ mod sha256_self_test {
 
     #[test]
     fn known_vectors() {
-        // FIPS 180-4 / RFC 6234 reference vectors.
+        // FIPS 180-4 / RFC 6234.
         assert_eq!(
             to_hex(&sha256(b"")),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

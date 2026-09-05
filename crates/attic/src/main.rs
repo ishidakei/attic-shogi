@@ -7,13 +7,12 @@ use attic_protocol::UsiDriver;
 use attic_state::{Position, parse_sfen, parse_usi_move};
 
 /// The engine binary allocates through mimalloc rather than the platform
-/// allocator. It is a per-binary choice: nothing in the library crates knows or
-/// cares, and no search result depends on it — node counts, bestmoves and the
-/// handshake are byte-identical either way, only allocation speed moves.
+/// allocator. No search result depends on it: node counts, bestmoves and the
+/// handshake are byte-identical either way.
 ///
-/// The `not(miri)` gate is required, not defensive: mimalloc is C behind FFI and
-/// miri cannot execute foreign functions, so under the miri gate the binary
-/// falls back to the default Rust allocator.
+/// The `not(miri)` gate is required rather than defensive — mimalloc is C behind
+/// FFI, which miri cannot execute — so under miri the binary falls back to the
+/// default Rust allocator.
 #[cfg(not(miri))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -40,9 +39,9 @@ fn main() -> ExitCode {
 
 fn dispatch(args: &[String]) -> Result<(), String> {
     if args.is_empty() {
-        // The reader stays on the main thread; the writer is shared with the
-        // search worker, so it must be `Send + 'static` — use the owned `Stdout`
-        // handle (a `StdoutLock` is not `Send`) behind an `Arc<Mutex<_>>`.
+        // The writer is shared with the search worker and so must be
+        // `Send + 'static`: the owned `Stdout` handle, since a `StdoutLock` is
+        // not `Send`.
         let writer = Arc::new(Mutex::new(stdout()));
         return UsiDriver::new(BufReader::new(stdin()), writer)
             .run()

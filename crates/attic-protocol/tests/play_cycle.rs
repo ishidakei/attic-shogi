@@ -1,12 +1,6 @@
-//! Multi-cycle session tests over `UsiDriver` with an in-memory byte sequence.
-//!
-//! These cover the driver's behaviour when **no** evaluation network is loaded
-//! (the default `EvalDir` has no `nn.bin` in the test CWD): the session must
-//! survive, `isready` must report the load failure, and every `go` must reply
-//! `bestmove resign` with the no-network notice rather than crashing. The
-//! positive play path — search-chosen legal moves — is covered by
-//! `tests/eval_session.rs` (synthetic network) and `tests/real_network_selfplay`
-//! (the real `nn.bin`).
+//! Multi-cycle session tests for the driver's behaviour when no evaluation
+//! network is loaded: the session must survive, `isready` must report the load
+//! failure, and every `go` must reply `bestmove resign` with the notice.
 
 use std::sync::{Arc, Mutex};
 
@@ -25,13 +19,11 @@ fn is_well_formed_usi_move(s: &str) -> bool {
         return true;
     }
     let b = s.as_bytes();
-    // Drop: `[PLNSGBR]*<file><rank>` — 4 bytes.
     if b.len() == 4 && b[1] == b'*' {
         return matches!(b[0], b'P' | b'L' | b'N' | b'S' | b'G' | b'B' | b'R')
             && (b'1'..=b'9').contains(&b[2])
             && (b'a'..=b'i').contains(&b[3]);
     }
-    // Board move: `<file><rank><file><rank>[+]` — 4 or 5 bytes.
     if b.len() != 4 && b.len() != 5 {
         return false;
     }
@@ -58,7 +50,6 @@ fn multi_cycle_without_network_survives_and_resigns() {
                    quit\n";
     let out = drive(session);
 
-    // Handshake present; the failed load reports itself and withholds readyok.
     assert!(out.contains("usiok\n"), "missing usiok in:\n{out}");
     assert!(
         out.contains("info string eval load failed:"),
@@ -66,7 +57,6 @@ fn multi_cycle_without_network_survives_and_resigns() {
     );
     assert!(!out.contains("readyok"), "unexpected readyok in:\n{out}");
 
-    // Two `go` cycles, each replies `bestmove resign` with the no-network notice.
     assert_eq!(
         out.matches("info string no eval network loaded; run isready")
             .count(),

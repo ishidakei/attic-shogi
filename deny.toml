@@ -1,46 +1,30 @@
-# cargo-deny configuration — the dependency-audit gate (`cargo deny check`).
+# cargo-deny configuration (`cargo deny check`).
 #
-# All four checks are active. The gate is a hard merge block, so every rule here
-# is written to fail loudly rather than to be easy to satisfy: a new dependency
-# that drags in an unvetted license, an unaudited registry, a network stack, or
-# a crate with an open RustSec advisory stops the slice instead of landing.
-#
-# Scope note: this repository targets x86-64 Linux only, as the architecture
-# documentation records, so the graph is resolved for that target alone.
-# Auditing the Windows/wasm cfg-gated halves of the tree would report on code
-# that can never ship here.
+# The graph is resolved for x86-64 Linux alone, the only target this repository
+# supports; auditing the Windows/wasm cfg-gated halves of the tree would report
+# on code that can never ship here.
 
 [graph]
 targets = ["x86_64-unknown-linux-gnu"]
-# Match the gate commands, which all pass `--all-features`; a feature-gated
-# dependency must be audited too.
+# Every check runs with `--all-features`, so a feature-gated dependency
+# must be audited too.
 all-features = true
-# Dev-dependencies build and run in the gate, so they are part of the audited
-# surface even though they never ship in the engine binary.
+# Dev-dependencies build and run in the tests, so they are audited too even
+# though they never ship in the engine binary.
 exclude-dev = false
 
-# ---------------------------------------------------------------------------
-# advisories — RustSec database
-# ---------------------------------------------------------------------------
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# A yanked crate in the lockfile is a supply-chain smell in its own right.
 yanked = "deny"
-# Empty by design. An entry here is an accepted vulnerability and needs a
-# comment stating who accepted it and why.
+# An entry here is an accepted vulnerability, and needs a comment saying who
+# accepted it and why.
 ignore = []
 
-# ---------------------------------------------------------------------------
-# licenses — the engine is distributed under GPL-3.0 (see LICENSE), so every
-# dependency must be under a licence that can be combined into a GPL-3.0 work.
-# The list is enumerated from the actual dependency tree, not copied from a
-# template: adding a crate under anything else is meant to trip this gate and
-# force a deliberate decision.
-# ---------------------------------------------------------------------------
+# The engine is distributed under GPL-3.0 (see LICENSE), so every dependency
+# must be under a licence that can be combined into a GPL-3.0 work.
 [licenses]
-# Exactly the licences the current graph resolves to (59 crates, dev-deps
-# included) — nothing speculative. Widening this list is a one-line, reviewed
-# change; leaving room "just in case" would let a licence slip in unread.
+# Exactly the licences the current graph resolves to, nothing speculative:
+# leaving room "just in case" would let a licence slip in unread.
 allow = [
   "MIT",
   "Apache-2.0",
@@ -48,38 +32,30 @@ allow = [
   # tables carry their own permissive licence on top of the code licence.
   "Unicode-3.0",
 ]
-# Default is 0.8; raise it so a mangled or non-standard LICENSE file is
-# reported as unlicensed instead of being fuzzy-matched to something close.
+# Above the 0.8 default, so a mangled or non-standard LICENSE file is reported
+# as unlicensed rather than fuzzy-matched to something close.
 confidence-threshold = 0.93
-# Crate-specific carve-outs. Empty by design — an entry is a licence accepted
-# for one crate only, and needs a comment saying why.
+# An entry here is a licence accepted for one crate only, and needs a comment
+# saying why.
 exceptions = []
 
-# The workspace's own crates carry no `license` field: none of them is
-# published (`publish = false` in every manifest) and the distribution terms are
-# the repository's single top-level LICENSE. Auditing them against the
-# dependency allowlist would report the repo to itself.
+# The workspace's own crates carry no `license` field: none is published, and
+# the distribution terms are the repository's single top-level LICENSE.
 [licenses.private]
 ignore = true
 
-# ---------------------------------------------------------------------------
-# bans — structural rules, not hygiene.
-# ---------------------------------------------------------------------------
 [bans]
-# Duplicate versions are noise on a tree this small, but they are not a
-# correctness problem; warn so they stay visible without blocking a slice.
+# Duplicate versions are visible noise, not a correctness problem.
 multiple-versions = "warn"
 # A `version = "*"` dependency makes the build non-reproducible.
 wildcards = "deny"
 # …except between the workspace's own crates, which depend on each other by
-# `path` with no version requirement. Those resolve inside this repository, so
-# they carry none of the reproducibility risk the rule above targets.
+# `path` and resolve inside this repository.
 allow-wildcard-paths = true
 
-# The engine must never be able to open a network socket — the "No network"
-# rule the architecture and repository-structure documents both state. That is
-# enforced structurally, here, rather than by review: no networking or
-# async-runtime crate may enter the graph at all.
+# The engine must never be able to open a network socket, enforced structurally
+# rather than by review: no networking or async-runtime crate may enter the
+# graph at all.
 deny = [
   { name = "tokio" },
   { name = "async-std" },
@@ -98,11 +74,7 @@ deny = [
   { name = "axum" },
 ]
 
-# ---------------------------------------------------------------------------
-# sources — crates.io only. No git dependencies, no alternate registries: the
-# one non-crates.io input to this repository is the YaneuraOu submodule, which
-# is vendored through git rather than through cargo.
-# ---------------------------------------------------------------------------
+# crates.io only: no git dependencies and no alternate registries.
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

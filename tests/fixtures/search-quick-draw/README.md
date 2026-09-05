@@ -7,9 +7,9 @@ mirroring upstream's `ENABLE_QUICK_DRAW`).
 
 ## Why this directory exists separately
 
-The fixtures under `tests/fixtures/search*` gate positions where the
+The fixtures under `tests/fixtures/search*` pin positions where the
 QUICK_DRAW and non-QUICK_DRAW variants of `Position::is_repetition` happen to
-produce the same tree. These two gate bench position 3, where they do not:
+produce the same tree. These two pin bench position 3, where they do not:
 
 ```text
 6n1l/2+S1k4/2lp4p/1np1B2b1/3PP4/1N1S3rP/1P2+pPP+p1/1p1G5/3KG2r1 b GSN2L4Pgs2p 1
@@ -27,13 +27,13 @@ The `tests/fixtures/search/README.md` schema, plus two fields this directory
 always carries:
 
 - `hash_mb` — the `USI_Hash` (MiB) the capture ran with. The transposition table
-  size changes node counts, so an exact `nodes` gate is meaningless without it.
+  size changes node counts, so an exact `nodes` comparison is meaningless without it.
   The test sizes its table to this value.
 - `fv_scale` — the `FV_SCALE` the reference actually searched with, taken from
   the engine's own `info string engine option override. name = FV_SCALE , value
   = <N>` line. The reference reads this from
   `eval/eval_options.txt`, an out-of-band file that is
-  **not** implied by the submodule pin, so the value has to travel with the
+  **not** implied by the reference build, so the value has to travel with the
   fixture. The test calls `attic_eval::set_fv_scale` with it.
 
 ## Fixed capture parameters

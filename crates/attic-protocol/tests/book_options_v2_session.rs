@@ -1,15 +1,11 @@
-//! Driver-level session tests for the `BOOK_OPTIONS=V2` engine-option profile.
+//! Session tests for the `BOOK_OPTIONS=V2` engine-option profile: the V2
+//! handshake surface (`book.cpp`) and the probe-side differences
+//! (`book.cpp`), of which the two
+//! side-to-move-dependent option names are observable from a session.
 //!
-//! The profile file (`engine_option_profile.txt`) is written into an isolated
-//! temp directory and injected via `UsiDriver::with_option_profile`, so no test
-//! ever depends on the process working directory containing (or not containing)
-//! a stray profile file.
-//!
-//! Gates: the V2 handshake surface (`book.cpp`), and the four
-//! probe-side divergences (`book.cpp`)
-//! — of which the two side-to-move-dependent option NAMES are
-//! observable from a session, via both the filtering they perform and the
-//! `info string` that names the option used.
+//! The profile file is written into an isolated temp directory and injected, so
+//! no test depends on the process working directory containing (or not
+//! containing) a stray one.
 
 mod common;
 
@@ -21,8 +17,8 @@ use common::{
 const STARTPOS_B: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
 const STARTPOS_W: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL w - 1";
 
-/// Stage a two-record book (one Black root, one White root) with identical
-/// value / depth spreads, so the only thing that can distinguish the Black from
+/// Stage a two-record book, one Black root and one White root, with identical
+/// value / depth spreads — so the only thing that can distinguish the Black from
 /// the White filter options is the root side to move.
 fn stage_two_sided_book(dir: &std::path::Path) {
     write_ybb(
@@ -40,8 +36,8 @@ fn stage_two_sided_book(dir: &std::path::Path) {
     );
 }
 
-/// A V2 session prefix: synthetic net + the two-sided book. No book-filter
-/// option is set, so every filter runs at its V2 default.
+/// A V2 session prefix. No book-filter option is set, so every filter runs at
+/// its V2 default.
 fn v2_prefix(dir: &str) -> String {
     format!(
         "usi\n\
@@ -53,10 +49,6 @@ fn v2_prefix(dir: &str) -> String {
     )
 }
 
-// -------------------------------------------------------------------------
-// The handshake surface.
-// -------------------------------------------------------------------------
-
 #[test]
 #[cfg_attr(miri, ignore)]
 fn v2_profile_handshake_surface() {
@@ -64,7 +56,7 @@ fn v2_profile_handshake_surface() {
     let profile = write_option_profile(dir.path(), "# large-book profile\nBOOK_OPTIONS = V2\n");
     let out = drive_with_profile("usi\nquit\n", TEST_BOOK_SEED, &profile);
 
-    // The split filters, with the pin's defaults and ranges.
+    // The split filters, with the reference's defaults and ranges.
     for line in [
         "option name BookEvalBlackDiff type spin default 0 min 0 max 99999",
         "option name BookEvalWhiteDiff type spin default 0 min 0 max 99999",
@@ -77,7 +69,6 @@ fn v2_profile_handshake_surface() {
         );
     }
 
-    // The options V2 retires.
     for name in [
         "NarrowBook",
         "ConsiderBookMoveCount",
@@ -91,7 +82,6 @@ fn v2_profile_handshake_surface() {
         );
     }
 
-    // Shifted defaults.
     for line in [
         "option name BookMoves type spin default 200 min 0 max 10000",
         "option name BookOnTheFly type check default true",
@@ -103,8 +93,8 @@ fn v2_profile_handshake_surface() {
         );
     }
 
-    // `BookFile` keeps the port's deliberate `no_book` default in BOTH profiles
-    // (the pin would default to `user_book1.db` here) — books stay opt-in.
+    // `BookFile` keeps the `no_book` default in both profiles, where the
+    // reference would name a real book here: books stay opt-in.
     assert!(
         out.lines().any(|l| l.starts_with(
             "option name BookFile type combo default no_book var no_book var standard_book.ybb "
@@ -112,8 +102,6 @@ fn v2_profile_handshake_surface() {
         "BookFile must still default to no_book under V2:\n{out}"
     );
 
-    // Every non-book option is profile-independent: dropping the book group from
-    // both transcripts leaves them identical.
     let strip_book = |s: &str| -> Vec<String> {
         s.lines()
             .filter(|l| !l.contains("Book") && !l.contains("book"))
@@ -132,7 +120,7 @@ fn v2_profile_handshake_surface() {
 #[cfg_attr(miri, ignore)]
 fn absent_profile_file_keeps_the_v1_surface() {
     let dir = TempDir::new("v2-absent");
-    // Deliberately do NOT write the profile file.
+    // No profile file is written.
     let missing = dir.path().join("engine_option_profile.txt");
     let out = drive_with_profile("usi\nquit\n", TEST_BOOK_SEED, &missing);
     assert_eq!(
@@ -151,10 +139,6 @@ fn a_v1_profile_file_keeps_the_v1_surface() {
     assert_eq!(out, drive("usi\nquit\n"));
 }
 
-// -------------------------------------------------------------------------
-// The eval-diff option name follows the root side to move.
-// -------------------------------------------------------------------------
-
 #[test]
 #[cfg_attr(miri, ignore)]
 fn v2_black_root_filters_with_the_black_eval_diff() {
@@ -164,7 +148,7 @@ fn v2_black_root_filters_with_the_black_eval_diff() {
     let profile = write_option_profile(dir.path(), "BOOK_OPTIONS_V2\n");
     let d = dir.path().to_str().unwrap();
 
-    // Defaults: BookEvalBlackDiff 0 → only the top-valued move survives.
+    // At the default `BookEvalBlackDiff 0` only the top-valued move survives.
     let session = format!(
         "{}position sfen {STARTPOS_B}\ngo depth 1\nquit\n",
         v2_prefix(d)
@@ -182,7 +166,7 @@ fn v2_black_root_filters_with_the_black_eval_diff() {
         "the filter notice must name the Black option:\n{out}"
     );
 
-    // Widening the WHITE gap changes nothing at a Black root.
+    // Widening the White gap changes nothing at a Black root.
     let session = format!(
         "{}setoption name BookEvalWhiteDiff value 99999\n\
          position sfen {STARTPOS_B}\ngo depth 1\nquit\n",
@@ -195,8 +179,8 @@ fn v2_black_root_filters_with_the_black_eval_diff() {
         "BookEvalWhiteDiff is inert at a Black root:\n{out}"
     );
 
-    // Widening the BLACK gap does: the eval floor (BookEvalBlackLimit 0) now
-    // decides, so 6i7h (value 5) survives alongside 7g7f and -13 is dropped.
+    // Widening the Black gap does: the floor `BookEvalBlackLimit 0` now decides,
+    // so 6i7h at value 5 survives alongside 7g7f and -13 is dropped.
     let session = format!(
         "{}setoption name BookEvalBlackDiff value 99999\n\
          position sfen {STARTPOS_B}\ngo depth 1\nquit\n",
@@ -225,8 +209,8 @@ fn v2_white_root_filters_with_the_white_eval_diff() {
     let profile = write_option_profile(dir.path(), "BOOK_OPTIONS_V2\n");
     let d = dir.path().to_str().unwrap();
 
-    // Defaults: BookEvalWhiteDiff 0 → only the top-valued move survives, and the
-    // notice names the White pair (the floor is BookEvalWhiteLimit = -140).
+    // At the default `BookEvalWhiteDiff 0` only the top-valued move survives,
+    // and the notice names the White pair.
     let session = format!(
         "{}position sfen {STARTPOS_W}\ngo depth 1\nquit\n",
         v2_prefix(d)
@@ -244,7 +228,7 @@ fn v2_white_root_filters_with_the_white_eval_diff() {
         "the filter notice must name the White option:\n{out}"
     );
 
-    // The BLACK gap is inert at a White root; the WHITE one is not.
+    // The Black gap is inert at a White root; the White one is not.
     let session = format!(
         "{}setoption name BookEvalBlackDiff value 99999\n\
          position sfen {STARTPOS_W}\ngo depth 1\nquit\n",
@@ -263,8 +247,8 @@ fn v2_white_root_filters_with_the_white_eval_diff() {
         v2_prefix(d)
     );
     let out = drive_with_profile(&session, TEST_BOOK_SEED, &profile);
-    // Floor -140 keeps all three moves, so nothing is filtered and no notice is
-    // emitted; any of the three may be selected.
+    // That floor keeps all three moves, so nothing is filtered, no notice is
+    // emitted, and any of the three may be selected.
     let best = bestmove_lines(&out)[0].split_whitespace().next().unwrap();
     assert!(
         ["3c3d", "8c8d", "4a3b"].contains(&best),
@@ -276,10 +260,6 @@ fn v2_white_root_filters_with_the_white_eval_diff() {
     );
 }
 
-// -------------------------------------------------------------------------
-// The depth-floor option name follows the root side to move.
-// -------------------------------------------------------------------------
-
 #[test]
 #[cfg_attr(miri, ignore)]
 fn v2_depth_floor_follows_the_root_side_to_move() {
@@ -289,8 +269,7 @@ fn v2_depth_floor_follows_the_root_side_to_move() {
     let profile = write_option_profile(dir.path(), "BOOK_OPTIONS_V2\n");
     let d = dir.path().to_str().unwrap();
 
-    // Black root, Black floor above the best move's depth (20) → the whole entry
-    // is skipped and a real search runs.
+    // A Black floor above the best move's depth skips the whole entry.
     let session = format!(
         "{}setoption name BookDepthBlackLimit value 25\n\
          position sfen {STARTPOS_B}\ngo depth 1\nquit\n",
@@ -306,7 +285,6 @@ fn v2_depth_floor_follows_the_root_side_to_move() {
         "a skipped book entry must fall through to a real search:\n{out}"
     );
 
-    // The White floor is inert at a Black root: the book still hits.
     let session = format!(
         "{}setoption name BookDepthWhiteLimit value 25\n\
          position sfen {STARTPOS_B}\ngo depth 1\nquit\n",
@@ -319,7 +297,6 @@ fn v2_depth_floor_follows_the_root_side_to_move() {
         "BookDepthWhiteLimit is inert at a Black root:\n{out}"
     );
 
-    // …and the mirror image at a White root.
     let session = format!(
         "{}setoption name BookDepthWhiteLimit value 25\n\
          position sfen {STARTPOS_W}\ngo depth 1\nquit\n",
@@ -343,10 +320,6 @@ fn v2_depth_floor_follows_the_root_side_to_move() {
         "BookDepthBlackLimit is inert at a White root:\n{out}"
     );
 }
-
-// -------------------------------------------------------------------------
-// V1 behaviour is untouched when no profile file is present.
-// -------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(miri, ignore)]

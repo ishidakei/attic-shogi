@@ -1,25 +1,14 @@
-//! Multi-thread self-play soak (Lazy SMP).
+//! Multi-thread self-play soak: several workers share the transposition table
+//! through relaxed atomics, and this drives the built `attic` binary at
+//! `Threads=2` through a long stream of real self-play games, asserting exactly
+//! one legal `bestmove` per `go`, no panic, no hang, and a clean `quit`.
 //!
-//! With Lazy SMP live, several workers share the transposition table through
-//! relaxed atomics. This soak drives the built `attic` binary at `Threads=2`
-//! through a long stream of real self-play games and asserts nothing ever goes
-//! wrong: exactly one legal `bestmove` per `go`, no panic, no hang (a per-move
-//! watchdog), and a clean `quit` at the end. It changes no search decision — it
-//! is pure stability evidence.
+//! `#[ignore]`-gated so the default `cargo test` stays fast. It needs the real
+//! network, staged locally and never committed; when that is absent it prints a
+//! notice and passes.
 //!
-//! It is `#[ignore]`-gated so the default `cargo test` stays fast, and it needs
-//! the real SFNN-1536 network (staged locally at
-//! `eval/nn.bin`, never committed). When the network
-//! is absent it prints a notice and passes, the same skip pattern the other
-//! session tests use.
-//!
-//! Run it in a release build:
-//!
-//! ```text
-//! cargo test --release -p attic --test threads2_soak -- --ignored --nocapture
-//! ```
-//!
-//! Duration defaults to ~10 minutes; override with `SOAK_SECS`:
+//! Run it in a release build, optionally overriding the ~10-minute default
+//! duration:
 //!
 //! ```text
 //! SOAK_SECS=120 cargo test --release -p attic --test threads2_soak -- --ignored --nocapture
@@ -34,18 +23,16 @@ use std::time::{Duration, Instant};
 
 use attic_state::{Move, Position, parse_usi_move};
 
-/// Default soak duration when `SOAK_SECS` is unset (~10 minutes).
 const DEFAULT_SOAK_SECS: u64 = 600;
 
-/// Per-move watchdog. A single `go` at this time control returns in well under a
-/// second; anything past this is a hang, not a slow search.
+/// Per-move watchdog. A single `go` at this time control returns in well under
+/// a second, so anything past this is a hang rather than a slow search.
 const MOVE_WATCHDOG: Duration = Duration::from_secs(30);
 
 /// Restart a fresh game after this many plies even without a terminal result,
 /// so repetition-heavy lines cannot pin one game forever.
 const MAX_PLIES_PER_GAME: usize = 256;
 
-/// Fischer time control sent every move: 300 ms on the clock + 200 ms increment.
 const TC_GO: &str = "go btime 300 wtime 300 binc 200 winc 200";
 
 fn eval_dir() -> PathBuf {
@@ -64,8 +51,8 @@ fn send(stdin: &mut ChildStdin, cmd: &str) {
     stdin.flush().expect("flush engine stdin");
 }
 
-/// A spawned engine plus a background reader that funnels every stdout line into
-/// a channel, so the soak loop can apply a `recv_timeout` watchdog to each move.
+/// A spawned engine plus a background reader funnelling every stdout line into a
+/// channel, so the soak loop can apply a `recv_timeout` watchdog to each move.
 struct Session {
     child: Child,
     stdin: ChildStdin,
@@ -110,7 +97,7 @@ impl Session {
     }
 
     /// Read stdout lines until one satisfies `pred`, applying the per-move
-    /// watchdog. Panics on hang (timeout) or on child death (channel closed).
+    /// watchdog. Panics on a hang or on child death.
     fn read_until<F: Fn(&str) -> bool>(&self, pred: F) -> String {
         loop {
             match self.lines.recv_timeout(MOVE_WATCHDOG) {
@@ -133,12 +120,12 @@ impl Session {
 }
 
 #[test]
-#[ignore = "long-running multi-thread soak; run explicitly on the dev VM"]
+#[ignore = "long-running multi-thread soak; run explicitly"]
 fn threads2_self_play_soak_stays_legal_and_stable() {
     let dir = eval_dir();
     if !dir.join("nn.bin").exists() {
         eprintln!(
-            "skipping threads2_self_play_soak_stays_legal_and_stable: {} is not present (staged only on the dev VM)",
+            "skipping threads2_self_play_soak_stays_legal_and_stable: {} is not present (obtained out-of-band)",
             dir.join("nn.bin").display()
         );
         return;
@@ -189,8 +176,6 @@ fn threads2_self_play_soak_stays_legal_and_stable() {
             send(&mut sess.stdin, &position_cmd);
             send(&mut sess.stdin, TC_GO);
 
-            // Exactly one `bestmove` per `go`: the watchdog reader returns the
-            // first one, and the next `go` is only sent after it.
             let bestmove = sess.read_until(|l| l.starts_with("bestmove "));
             let mv_str = bestmove
                 .strip_prefix("bestmove ")
@@ -201,8 +186,6 @@ fn threads2_self_play_soak_stays_legal_and_stable() {
                 .to_string();
 
             if mv_str == "resign" || mv_str == "win" {
-                // A terminal result (mate / no legal move / declaration win)
-                // ends the game; loop back and start a fresh one.
                 break;
             }
 
@@ -219,7 +202,6 @@ fn threads2_self_play_soak_stays_legal_and_stable() {
         }
     }
 
-    // Clean shutdown: the engine must exit on `quit`.
     send(&mut sess.stdin, "quit");
     drop(sess.stdin);
     let status = sess.child.wait().expect("wait for engine");

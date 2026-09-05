@@ -1,22 +1,17 @@
-//! Gate tests for the transposition-table port
-//! (`crates/attic-storage/src/tt.rs`), checked against the semantics of
-//! `source/tt.cpp`.
+//! Tests for the transposition table, against the semantics of `tt.cpp`.
 //!
 //! # Addressing model used throughout
 //!
-//! With `resize(1)` the table holds `1 · 1024 · 1024 / 32 = 32768 = 2¹⁵`
-//! clusters, so
+//! With `resize(1)` the table holds `1 MiB / 32 = 2¹⁵` clusters, so
 //!
 //! ```text
-//! cluster_index_pre_side = mul_hi64(key, 32768) = (key · 2¹⁵) >> 64 = key >> 49
+//! cluster_index_pre_side = mul_hi64(key, 32768) = key >> 49
 //! in_cluster_key_frag    = key & 0xffff
 //! ```
 //!
-//! Bits `49..64` (the top 15) select the cluster and bits `0..16` are the
-//! stored key fragment — disjoint ranges, so [`key`] can set each independently
-//! (middle bits kept zero). The side-to-move is OR-ed into cluster-index bit 0,
-//! so fixing `hi` **and** `side` keeps a family of keys in one cluster while the
-//! fragment varies.
+//! Those ranges are disjoint, so [`key`] can set each independently. The
+//! side-to-move is OR-ed into cluster-index bit 0, so fixing `hi` **and**
+//! `side` keeps a family of keys in one cluster while the fragment varies.
 
 use attic_storage::{Bound, DEPTH_NONE, TTData, TranspositionTable};
 
@@ -27,8 +22,8 @@ fn key(hi: u64, frag: u16) -> u64 {
     (hi << 49) | frag as u64
 }
 
-/// Probe `k` and, on the returned writer, store `(depth, mv, ...)`. Uses the
-/// table's current generation, as a real caller would.
+/// Probe `k` and store through the returned writer, at the table's current
+/// generation as a real caller would.
 #[allow(clippy::too_many_arguments)]
 fn store(
     tt: &mut TranspositionTable,
@@ -55,7 +50,6 @@ fn store_probe_round_trip_every_field() {
     let k = key(100, 0x1234);
     let side = 0;
 
-    // Miss on an empty table.
     let (found, data, w) = tt.probe(k, side);
     assert!(!found);
     assert_eq!(data, miss_sentinel());
@@ -70,7 +64,6 @@ fn store_probe_round_trip_every_field() {
         tt_generation_zero(),
     );
 
-    // Hit: every field survives the round trip.
     let (found, data, _) = tt.probe(k, side);
     assert!(found);
     assert_eq!(data.value, -321);
@@ -93,7 +86,6 @@ fn every_bound_and_pv_combination_round_trips() {
         .enumerate()
     {
         for pv in [false, true] {
-            // Distinct fragment per case so they don't overwrite each other.
             let frag = 0x100 + (i as u16) * 2 + pv as u16;
             let k = key(7, frag);
             store(&mut tt, k, side, 10 + i as i32, pv, bound, 5, frag, -10);
@@ -126,16 +118,14 @@ fn miss_on_wrong_key() {
         100,
     );
 
-    // Same cluster, different fragment → miss.
     let (found, data, _) = tt.probe(key(42, 0xBEE0), side);
     assert!(!found);
     assert_eq!(data, miss_sentinel());
 
-    // Different cluster entirely → miss.
     let (found, _, _) = tt.probe(key(99, 0xBEEF), side);
     assert!(!found);
 
-    // Same key but opposite side lands in a different cluster → miss.
+    // The opposite side lands in a different cluster.
     let (found, _, _) = tt.probe(stored, 1);
     assert!(!found);
 }
@@ -160,15 +150,12 @@ fn replacement_evicts_lowest_priority_entry() {
     store(&mut tt, key(hi, 2), side, 0, false, Bound::Lower, 5, 2, 0);
     store(&mut tt, key(hi, 3), side, 0, false, Bound::Lower, 20, 3, 0);
 
-    // All three present before the eviction.
     assert!(tt.probe(key(hi, 1), side).0);
     assert!(tt.probe(key(hi, 2), side).0);
     assert!(tt.probe(key(hi, 3), side).0);
 
-    // Miss on frag 4 → writer targets the evicted slot; write frag 4 there.
     store(&mut tt, key(hi, 4), side, 0, false, Bound::Lower, 1, 4, 0);
 
-    // frag 2 (depth 5) was the least valuable and is gone; frags 1, 3, 4 remain.
     assert!(
         !tt.probe(key(hi, 2), side).0,
         "frag 2 should have been evicted"
@@ -196,11 +183,9 @@ fn generation_aging_lowers_replacement_priority() {
     let side = 0;
     let hi = 200;
 
-    // P written at generation 0.
     assert_eq!(tt.generation(), 0);
     store(&mut tt, key(hi, 1), side, 0, false, Bound::Lower, 20, 1, 0);
 
-    // Advance to generation 3, then write Q and R.
     tt.new_search();
     tt.new_search();
     tt.new_search();
@@ -208,12 +193,10 @@ fn generation_aging_lowers_replacement_priority() {
     store(&mut tt, key(hi, 2), side, 0, false, Bound::Lower, 3, 2, 0);
     store(&mut tt, key(hi, 3), side, 0, false, Bound::Lower, 8, 3, 0);
 
-    // Sanity: all three occupy the cluster.
     assert!(tt.probe(key(hi, 1), side).0);
     assert!(tt.probe(key(hi, 2), side).0);
     assert!(tt.probe(key(hi, 3), side).0);
 
-    // Miss → evicts the aged, deep entry P (frag 1).
     store(&mut tt, key(hi, 4), side, 0, false, Bound::Lower, 1, 4, 3);
     assert!(
         !tt.probe(key(hi, 1), side).0,
@@ -229,16 +212,14 @@ fn generation_aging_lowers_replacement_priority() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn save_preserves_move_when_new_move_absent() {
-    // The reference keeps the old move if the incoming move is none (0) and the
-    // key still matches. A second write to the same key with mv = 0 must keep
-    // the earlier move but refresh the value.
+    // The reference keeps the old move when the incoming one is none and the
+    // key still matches, refreshing only the value.
     let mut tt = TranspositionTable::new();
     tt.resize(1);
     let side = 0;
     let k = key(300, 0x55);
 
     store(&mut tt, k, side, 1, false, Bound::Lower, 10, 0x0777, 1);
-    // Same key, mv = 0, deeper: refreshes value, keeps move.
     store(&mut tt, k, side, 2, false, Bound::Lower, 12, 0, 2);
 
     let (found, data, _) = tt.probe(k, side);
@@ -257,13 +238,11 @@ fn resize_sizes_by_formula_and_clears() {
     let mut tt = TranspositionTable::new();
     assert_eq!(tt.cluster_count(), 0, "fresh table is empty");
 
-    // clusterCount = mb · 1024 · 1024 / sizeof(Cluster=32) = mb · 32768.
     tt.resize(1);
     assert_eq!(tt.cluster_count(), 32_768);
     tt.resize(4);
     assert_eq!(tt.cluster_count(), 4 * 32_768);
 
-    // Store, then a *different* size reallocates and clears.
     let k = key(1, 0x1);
     store(&mut tt, k, 0, 5, false, Bound::Exact, 9, 0x1, 5);
     assert!(tt.probe(k, 0).0);
@@ -272,7 +251,6 @@ fn resize_sizes_by_formula_and_clears() {
     assert_eq!(tt.cluster_count(), 2 * 32_768);
     assert!(!tt.probe(k, 0).0, "resize to a new size clears the table");
 
-    // Re-store works after resize.
     store(&mut tt, k, 0, 7, false, Bound::Exact, 9, 0x1, 7);
     assert_eq!(tt.probe(k, 0).1.value, 7);
 }
@@ -286,8 +264,8 @@ fn resize_to_same_size_is_a_no_op() {
     store(&mut tt, k, 0, 5, false, Bound::Exact, 9, 0x9, 5);
     let before = tt.checksum();
 
-    // Requesting the same MiB yields the same cluster count → no reallocation,
-    // no clear (faithful to the reference's early return).
+    // The same MiB yields the same cluster count, which the reference's early
+    // return leaves untouched.
     tt.resize(1);
     assert_eq!(tt.cluster_count(), 32_768);
     assert_eq!(
@@ -317,7 +295,7 @@ fn clear_zeroes_entries_and_generation() {
 fn new_search_wraps_within_five_bits() {
     let mut tt = TranspositionTable::new();
     tt.resize(1);
-    // 32 bumps wrap 0 → 0 (generation is 5 bits: 0..=31).
+    // The generation is 5 bits, so 32 bumps wrap back to 0.
     for _ in 0..31 {
         tt.new_search();
     }
@@ -329,8 +307,6 @@ fn new_search_wraps_within_five_bits() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn determinism_identical_sequences_yield_identical_tables() {
-    // Two tables driven by byte-identical operation sequences must end in the
-    // same state, verified by a checksum over all entries.
     fn run() -> TranspositionTable {
         let mut tt = TranspositionTable::new();
         tt.resize(1);
@@ -357,9 +333,8 @@ fn determinism_identical_sequences_yield_identical_tables() {
     assert_eq!(run().checksum(), run().checksum());
 }
 
-/// Alignment the huge-page-backed TT allocation uses on this target: a 2 MiB
-/// huge-page boundary on Linux, a 4 KiB page boundary elsewhere. Mirrors the
-/// private `TT_ALLOC_ALIGN` in `src/tt.rs`.
+/// The alignment the TT allocation uses on this target, mirroring the private
+/// `TT_ALLOC_ALIGN`.
 const EXPECTED_TT_ALIGN: usize = if cfg!(target_os = "linux") {
     2 * 1024 * 1024
 } else {
@@ -387,15 +362,14 @@ fn resized_table_base_pointer_is_page_aligned() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn fresh_resize_reads_back_all_misses() {
-    // The huge-page allocation is `alloc_zeroed`, so a freshly resized table is
-    // fully unoccupied — every probe across the sampled clusters is a miss with
-    // the sentinel payload, exactly like the reference's post-resize clear.
+    // The allocation is zeroed, so a freshly resized table is fully unoccupied,
+    // exactly like the reference's post-resize clear.
     let mut tt = TranspositionTable::new();
     tt.resize(2);
     for hi in 0..2048u64 {
         for side in 0..2u8 {
-            // A nonzero key fragment cannot match the zeroed entries' `key == 0`,
-            // so probe takes the true miss path and returns the sentinel.
+            // A nonzero fragment cannot match the zeroed entries' `key == 0`,
+            // so this takes the true miss path.
             let k = key(hi & 0x7fff, (hi as u16).wrapping_mul(7) | 1);
             let (found, data, _) = tt.probe(k, side);
             assert!(!found, "fresh table entry occupied at hi={hi}");
@@ -407,9 +381,6 @@ fn fresh_resize_reads_back_all_misses() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn resize_grow_shrink_same_cycles_preserve_semantics() {
-    // Walk grow → shrink → same across several sizes; after each *change* the
-    // table is a valid, cleared allocation, and a same-size request is a
-    // no-op that leaves stored data intact.
     let mut tt = TranspositionTable::new();
     let k = key(3, 0xabcd);
 
@@ -420,13 +391,10 @@ fn resize_grow_shrink_same_cycles_preserve_semantics() {
         assert_eq!(tt.cluster_count(), mb * 32_768);
 
         if tt.cluster_count() == prev_count {
-            // Same size → untouched (no realloc, no clear).
             assert_eq!(tt.checksum(), prev_sum, "same-size resize must be a no-op");
         } else {
-            // Changed size → aligned, cleared allocation.
             assert_eq!(tt.backing_ptr_addr() % EXPECTED_TT_ALIGN, 0);
             assert!(!tt.probe(k, 0).0, "grow/shrink clears the table");
-            // Store survives until the next size change.
             store(&mut tt, k, 0, 42, false, Bound::Exact, 9, 0xabcd, 42);
             assert_eq!(tt.probe(k, 0).1.value, 42);
         }
@@ -436,9 +404,8 @@ fn resize_grow_shrink_same_cycles_preserve_semantics() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn many_resizes_do_not_leak_or_corrupt() {
-    // Repeatedly reallocate under the new aligned layout; each drop frees with
-    // the matching layout. A double free / bad layout would trip the allocator
-    // here, and the final store/probe proves the last allocation is sound.
+    // A double free or mismatched layout would trip the allocator here, and the
+    // final store/probe proves the last allocation is sound.
     let mut tt = TranspositionTable::new();
     for i in 0..40u64 {
         let mb = 1 + (i % 4) as usize; // cycles 1,2,3,4 → forces real reallocs
@@ -449,11 +416,9 @@ fn many_resizes_do_not_leak_or_corrupt() {
     }
 }
 
-/// Linux-only, best-effort THP-uptake diagnostic (not a hard gate): after a
-/// ≥ 64 MiB resize, scan `/proc/self/smaps` for the mapping that contains the
-/// TT base address and report its `AnonHugePages` figure, so transparent-
-/// huge-page adoption is visible. Never fails the suite — when THP is
-/// disabled (`AnonHugePages: 0 kB`) it simply reports zero.
+/// A best-effort transparent-huge-page uptake diagnostic, reporting the
+/// `AnonHugePages` figure `/proc/self/smaps` gives for the TT's mapping. It
+/// never fails the suite: THP availability is environmental.
 #[test]
 #[cfg(target_os = "linux")]
 #[cfg_attr(miri, ignore)]
@@ -461,7 +426,7 @@ fn thp_uptake_diagnostic_over_64mib() {
     use std::fs;
 
     let mut tt = TranspositionTable::new();
-    tt.resize(64); // ≥ 64 MiB as required by the gate
+    tt.resize(64); // large enough that the kernel can back it with huge pages
     let base = tt.backing_ptr_addr();
     assert_ne!(base, 0);
 
@@ -473,11 +438,7 @@ fn thp_uptake_diagnostic_over_64mib() {
         }
     };
 
-    // smaps is a sequence of blocks, each headed by `start-end perms ...`. Find
-    // the block whose address range contains `base`, then read its
-    // `AnonHugePages:` line.
-    // Parse the `start-end` in a smaps block header, returning whether `base`
-    // falls inside the range.
+    // smaps is a sequence of blocks, each headed by `start-end perms ...`.
     fn header_contains(line: &str, base: u64) -> Option<bool> {
         let range = line
             .split_once(' ')
@@ -513,10 +474,9 @@ fn thp_uptake_diagnostic_over_64mib() {
              (kernel without THP accounting); skipping"
         ),
     }
-    // Intentionally no assertion: THP availability is environmental.
 }
 
-/// The `TTData` a miss returns (mirrors the reference's miss sentinel).
+/// The `TTData` a miss returns.
 fn miss_sentinel() -> TTData {
     TTData {
         move16: 0,
@@ -528,8 +488,7 @@ fn miss_sentinel() -> TTData {
     }
 }
 
-/// Generation of a freshly-resized table is 0; a tiny helper to make the
-/// round-trip test read clearly.
+/// The generation of a freshly resized table.
 fn tt_generation_zero() -> u8 {
     0
 }

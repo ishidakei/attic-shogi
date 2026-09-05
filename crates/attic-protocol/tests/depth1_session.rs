@@ -1,21 +1,14 @@
-//! Session-level depth-1 parity gate (blocking) against the real network.
+//! Session-level depth-1 parity gate against the real network: a full USI
+//! session whose emitted `bestmove`, `score`, and `nodes` must match the
+//! reference-captured fixture exactly.
 //!
-//! Drives a full USI session in-process — `usi` → `setoption EvalDir` →
-//! `isready` → `position startpos` → `go depth 1` — and asserts the emitted
-//! `bestmove`, `score`, and `nodes` exactly match the reference-captured
-//! `tests/fixtures/search-depth1/startpos.json`. This proves the driver drives
-//! the ported depth-1 root search ([`attic_search::QSearch::run_root`]) with
-//! the reference TT sizing (1024 MiB, allocated on the first successful
-//! `isready`) and generation semantics (`run_root` bumps it per `go`).
-//!
-//! The three fields are one inseparable set: the `(nodes & 14)` root tie-break
+//! The three fields are one inseparable set — the `(nodes & 14)` root tie-break
 //! means a single-node drift can cascade into a different score and a flipped
-//! bestmove, so a mismatch on any of them signals a search divergence.
+//! bestmove.
 //!
-//! The SFNN-1536 network is staged locally at
-//! `eval/nn.bin` and is never committed. When absent
-//! (a checkout without it staged) the test prints a notice and passes, so the
-//! default `cargo test` run stays green everywhere.
+//! The network file is staged locally and never committed, so when it is absent
+//! the test prints a notice and passes and the default `cargo test` run stays
+//! green everywhere.
 
 use std::path::PathBuf;
 
@@ -31,7 +24,7 @@ fn fixture_path() -> PathBuf {
         .join("../../tests/fixtures/search-depth1/startpos.json")
 }
 
-/// The gated subset of a depth-1 fixture (see `depth1_parity.rs`).
+/// The gated subset of a depth-1 fixture.
 #[derive(Debug, Deserialize)]
 struct Fixture {
     bestmove: String,
@@ -39,7 +32,6 @@ struct Fixture {
     nodes: u64,
 }
 
-/// Fixture score: exactly one of `cp` or `mate` is present.
 #[derive(Debug, Deserialize)]
 struct ScoreJson {
     #[serde(default)]
@@ -56,8 +48,7 @@ fn drive(input: &str) -> String {
     String::from_utf8(bytes).expect("utf-8")
 }
 
-/// Extract the value following `key` in a whitespace-tokenised `info` line, e.g.
-/// `field_after("... nodes 30 pv ...", "nodes") == Some("30")`.
+/// The token following `key` in a whitespace-tokenised `info` line.
 fn field_after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let mut it = line.split_whitespace();
     while let Some(tok) = it.next() {
@@ -74,7 +65,7 @@ fn depth1_session_matches_reference_startpos_fixture() {
     let dir = eval_dir();
     if !dir.join("nn.bin").exists() {
         eprintln!(
-            "skipping depth1_session_matches_reference_startpos_fixture: {} is not present (staged only on the dev VM)",
+            "skipping depth1_session_matches_reference_startpos_fixture: {} is not present (obtained out-of-band)",
             dir.join("nn.bin").display()
         );
         return;
@@ -84,9 +75,8 @@ fn depth1_session_matches_reference_startpos_fixture() {
     let fixture: Fixture = serde_json::from_str(&raw).expect("parse startpos fixture");
 
     let eval_dir_arg = dir.to_str().expect("utf-8 eval dir");
-    // `Threads value 1` pins the single-worker search: the default is 4, and once
-    // helpers really search they pollute the shared TT, so any
-    // fixture-node assertion must run on one worker to stay deterministic.
+    // A fixture-node assertion must run on one worker: helpers pollute the
+    // shared TT, and the default is 4.
     let session = format!(
         "usi\n\
          setoption name Threads value 1\n\
@@ -103,8 +93,7 @@ fn depth1_session_matches_reference_startpos_fixture() {
         "real network must load (readyok), got:\n{out}"
     );
 
-    // bestmove (no ponder expected for the single-move startpos PV, but tolerate
-    // one by comparing only the move token).
+    // Compare only the move token, tolerating a ponder move.
     let bestmove_line = out
         .lines()
         .find(|l| l.starts_with("bestmove "))
@@ -117,7 +106,6 @@ fn depth1_session_matches_reference_startpos_fixture() {
         .expect("bestmove token");
     assert_eq!(got_best, fixture.bestmove, "bestmove mismatch in:\n{out}");
 
-    // The single depth-1 info line carries the score and node count.
     let info_line = out
         .lines()
         .find(|l| l.starts_with("info depth 1 "))
@@ -129,7 +117,6 @@ fn depth1_session_matches_reference_startpos_fixture() {
         .expect("nodes integer");
     assert_eq!(got_nodes, fixture.nodes, "node count mismatch in:\n{out}");
 
-    // score is `cp <X>` or `mate <Y>`; compare against whichever the fixture has.
     let score_kind = field_after(info_line, "score").expect("score kind");
     let score_val: i32 = field_after(info_line, score_kind)
         .expect("score value")

@@ -63,11 +63,8 @@ usiok\n";
 #[test]
 #[cfg_attr(miri, ignore)]
 fn isready_without_network_reports_load_failure() {
-    // Default EvalDir (`eval`) has no `nn.bin` in the test CWD, so the load
-    // fails: an `info string eval load failed:` notice and no `readyok`, per
-    // the isready contract — a failed network load must never be answered with
-    // `readyok`. The positive path is covered by
-    // tests/eval_session.rs (synthetic network) and tests/real_network_selfplay.
+    // The default `EvalDir` has no `nn.bin` in the test CWD, so the load fails:
+    // a notice, and no `readyok`.
     let out = drive("isready\nquit\n");
     assert!(
         out.contains("info string eval load failed:"),
@@ -89,7 +86,7 @@ fn unknown_command_emits_info_string() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn oversized_line_emits_command_too_long() {
-    // 64 KB + 1 byte → TooLong. Followed by a real line so the driver loops past it.
+    // 64 KB + 1 byte, then a real line so the driver loops past it.
     let mut input = "x".repeat(64 * 1024 + 1);
     input.push('\n');
     input.push_str("quit\n");
@@ -104,7 +101,6 @@ fn full_handshake_then_setoption_then_quit() {
     assert!(out.starts_with("id name Attic 9.70git\n"));
     assert!(out.contains("usiok\n"));
     assert!(!out.contains("rejected"));
-    // No EvalDir set → default `eval/nn.bin` is absent → load fails, no readyok.
     assert!(out.contains("info string eval load failed:"));
     assert!(!out.contains("readyok"));
 }

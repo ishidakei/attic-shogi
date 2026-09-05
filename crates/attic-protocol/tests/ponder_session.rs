@@ -1,16 +1,12 @@
-//! Driver-level session tests for real ponder: `go ponder`
-//! holds its reply, `ponderhit` continues under time management (including the
-//! `stopOnPonderhit` prompt-stop path), `Stochastic_Ponder` rewinds and
-//! re-issues, and `gameover` during pondering still terminates.
+//! Session tests for ponder: `go ponder` holds its reply, `ponderhit` continues
+//! under time management including the `stopOnPonderhit` prompt-stop path,
+//! `Stochastic_Ponder` rewinds and re-issues, and `gameover` during pondering
+//! still terminates.
 //!
-//! Each test drives a full `usi → setoption → isready → position → go ponder`
-//! session in-process against a synthetic (all-zero) network staged in a temp
-//! dir, so they are hermetic. Ponder searches never self-terminate, so they use
-//! [`StreamHarness`] and drive `stop` / `ponderhit` / `gameover` explicitly. The
-//! wall bounds are deliberately loose (debug builds poll the clock only at
-//! ~512-node `check_time` checkpoints), like the fischer / byoyomi timing tests
-//! — they prove exactly one `bestmove` arrives at the right moment, not a precise
-//! deadline.
+//! Ponder searches never self-terminate, so each test drives `stop` /
+//! `ponderhit` / `gameover` explicitly. The wall bounds are loose — a debug
+//! build polls the clock only at ~512-node `check_time` checkpoints — so they
+//! prove one `bestmove` arrives at the right moment, not a precise deadline.
 
 mod common;
 
@@ -39,8 +35,8 @@ fn start_ready(evaldir: &str, extra: &[String]) -> StreamHarness {
     h
 }
 
-/// The USI move token of the single `bestmove` line (dropping any ` ponder …`
-/// suffix). Panics unless exactly one `bestmove` has been emitted.
+/// The USI move token of the single `bestmove` line, dropping any ` ponder …`
+/// suffix. Panics unless exactly one `bestmove` has been emitted.
 fn sole_bestmove(out: &str) -> String {
     let bms = bestmove_lines(out);
     assert_eq!(bms.len(), 1, "expected exactly one bestmove in:\n{out}");
@@ -63,10 +59,6 @@ fn assert_legal_after(moves: &[&str], tok: &str) {
     assert!(legal(&pos).contains(&mv), "bestmove {tok:?} is not legal");
 }
 
-// -------------------------------------------------------------------------
-// 1. `go ponder` holds; `stop` releases exactly one bestmove.
-// -------------------------------------------------------------------------
-
 #[test]
 #[cfg_attr(miri, ignore)]
 fn go_ponder_holds_until_stop() {
@@ -78,8 +70,7 @@ fn go_ponder_holds_until_stop() {
     h.send("position startpos");
     h.send("go ponder btime 60000 wtime 60000");
 
-    // A pondering search never self-terminates: no bestmove for a comfortable
-    // interval, whatever the clock says.
+    // A pondering search never self-terminates, whatever the clock says.
     std::thread::sleep(Duration::from_millis(300));
     assert!(
         !h.output().contains("bestmove"),
@@ -87,7 +78,6 @@ fn go_ponder_holds_until_stop() {
         h.output()
     );
 
-    // `stop` ends it with exactly one bestmove.
     h.send("stop");
     assert!(
         h.wait_until(30_000, |o| bestmove_lines(o).len() == 1),
@@ -98,10 +88,6 @@ fn go_ponder_holds_until_stop() {
     assert_legal_after(&[], &sole_bestmove(&out));
 }
 
-// -------------------------------------------------------------------------
-// 2. `go ponder` then `ponderhit`: one bestmove, emitted after the ponderhit.
-// -------------------------------------------------------------------------
-
 #[test]
 #[cfg_attr(miri, ignore)]
 fn ponderhit_continues_and_emits_one_bestmove() {
@@ -111,9 +97,8 @@ fn ponderhit_continues_and_emits_one_bestmove() {
 
     let h = start_ready(e, &[]);
     h.send("position startpos");
-    // A comfortable clock: the budget is not exhausted during the short ponder,
-    // so the ponderhit resumes normal time management rather than the prompt
-    // `stopOnPonderhit` path.
+    // A comfortable clock, so the ponderhit resumes normal time management
+    // rather than the prompt `stopOnPonderhit` path.
     h.send("go ponder btime 800 wtime 800");
 
     std::thread::sleep(Duration::from_millis(60));
@@ -130,7 +115,7 @@ fn ponderhit_continues_and_emits_one_bestmove() {
         "ponderhit must yield exactly one bestmove:\n{}",
         h.output()
     );
-    // Bounded by the clock counted from the ponderhit (loose for a debug build).
+    // Bounded by the clock counted from the ponderhit.
     assert!(
         t.elapsed() < Duration::from_secs(10),
         "bestmove after ponderhit took too long: {:?}",
@@ -139,10 +124,6 @@ fn ponderhit_continues_and_emits_one_bestmove() {
     let out = h.quit_join();
     assert_legal_after(&[], &sole_bestmove(&out));
 }
-
-// -------------------------------------------------------------------------
-// 3. `stopOnPonderhit`: tiny clock, ponderhit well after the budget is spent.
-// -------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(miri, ignore)]
@@ -153,12 +134,11 @@ fn stop_on_ponderhit_stops_promptly_after_a_late_ponderhit() {
 
     let h = start_ready(e, &[]);
     h.send("position startpos");
-    // A tiny clock: the soft budget is exhausted almost immediately, arming
+    // A tiny clock exhausts the soft budget almost immediately, arming
     // `stopOnPonderhit` while pondering.
     h.send("go ponder btime 10 wtime 10");
 
-    // Well past the budget: still no bestmove, because pondering holds regardless
-    // of the exhausted clock.
+    // Pondering holds regardless of the exhausted clock.
     std::thread::sleep(Duration::from_millis(400));
     assert!(
         !h.output().contains("bestmove"),
@@ -166,7 +146,6 @@ fn stop_on_ponderhit_stops_promptly_after_a_late_ponderhit() {
         h.output()
     );
 
-    // The ponderhit makes the first checkpoint stop the search promptly.
     let t = Instant::now();
     h.send("ponderhit");
     assert!(
@@ -183,11 +162,6 @@ fn stop_on_ponderhit_stops_promptly_after_a_late_ponderhit() {
     assert_legal_after(&[], &sole_bestmove(&out));
 }
 
-// -------------------------------------------------------------------------
-// 4. `Stochastic_Ponder`: rewound ponder, ponderhit re-issues on the current
-//    position, exactly one bestmove (legal in the current position).
-// -------------------------------------------------------------------------
-
 #[test]
 #[cfg_attr(miri, ignore)]
 fn stochastic_ponder_reissues_on_the_current_position() {
@@ -199,8 +173,8 @@ fn stochastic_ponder_reissues_on_the_current_position() {
         e,
         &["setoption name Stochastic_Ponder value true".to_string()],
     );
-    // The current position is one move deep; `go ponder` internally rewinds it to
-    // startpos and ponders there.
+    // The current position is one move deep, so `go ponder` rewinds to startpos
+    // and ponders there.
     h.send("position startpos moves 7g7f");
     h.send("go ponder btime 800 wtime 800");
 
@@ -218,14 +192,9 @@ fn stochastic_ponder_reissues_on_the_current_position() {
         h.output()
     );
     let out = h.quit_join();
-    // Exactly one bestmove, legal in the CURRENT position (White to move after
-    // 7g7f), not the rewound startpos.
+    // Legal in the current position, not the rewound startpos.
     assert_legal_after(&["7g7f"], &sole_bestmove(&out));
 }
-
-// -------------------------------------------------------------------------
-// 5. `gameover` during `go ponder` still terminates the search.
-// -------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(miri, ignore)]

@@ -1,44 +1,21 @@
-//! Depth-16 search parity gate — the null-move **verification search**.
+//! Depth-16 search parity test — the null-move **verification search**.
 //!
-//! Runs the `go depth 16` root search ([`QSearch::run_root`]) against the
-//! reference-captured fixture under `tests/fixtures/search-depth16/` and asserts
-//! **bestmove, score, and nodes** exactly, as an inseparable triple (the
-//! `(nodes & 14)` root tie-break means a single node of drift can flip the
-//! bestmove).
+//! Step 9's verification search (`yaneuraou-search.cpp`) is the only
+//! regime the shallower tiers cannot reach: its guard is
+//! `nmpMinPly == 0 && depth >= 16`, so below that a null-move fail-high returns
+//! `nullValue` outright and the whole block is dead. From depth 16 up, a
+//! fail-high instead re-searches the **same node** at a reduced depth with
+//! null-move pruning disabled for a while, and only returns `nullValue` when
+//! that verification also fails high.
 //!
-//! ## Why depth 16 specifically
-//!
-//! Step 9's verification search (`yaneuraou-search.cpp` at the pin
-//! `76d58ef`) is the only regime the depth-1/2/3/5/8 tiers cannot reach: its
-//! guard is `nmpMinPly == 0 && depth >= 16`, so a null-move fail-high below
-//! depth 16 returns `nullValue` outright and the whole block is dead. From
-//! depth 16 up, a fail-high instead re-searches the **same node** (same `ss`, no
-//! `do_move`) at `depth - R` with null-move pruning disabled until `ss->ply`
-//! climbs past `nmpMinPly = ss->ply + 3 * (depth - R) / 4`, and only returns
-//! `nullValue` when that verification also fails high — otherwise the node falls
-//! through to its ordinary moves loop.
-//!
-//! That re-entry is also what makes the tier worth gating rather than merely
-//! running: because it re-enters on this node's own stack cell, it rewrites
-//! `ss->staticEval` (Step 6 runs again with a correction value the null-move
-//! subtree may have moved) and can flip `ss->ttPv` (a fail-low re-entry applies
-//! `ss->ttPv |= (ss-1)->ttPv`). Every reference read of those two fields after
-//! Step 9 is a live `ss->` read, so `qsearch.rs` re-syncs its locals right after
-//! the block. A port that cached them across Step 9 passes every shallower tier
+//! That re-entry is what makes the tier worth gating rather than merely running.
+//! Re-entering on this node's own stack cell rewrites `ss->staticEval` and can
+//! flip `ss->ttPv`, and every reference read of those two after Step 9 is a live
+//! one — so a port that cached them across Step 9 passes every shallower tier
 //! and diverges only here.
 //!
-//! One position keeps the tier affordable: `startpos` at depth 16 is ~230k
-//! cumulative nodes, roughly 20x the depth-8 fixture. The six-position sweep
-//! stays at depth 8.
-//!
-//! The fixture was captured with Threads=1, no book, `usinewgame` before the
-//! position, `go depth 16`, USI_Hash default 1024 MiB — reproduced here by
-//! resizing the transposition table to 1024 MiB, clearing it (the `usinewgame`
-//! equivalent), and letting `run_root` bump the generation.
-//!
-//! Like the other real-network tests, this is skipped with a notice when
-//! `nn.bin` is absent (a checkout without it staged), so the default
-//! `cargo test` run stays green everywhere `nn.bin` is not staged.
+//! One position keeps the tier affordable: at depth 16 `startpos` is roughly 20
+//! times the depth-8 fixture's node count.
 
 use std::path::PathBuf;
 
@@ -49,9 +26,9 @@ use serde::Deserialize;
 
 /// `VALUE_MATE` (`types.h`).
 const VALUE_MATE: i32 = 32000;
-/// `VALUE_TB_WIN_IN_MAX_PLY` (`types.h`): the `is_decisive` threshold.
+/// The `is_decisive` threshold (`types.h`).
 const VALUE_TB_WIN_IN_MAX_PLY: i32 = VALUE_MATE - 246;
-/// `Eval::PawnValue` (`NormalizeToPawnValue`, `usi.cpp`).
+/// `Eval::PawnValue` (`usi.cpp`).
 const PAWN_VALUE: i32 = 90;
 /// Engine default `USI_Hash` in MiB (`tests/fixtures/search-depth16/README.md`).
 const HASH_MB: usize = 1024;
@@ -59,7 +36,7 @@ const HASH_MB: usize = 1024;
 #[derive(Debug, Deserialize)]
 struct FixtureJson {
     sfen: String,
-    /// Optional USI moves applied after the SFEN (USI `position ... moves ...`).
+    /// Optional USI moves applied after the SFEN.
     #[serde(default)]
     moves: Vec<String>,
     depth: i32,
@@ -94,8 +71,7 @@ fn load_fixture(name: &str) -> FixtureJson {
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse fixture {name}: {e}"))
 }
 
-/// Parse the SFEN and apply the optional `moves` prefix, mirroring USI
-/// `position sfen <SFEN> moves <m1> <m2> ...`.
+/// Parse the SFEN and apply the optional `moves` prefix.
 fn setup(fixture: &FixtureJson) -> Position {
     let mut pos = parse_sfen(&fixture.sfen).expect("valid fixture SFEN");
     for usi in &fixture.moves {
@@ -105,8 +81,7 @@ fn setup(fixture: &FixtureJson) -> Position {
     pos
 }
 
-/// The USI-string form of the outcome's bestmove (the fixture is an ordinary
-/// move; the resign / win sentinels never occur for it).
+/// The USI-string form of the outcome's bestmove.
 fn bestmove_usi(best_move: Move, kind: RootKind) -> String {
     match kind {
         RootKind::Resign => "resign".to_string(),
@@ -120,9 +95,8 @@ fn is_decisive(v: i32) -> bool {
     v.abs() >= VALUE_TB_WIN_IN_MAX_PLY
 }
 
-/// Format a search value the way the reference USI layer does (`score.cpp` /
-/// `usi.cpp` `format_score`): a mate distance for decisive scores, else
-/// `100 * v / PawnValue` centipawns (C++ truncating division).
+/// Format a search value as the reference USI layer does (`format_score`,
+/// `usi.cpp`): a mate distance for a decisive score, else centipawns.
 fn format_score(v: i32) -> ScoreJson {
     if is_decisive(v) {
         let distance = VALUE_MATE - v.abs();
@@ -158,7 +132,7 @@ fn depth16_search_matches_reference_fixture() {
     let json = load_fixture(name);
     assert_eq!(json.depth, 16, "{name}: depth-16 fixtures only");
 
-    // usinewgame: clear the table (also resets the generation to 0).
+    // The `usinewgame` equivalent, which also resets the generation.
     tt.clear();
     let pos = setup(&json);
 

@@ -3,13 +3,12 @@
 Captured fixed-depth alpha-beta search ground truth for `search(sfen, depth)` at
 **depth 1**. Each file pins the reference engine's search result for a single
 starting `sfen` at depth 1 with deterministic parameters. These fixtures are the
-**parity gate for the depth-1 search slice**: the Rust search implementation
-built in later children of that slice must match this reference output at
+**depth-1 parity set**: the Rust search must match this reference output at
 depth 1.
 
 The positions (SFENs — and for `sennichite.json` the same `moves` array) mirror
 the depth-3 set in `tests/fixtures/search/`; only the search depth differs. The
-depth-3 fixtures remain the parity gate for depth-3 search and are unchanged.
+depth-3 fixtures remain the parity set for depth-3 search and are unchanged.
 
 ## Schema
 
@@ -71,7 +70,7 @@ parameters, which must not change between capture runs for a given position:
 | `Threads` | 1 | Single thread eliminates scheduling non-determinism |
 | `BookFile` | `no_book` | Disables opening book so alpha-beta always runs |
 | `usinewgame` | sent before `position` | Clears TT for a fresh hash state |
-| `USI_Hash` | 1024 (MB) | Engine default — `capture-search` does not set it; TT size affects node counts, so a Rust TT must default to the same size for the `nodes` gate to be meaningful |
+| `USI_Hash` | 1024 (MB) | Engine default — `capture-search` does not set it; TT size affects node counts, so a Rust TT must default to the same size for the `nodes` comparison to be meaningful |
 | `go depth` | 1 | Fixed depth; no time management involved |
 
 The engine's `StandardInput::input()` (misc.cpp) converts stdin EOF
@@ -82,7 +81,7 @@ requested depth.
 
 ## Determinism
 
-Running `cargo xtask capture-search` twice against the same submodule pin and
+Running `cargo xtask capture-search` twice against the same reference build and
 the same `nn.bin` produces a byte-identical file. This byte-identical re-capture
 property was verified when the depth-3 set was made and holds identically here:
 only the `--depth 1` argument differs.

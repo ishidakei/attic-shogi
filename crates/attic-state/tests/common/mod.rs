@@ -1,33 +1,25 @@
-//! Shared driver for the randomized-position proptest suites.
-//!
-//! Both `do_undo_roundtrip.rs` and `movegen_invariants.rs` want the same notion
-//! of "a random *reachable* position": not an arbitrary board (that is what
-//! `sfen_roundtrip.rs`'s `arb_position` builds, and most such boards are not
-//! reachable from the start position), but the positions along a random legal
-//! line played from `startpos` with the real generator.
+//! Shared driver for the randomized-position proptest suites: a random
+//! *reachable* position, meaning one on a random legal line played from
+//! `startpos` with the real generator, rather than an arbitrary board.
 //!
 //! The randomness is threaded in as a plain `&[u16]` of per-ply choice indices
-//! rather than an RNG seed, so proptest shrinking is meaningful: dropping a
-//! trailing element shortens the line, and shrinking an element towards `0`
-//! walks the choice back towards the first generated move.
+//! rather than an RNG seed, so that proptest shrinking stays meaningful:
+//! dropping a trailing element shortens the line, and shrinking an element
+//! towards `0` walks the choice back towards the first generated move.
 
 use attic_state::{Move, Position, Undo};
 
-/// Upper bound on the length of a generated line. Deep enough to reach genuine
-/// middlegame positions (captures in hand, promotions, checks) while keeping a
-/// case at a few hundred microseconds.
+/// Upper bound on the length of a generated line: deep enough to reach genuine
+/// middlegame positions, short enough to keep a case fast.
 pub const MAX_PLIES: usize = 48;
 
 /// Visit every position on the line `choices` describes, leaf first, then each
-/// ancestor back to `startpos`, calling `visit` on each.
+/// ancestor back to `startpos`. Walking the whole line rather than only its leaf
+/// is what makes rare states — in-check nodes above all — show up often enough
+/// to matter.
 ///
-/// Walking the whole line rather than only its leaf multiplies the positions a
-/// single proptest case covers by the line length, which is what makes rarer
-/// states — in-check nodes above all, but also nodes with a stuffed hand or a
-/// promoted piece pinned to a king — show up often enough to matter.
-///
-/// `visit` may mutate the position (a do/undo probe, say) but must leave it
-/// unchanged on return; the unwind depends on it.
+/// `visit` may mutate the position but must leave it unchanged on return; the
+/// unwind depends on it.
 pub fn walk_line<E>(
     choices: &[u16],
     mut visit: impl FnMut(&mut Position) -> Result<(), E>,
@@ -51,15 +43,11 @@ pub fn walk_line<E>(
 /// # Check bias
 ///
 /// Every other choice value steers the ply towards a checking move when the
-/// position has one. Uniform random play from the start position gives check
-/// well under 1% of the time (measured over this suite's corpus: 15 in-check
-/// nodes out of 1623), which would leave the in-check branch of every property
-/// here all but untested; the bias lifts that to 85 out of 1626.
-///
-/// The bias only *reorders the preference* among moves the real generator
-/// already emitted, so every position reached is still legal and still
-/// reachable — it just makes evasions, pins and double checks common enough to
-/// be worth generating.
+/// position has one. Uniform random play gives check well under 1% of the time,
+/// which would leave the in-check branch of every property here all but
+/// untested. The bias only *reorders the preference* among moves the real
+/// generator already emitted, so every position reached is still legal and
+/// still reachable.
 pub fn play_line(choices: &[u16]) -> (Position, Vec<(Move, Undo)>) {
     let mut pos = Position::startpos();
     let mut frames = Vec::with_capacity(choices.len());

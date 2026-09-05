@@ -1,15 +1,10 @@
-//! Driver-level session tests for the MultiPV + PV-output group: the real
-//! MultiPV loop, the `PvInterval` throttle, `ConsiderationMode`, and
-//! the voting-off-under-MultiPV path.
+//! Session tests for the MultiPV loop, the `PvInterval` throttle,
+//! `ConsiderationMode`, and the voting-off-under-MultiPV path.
 //!
-//! Each test drives a full `usi → setoption → isready → position → go` session
-//! in-process against a synthetic (all-zero) network staged in a temp dir, so
-//! they are hermetic. They use [`StreamHarness`] and wait for the `bestmove`
-//! before quitting: a MultiPV search runs many root searches per iteration, so
-//! quitting early would abort it mid-iteration (`quit` sets the stop flag). All
-//! PV-content assertions that depend on per-iteration output set `PvInterval
-//! value 0` in the preamble so the pin's default 300 ms throttle does not
-//! suppress the intermediate lines.
+//! Each test waits for the `bestmove` before quitting: `quit` sets the stop
+//! flag, which would abort a MultiPV search mid-iteration. Assertions that
+//! depend on per-iteration output set `PvInterval value 0` so the default
+//! 300 ms throttle does not suppress the intermediate lines.
 
 mod common;
 
@@ -18,12 +13,12 @@ use common::{StreamHarness, TempDir, bestmove_lines, legal, parse, write_synthet
 
 const STARTPOS: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
 /// White to move with exactly one legal move: the king on 5a must capture the
-/// checking gold on 5b (every other escape square is covered by that gold).
+/// checking gold on 5b, every other escape being covered by it.
 const ONE_LEGAL_MOVE: &str = "4k4/4G4/9/9/9/9/9/9/4K4 w - 1";
 
-/// Drive a full session on a stream harness with the single-threaded synthetic
-/// preamble plus `extra` option lines, then `position` + `go`, waiting for the
-/// `bestmove` so the search fully completes before `quit`. Returns the transcript.
+/// Drive a full session with the single-threaded synthetic preamble plus `extra`
+/// option lines, waiting for the `bestmove` so the search completes before
+/// `quit`.
 fn run_session(evaldir: &str, threads: u32, extra: &[&str], position: &str, go: &str) -> String {
     let h = StreamHarness::start();
     h.send("usi");
@@ -47,12 +42,10 @@ fn run_session(evaldir: &str, threads: u32, extra: &[&str], position: &str, go: 
     h.quit_join()
 }
 
-/// The `multipv` index of an `info` line, if present.
 fn multipv_of(line: &str) -> Option<usize> {
     field_after(line, "multipv").and_then(|t| t.parse().ok())
 }
 
-/// The value following `key` in a whitespace-tokenised `info` line.
 fn field_after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let mut it = line.split_whitespace();
     while let Some(tok) = it.next() {
@@ -63,8 +56,8 @@ fn field_after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-/// A sortable score key for a `score cp X` / `score mate Y` line: a mate for the
-/// side to move outranks any cp, a mate against ranks below any cp.
+/// A sortable score key: a mate for the side to move outranks any cp, a mate
+/// against ranks below any cp.
 fn score_key(line: &str) -> i64 {
     match field_after(line, "score") {
         Some("cp") => field_after(line, "cp")
@@ -84,18 +77,16 @@ fn score_key(line: &str) -> i64 {
     }
 }
 
-/// The first PV move token of an `info … pv m1 m2 …` line, if any.
 fn first_pv_move(line: &str) -> Option<&str> {
     field_after(line, "pv")
 }
 
-/// Every `info … multipv <i>` line emitted for a single completed iteration —
-/// the last contiguous run of `multipv 1..N` lines before the `bestmove`. This is
-/// robust to the pin's `d = max(1, depth - 1)` relabel of an un-searched line: it
-/// groups by the emitted block, not by the `depth` field.
+/// Every `info … multipv <i>` line of a single completed iteration: the last
+/// contiguous run of `multipv 1..N` lines before the `bestmove`. Grouping by the
+/// emitted block rather than the `depth` field survives the reference's
+/// `d = max(1, depth - 1)` relabel of an un-searched line.
 fn last_multipv_block(out: &str) -> Vec<&str> {
     let lines: Vec<&str> = out.lines().collect();
-    // Find the last `multipv 1` line, then take the contiguous multipv run from it.
     let start = lines
         .iter()
         .rposition(|l| multipv_of(l) == Some(1))
@@ -129,7 +120,6 @@ fn multipv_three_emits_three_ranked_lines_per_iteration() {
         "go depth 3",
     );
 
-    // The last completed iteration emits exactly three ranked lines.
     let block = last_multipv_block(&out);
     assert_eq!(
         block.len(),
@@ -143,20 +133,17 @@ fn multipv_three_emits_three_ranked_lines_per_iteration() {
         "multipv indices must be 1..3 in:\n{out}"
     );
 
-    // Scores are non-increasing by index.
     let scores: Vec<i64> = block.iter().map(|l| score_key(l)).collect();
     assert!(
         scores.windows(2).all(|w| w[0] >= w[1]),
         "scores must be non-increasing by multipv index, got {scores:?} in:\n{out}"
     );
 
-    // Three distinct first moves.
     let firsts: Vec<&str> = block.iter().filter_map(|l| first_pv_move(l)).collect();
     assert_eq!(firsts.len(), 3, "each line has a pv in:\n{out}");
     let distinct: std::collections::HashSet<&str> = firsts.iter().copied().collect();
     assert_eq!(distinct.len(), 3, "first moves must be distinct in:\n{out}");
 
-    // bestmove equals the multipv-1 line's first move.
     let bms = bestmove_lines(&out);
     assert_eq!(bms.len(), 1, "one bestmove in:\n{out}");
     let best = bms[0].split_whitespace().next().unwrap();
@@ -176,7 +163,6 @@ fn multipv_clamps_to_legal_move_count() {
     let legal_count = legal(&parse(STARTPOS)).len();
     assert!(legal_count > 1, "startpos has many legal moves");
 
-    // MultiPV 600 >> legal-move count ⇒ clamps to the legal-move count.
     let out = run_session(
         e,
         1,
@@ -222,7 +208,6 @@ fn multipv_single_legal_move_works() {
         &format!("position sfen {ONE_LEGAL_MOVE}"),
         "go depth 2",
     );
-    // Only one PV line can exist; the bestmove is the forced move.
     let block = last_multipv_block(&out);
     assert_eq!(
         block.len(),
@@ -240,8 +225,7 @@ fn multipv_single_legal_move_works() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn threads2_multipv2_completes_with_both_lines_and_a_legal_bestmove() {
-    // Voting is off under MultiPV > 1 (the reference `MultiPV == 1` guard). The
-    // search still completes, emits both PV lines, and returns a legal bestmove.
+    // Voting is off under MultiPV > 1 (the reference `MultiPV == 1` guard).
     let dir = TempDir::new("threads2-multipv2");
     write_synthetic_nn_bin(dir.path());
     let e = dir.path().to_str().unwrap();
@@ -299,13 +283,10 @@ fn pv_interval_zero_prints_every_iteration() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn pv_interval_default_still_emits_a_final_pv_before_bestmove() {
-    // With the default PvInterval 300 a fast fixed-depth search may suppress the
-    // intermediate lines, but the final PV always precedes `bestmove`.
     let dir = TempDir::new("pvinterval-default");
     write_synthetic_nn_bin(dir.path());
     let e = dir.path().to_str().unwrap();
 
-    // No PvInterval override ⇒ the 300 ms default.
     let out = run_session(e, 1, &[], "position startpos", "go depth 3");
 
     let bm_pos = out
@@ -314,7 +295,6 @@ fn pv_interval_default_still_emits_a_final_pv_before_bestmove() {
         .or_else(|| out.starts_with("bestmove ").then_some(0))
         .unwrap_or_else(|| panic!("missing bestmove in:\n{out}"));
 
-    // At least one `info … pv` line, before the bestmove.
     let pv_line = out[..bm_pos]
         .lines()
         .rev()
@@ -338,8 +318,7 @@ fn consideration_mode_pv_replays_as_a_legal_sequence() {
     write_synthetic_nn_bin(dir.path());
     let e = dir.path().to_str().unwrap();
 
-    // ConsiderationMode forces the interval to 0 internally, so per-iteration PVs
-    // are emitted; the PV is collected from the transposition table.
+    // ConsiderationMode forces the interval to 0, so per-iteration PVs appear.
     let out = run_session(
         e,
         1,
@@ -355,7 +334,6 @@ fn consideration_mode_pv_replays_as_a_legal_sequence() {
         "engine must exit cleanly with one bestmove in:\n{out}"
     );
 
-    // The last info line's PV replays legally from the root.
     let pv_line = out
         .lines()
         .rfind(|l| l.starts_with("info depth") && l.contains(" pv "))

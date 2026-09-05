@@ -1,30 +1,15 @@
 //! PackedSfen — the 256-bit (32-byte) Huffman position encoding, ported
-//! bit-for-bit from the YaneuraOu reference
-//! (`source/extra/sfen_packer.cpp`).
+//! bit-for-bit from `SfenPacker::pack` (`extra/sfen_packer.cpp`).
 //!
-//! The `.ybb` opening-book index keys positions by this exact encoding, so the
-//! probe key we compute here must match, to the bit, what the reference writer
-//! produced. Any single-bit divergence makes the index binary search miss.
-//!
-//! # Bit-stream convention
+//! The `.ybb` opening-book index keys positions by this exact encoding, so any
+//! single-bit divergence from the reference writer makes the index binary
+//! search miss.
 //!
 //! Bits are packed least-significant-first within each byte, bytes ascending:
-//! stream bit 0 is bit 0 (LSB) of `data[0]`; a byte fills LSB→MSB before the
-//! cursor advances to the next byte (`sfen_packer.cpp`).
-//!
-//! # Serialization order (`SfenPacker::pack`, `sfen_packer.cpp`)
-//!
-//! 1. side to move — 1 bit (Black=0, White=1)
-//! 2. black king square, then white king square — 7 bits each (`SQ_NB`=81 if
-//!    absent)
-//! 3. every square in index order `0..81`, kings skipped — Huffman board piece
-//! 4. hand pieces: Black then White, in Apery order
-//!    (Pawn, Lance, Knight, Silver, Gold, Bishop, Rook)
-//! 5. the "piece box" — every piece not on the board or in a hand, same order
-//!
-//! For any position whose piece complement does not exceed the standard set the
-//! cursor lands on exactly 256 bits; the piece box pads the leftover pieces so
-//! the width is fixed.
+//! stream bit 0 is bit 0 (LSB) of `data[0]` (`sfen_packer.cpp`). The
+//! trailing "piece box" pass — every piece neither on the board nor in a hand —
+//! pads the stream so that any position within the standard piece complement
+//! lands on exactly 256 bits.
 
 use crate::color::Color;
 use crate::piece::{Piece, PieceKind};
@@ -43,8 +28,6 @@ pub type PackedSfen = [u8; PACKED_SFEN_LEN];
 
 /// Piece kinds in the reference's "Apery" enumeration order, used for both the
 /// hand and the piece-box passes (`to_apery_pieces[]`, `sfen_packer.cpp`).
-/// Our `PieceKind` discriminants already run in this order (`Gold` sits between
-/// `Silver` and `Bishop`), so this is just `Pawn..=Rook`.
 const HAND_ORDER: [PieceKind; 7] = [
     PieceKind::Pawn,
     PieceKind::Lance,
@@ -76,10 +59,9 @@ impl BitWriter {
     #[inline]
     fn write_one_bit(&mut self, b: bool) {
         let byte = self.cursor / 8;
-        // Guard the buffer: a legal position packs to exactly 256 bits, but an
-        // over-populated (illegal) position could otherwise index past the end.
-        // Dropping overflow bits keeps the encoder total — the output is only
-        // meaningful for legal inputs anyway.
+        // An over-populated (illegal) position runs past 256 bits; dropping the
+        // overflow keeps the encoder total, and its output is only meaningful
+        // for legal inputs anyway.
         if b && byte < PACKED_SFEN_LEN {
             self.data[byte] |= 1 << (self.cursor & 7);
         }
@@ -105,8 +87,6 @@ fn huffman_board(kind: PieceKind) -> (u32, u32) {
         PieceKind::Gold => (0x0f, 5),
         PieceKind::Bishop => (0x1f, 6),
         PieceKind::Rook => (0x3f, 6),
-        // Kings are encoded via their square, not the Huffman stream, and never
-        // sit in a hand — so this arm is never reached for a valid position.
         PieceKind::King => unreachable!("king is not Huffman-coded as a board/hand piece"),
     }
 }
@@ -181,14 +161,12 @@ fn king_square(pos: &Position, color: Color) -> u32 {
 pub fn sfen_pack(pos: &Position) -> PackedSfen {
     let mut w = BitWriter::new();
 
-    // 1. side to move
     w.write_one_bit(pos.side_to_move() == Color::White);
 
-    // 2. king squares, Black then White
     w.write_n_bit(king_square(pos, Color::Black), 7);
     w.write_n_bit(king_square(pos, Color::White), 7);
 
-    // 3. board pieces (kings already emitted above), plus piece-box bookkeeping
+    // Kings carry their square above, so the board pass skips them.
     let mut box_count = PIECE_BOX_START;
     for index in 0..Square::COUNT as u8 {
         let sq = Square::from_index(index).expect("index < COUNT");
@@ -202,7 +180,6 @@ pub fn sfen_pack(pos: &Position) -> PackedSfen {
         }
     }
 
-    // 4. hand pieces, Black then White, Apery order
     for color in [Color::Black, Color::White] {
         for kind in HAND_ORDER {
             let n = pos.hand(color).count(kind);
@@ -213,7 +190,6 @@ pub fn sfen_pack(pos: &Position) -> PackedSfen {
         }
     }
 
-    // 5. piece box — everything left over, Apery order
     for kind in HAND_ORDER {
         let leftover = box_count[kind.index()].max(0);
         for _ in 0..leftover {
@@ -244,12 +220,9 @@ mod tests {
         parse_sfen(&with_ply).expect("valid sfen")
     }
 
-    /// Ground-truth vectors transcribed verbatim from the reference's own
-    /// PackedSfen unit test (`source/position.cpp`),
-    /// where the packed bytes were produced by cshogi (`board.to_psfen`). These
-    /// exercise the board, both hands, and the piece box (missing back-rank
-    /// pieces and off-board pieces), so a passing set pins the encoding
-    /// bit-for-bit against an implementation independent of ours.
+    /// Vectors transcribed from the reference's PackedSfen unit test
+    /// (`position.cpp`), whose bytes were produced by cshogi
+    /// (`board.to_psfen`) — an implementation independent of both.
     #[test]
     fn matches_reference_cshogi_vectors() {
         let cases: [(&str, [u8; 32]); 4] = [
@@ -311,9 +284,9 @@ mod tests {
 
     #[test]
     fn fixture_sfens_pack_to_full_width() {
-        // Every parity fixture must pack without tripping the 256-bit debug
-        // assert (promoted board pieces, both-color hands, sparse boards, drops
-        // held in hand). This is the coverage the cshogi vectors don't reach.
+        // Promoted board pieces, both-color hands and sparse boards must pack
+        // without tripping the 256-bit debug assert; the cshogi vectors above
+        // do not reach them.
         for sfen in [
             "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
             "4k4/9/4r4/9/9/9/4K3B/9/9 b RG2gs2n3p 1",
@@ -323,7 +296,6 @@ mod tests {
             "9/4k4/9/9/9/9/9/4K4/9 b 9P9p 1",
         ] {
             let pos = parse_sfen(sfen).unwrap();
-            // A distinct, deterministic 32 bytes for each (no panic on pack).
             let packed = sfen_pack(&pos);
             assert_eq!(packed.len(), 32, "sfen {sfen}");
         }

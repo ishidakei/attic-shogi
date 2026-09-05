@@ -67,9 +67,7 @@ impl std::fmt::Display for OptionError {
 }
 
 /// The reference's `MaxThreads` (`engine.h`): `max(1024, 4 · cores)`, the
-/// upper bound of the `Threads` spin option (`engine.cpp`). The `4 · cores`
-/// term only exceeds the 1024 floor on machines with more than 256 hardware
-/// threads; on everything else it is exactly 1024, matching the pinned floor.
+/// upper bound of the `Threads` spin option (`engine.cpp`).
 fn max_threads() -> i64 {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -77,38 +75,22 @@ fn max_threads() -> i64 {
     std::cmp::max(1024, 4 * cores)
 }
 
-// Reference defaults pinned to upstream YaneuraOu/ as of the current submodule
-// pin (yaneuraou-engine, NNUE eval, 64-bit, non-Stockfish, non-EMSCRIPTEN).
+// The declarations below follow the reference's own (yaneuraou-engine, NNUE
+// eval, 64-bit, non-Stockfish):
 //
 //   USI_Hash : yaneuraou-search.cpp  -> default 1024, min 1, max MaxHashMB
 //   Threads  : engine.cpp        -> default 4,    min 1, max MaxThreads
-//   MultiPV  : yaneuraou-search.cpp  -> default 1,    min 1, max MAX_MOVES (=600)
+//   MultiPV  : yaneuraou-search.cpp  -> default 1,    min 1, max MAX_MOVES
 //   EvalDir  : eval/nnue/evaluate_nnue.cpp -> default "eval"
 //
-// The book option surface is ported verbatim from `BookMoveSelector::add_options`
-// (`source/book/book.cpp`) — names, defaults, and
-// ranges — with TWO deliberate divergences, both on `BookFile` and both flagged
-// inline: its default is `no_book` in BOTH profiles (the pin defaults to
-// `standard_book.db` under V1 and `user_book1.db` under V2), so this engine is
-// bookless unless a book is explicitly selected; and its choice list offers the
-// `.ybb` spellings of the pin's stems rather than the pin's `.db` / `.bin` ones
-// (see [`BOOK_FILE_CHOICES`]). `BookPvMoves`' max is `MAX_PLY` (246,
-// `config.h`/`types.h`).
-//
-// The book group is profile-dependent: `engine_option_profile.txt` selects V1
-// (the historical surface, the default) or V2 (the black/white-split filters).
-// See [`crate::option_profile`] and the per-option comments below.
-//
-// 64-bit MaxHashMB = 33554432 (engine.h); MaxThreads is dynamic in upstream
-// (`max(1024, 4*cores)`, see [`max_threads`]). The declaration list is therefore
-// built per store rather than being a compile-time constant.
+// 64-bit MaxHashMB is 33554432 (engine.h), but MaxThreads is dynamic, so the
+// list is built per store rather than being a compile-time constant.
 
 /// `MAX_PLY` (`types.h`), the upper bound of `BookPvMoves`.
 const MAX_PLY: i64 = 246;
 
 /// The `EnteringKingRule` combo choice list — `EKR_STRINGS` in the reference's
-/// exact order (`types.cpp`). Mirrors [`EnteringKingRule::STRINGS`]; kept
-/// as a standalone `&'static` slice so the option table stays a plain literal.
+/// exact order (`types.cpp`), mirroring [`EnteringKingRule::STRINGS`].
 const ENTERING_KING_RULE_CHOICES: &[&str] = &[
     "NoEnteringKing",
     "CSARule24",
@@ -118,27 +100,12 @@ const ENTERING_KING_RULE_CHOICES: &[&str] = &[
     "TryRule",
 ];
 
-/// The `BookFile` combo choice list.
+/// The `BookFile` combo choice list: the reference's stems
+/// (`book.cpp`) respelled with the `.ybb` extension, since this engine
+/// reads only `.ybb` books and a combo must not advertise values it cannot use.
 ///
-/// DELIBERATE DIVERGENCE (the second one on this option; the first is the
-/// `no_book` default at the declaration site below). The pin's list
-/// (`book.cpp`) is `no_book` plus eight `.db` names plus `book.bin`:
-///
-/// ```text
-/// no_book standard_book.db yaneura_book{1,2,3,4}.db user_book{1,2,3}.db book.bin
-/// ```
-///
-/// This engine reads only `.ybb` books (a deliberate scope divergence from the
-/// pin, see [`crate::driver`]), so every one of those nine names is a choice
-/// that cannot
-/// be selected in practice: a combo must not advertise values the engine cannot
-/// use. The list therefore keeps the pin's stems and count, respelled with the
-/// `.ybb` extension (`book.bin`'s stem becomes `book.ybb`).
-///
-/// The name-resolution machinery is unaffected: the `.db → .ybb` sibling
-/// fallback (`resolve_book_filename_with_ybb_fallback`) and the case-insensitive
-/// extension test are simply unreachable from the combo, because a combo rejects
-/// any value outside this list (`OptionError::InvalidComboChoice`).
+/// A combo rejects any value outside this list, so the `.db → .ybb` sibling
+/// fallback in [`crate::driver`] is unreachable from the option surface.
 const BOOK_FILE_CHOICES: &[&str] = &[
     "no_book",
     "standard_book.ybb",
@@ -152,10 +119,9 @@ const BOOK_FILE_CHOICES: &[&str] = &[
     "book.ybb",
 ];
 
-/// Build the declaration list for `book_options` — the reference
-/// `add_options` chain, whose book group branches on
-/// `OptionsMap::book_options_v2()` (`book.cpp`). Everything outside the
-/// book group is profile-independent.
+/// Build the declaration list for `book_options` — the reference `add_options`
+/// chain, whose book group branches on `OptionsMap::book_options_v2()`
+/// (`book.cpp`). Everything outside that group is profile-independent.
 fn declarations(book_options: BookOptionsVersion) -> Vec<OptionDecl> {
     let v2 = book_options.is_v2();
     let mut decls = vec![
@@ -181,10 +147,8 @@ fn declarations(book_options: BookOptionsVersion) -> Vec<OptionDecl> {
             name: "EvalDir",
             default: "eval",
         },
-        // NNUE fixed-point output scale (`evaluate_nnue.cpp`): registered
-        // adjacent to `EvalDir` in the reference `add_options`. Default 16, the
-        // fixture-capture condition; Suisho-family nets recommend 24+. Threaded
-        // to the eval's live `FV_SCALE` global at each `go` (see the driver).
+        // NNUE fixed-point output scale (`evaluate_nnue.cpp`).
+        // Suisho-family nets recommend 24 or more.
         OptionDecl::Spin {
             name: "FV_SCALE",
             default: 16,
@@ -193,23 +157,19 @@ fn declarations(book_options: BookOptionsVersion) -> Vec<OptionDecl> {
         },
     ];
 
-    // --- Opening-book options (book.cpp), profile-dependent. ---
+    // Opening-book options (book.cpp), profile-dependent.
     decls.extend(book_declarations(v2));
 
     decls.extend([
-        // --- Entering-king (nyugyoku) declaration rule (yaneuraou-search.cpp).
-        // Registered with `EKR_STRINGS[EKR_27_POINT]` as its default. ---
+        // Entering-king (nyugyoku) declaration rule
+        // (`yaneuraou-search.cpp`).
         OptionDecl::Combo {
             name: "EnteringKingRule",
             default: "CSARule27",
             choices: ENTERING_KING_RULE_CHOICES,
         },
-        // --- Drive / limit group. ---
-        // `DepthLimit` / `NodesLimit`, verbatim from `engine.cpp`: the
-        // per-`go` search-depth / node ceilings, `0` meaning unlimited. When a
-        // `go` carries no explicit `depth` / `nodes` token these seed
-        // `limits.depth` / `limits.nodes` (`usi.cpp`); an explicit token
-        // overwrites them for that `go`.
+        // Per-`go` search-depth / node ceilings, `0` meaning unlimited
+        // (`engine.cpp`).
         OptionDecl::Spin {
             name: "DepthLimit",
             default: 0,
@@ -222,21 +182,17 @@ fn declarations(book_options: BookOptionsVersion) -> Vec<OptionDecl> {
             min: 0,
             max: 9_223_372_036_854_775_807,
         },
-        // `MaxMovesToDraw`, verbatim from `yaneuraou-search.cpp`: the game
-        // ply past which the search adjudicates an unconditional draw. A set value
-        // of `0` is treated INTERNALLY as unlimited (remapped to 100000 in the
-        // search); the option still reports `0`.
+        // The game ply past which the search adjudicates an unconditional draw
+        // (`yaneuraou-search.cpp`). A set value of `0` means unlimited.
         OptionDecl::Spin {
             name: "MaxMovesToDraw",
             default: 0,
             min: 0,
             max: 100_000,
         },
-        // --- MultiPV / PV-output group. ---
-        // `PvInterval` / `ConsiderationMode` / `OutputFailLHPV`, verbatim from
-        // `yaneuraou-search.cpp`: the PV-output throttle interval [ms]
-        // (`0` = never suppress), the consideration mode (collect each PV from
-        // the transposition table), and whether to emit a PV on a fail-high/low.
+        // The PV-output throttle interval in ms (`0` never suppresses), the
+        // consideration mode, and whether a fail-high/low emits a PV
+        // (`yaneuraou-search.cpp`).
         OptionDecl::Spin {
             name: "PvInterval",
             default: 300,
@@ -251,11 +207,8 @@ fn declarations(book_options: BookOptionsVersion) -> Vec<OptionDecl> {
             name: "OutputFailLHPV",
             default: true,
         },
-        // --- Behavior options group. ---
-        // `DrawValueBlack` / `DrawValueWhite`, verbatim from
-        // `yaneuraou-search.cpp`: the per-color draw score in centipawns
-        // (from each color's own perspective). Consumed per-`go` from the root
-        // side to move (`yaneuraou-search.cpp`).
+        // The per-color draw score in centipawns, from each color's own
+        // perspective (`yaneuraou-search.cpp`).
         OptionDecl::Spin {
             name: "DrawValueBlack",
             default: -2,
@@ -268,28 +221,22 @@ fn declarations(book_options: BookOptionsVersion) -> Vec<OptionDecl> {
             min: -30000,
             max: 30000,
         },
-        // `ResignValue`, verbatim from `yaneuraou-search.cpp`: after a real
-        // search, if the centipawn-normalized best score `<= -ResignValue`, reply
-        // `bestmove resign`. The default 99999 is effectively unreachable.
+        // A centipawn-normalized best score at or below `-ResignValue` resigns
+        // (`yaneuraou-search.cpp`); the default is effectively unreachable.
         OptionDecl::Spin {
             name: "ResignValue",
             default: 99999,
             min: 0,
             max: 99999,
         },
-        // `GenerateAllLegalMoves`, verbatim from `yaneuraou-search.cpp`:
-        // when true the search also considers the non-promoting moves the default
-        // generator suppresses (pawn/lance/knight non-promotions etc.).
+        // When true the search also considers the non-promoting moves the default
+        // generator suppresses (`yaneuraou-search.cpp`).
         OptionDecl::Check {
             name: "GenerateAllLegalMoves",
             default: false,
         },
-        // --- Time-management group (timeman.cpp, engine.cpp). ---
-        // `NetworkDelay` / `NetworkDelay2`, verbatim from `timeman.cpp`: the
-        // average [ms] and worst-case (time-forfeit) [ms] GUI round-trip margins.
-        // The search subtracts these from the clock so it never overruns. They
-        // are kept as two separate margins, as the pin does, rather than
-        // collapsed into one `MOVE_OVERHEAD` constant.
+        // The average and worst-case GUI round-trip margins in ms, subtracted
+        // from the clock so the search never overruns (`timeman.cpp`).
         OptionDecl::Spin {
             name: "NetworkDelay",
             default: 120,
@@ -302,43 +249,37 @@ fn declarations(book_options: BookOptionsVersion) -> Vec<OptionDecl> {
             min: 0,
             max: 10000,
         },
-        // `MinimumThinkingTime` [ms] (`timeman.cpp`): the floor on a move's
-        // optimum time before the network delay is subtracted.
+        // The floor in ms on a move's optimum time, before the network delay is
+        // subtracted (`timeman.cpp`).
         OptionDecl::Spin {
             name: "MinimumThinkingTime",
             default: 2000,
             min: 1,
             max: 100000,
         },
-        // `SlowMover` (`timeman.cpp`): a percentage multiplier on the optimum
-        // time (200 ⇒ think twice as long); an opening-emphasis / early-move dial.
+        // A percentage multiplier on the optimum time (`timeman.cpp`).
         OptionDecl::Spin {
             name: "SlowMover",
             default: 100,
             min: 1,
             max: 1000,
         },
-        // `RoundUpToFullSecond` (`timeman.cpp`): use the clock right up to each
-        // whole second (byoyomi / per-second time controls) rather than leaving
-        // sub-second slack.
+        // Use the clock right up to each whole second rather than leaving
+        // sub-second slack (`timeman.cpp`).
         OptionDecl::Check {
             name: "RoundUpToFullSecond",
             default: true,
         },
-        // `NumaPolicy` (`engine.cpp`): how the engine maps the machine to
-        // logical NUMA nodes and whether it binds worker threads. `auto` /
-        // `system` respect the process affinity; `hardware` ignores it; `none`
-        // disables binding (single node); any other value is a custom
-        // `':'`-separated node string. Registered immediately BEFORE `USI_Ponder`,
-        // matching the pin's contiguous NumaPolicy → USI_Ponder → Stochastic_Ponder
-        // order.
+        // How the machine maps to logical NUMA nodes, and whether worker threads
+        // bind (`engine.cpp`). `auto` / `system` respect the process
+        // affinity, `hardware` ignores it, `none` disables binding, and any other
+        // value is a custom `':'`-separated node string.
         OptionDecl::String {
             name: "NumaPolicy",
             default: "auto",
         },
-        // `USI_Ponder` / `Stochastic_Ponder` (`engine.cpp`). At the
-        // option layer these only feed the `optimumTime` bonus
-        // (`timeman.cpp`) and are echoed in the USI option list.
+        // `engine.cpp`. At the option layer these only feed the
+        // `optimumTime` bonus (`timeman.cpp`).
         OptionDecl::Check {
             name: "USI_Ponder",
             default: false,
@@ -353,18 +294,16 @@ fn declarations(book_options: BookOptionsVersion) -> Vec<OptionDecl> {
 }
 
 /// The opening-book option group, in the reference registration order
-/// (`book.cpp`). `v2` is `OptionsMap::book_options_v2()`: it drops
-/// `NarrowBook` / `ConsiderBookMoveCount`, swaps `BookEvalDiff` and
-/// `BookDepthLimit` for their black/white-split counterparts, and shifts the
-/// large-book defaults (`BookMoves` 200, `BookOnTheFly` / `IgnoreBookPly` on).
+/// (`book.cpp`). `v2` drops `NarrowBook` / `ConsiderBookMoveCount`,
+/// swaps `BookEvalDiff` and `BookDepthLimit` for their black/white-split
+/// counterparts, and shifts the defaults towards large books.
 fn book_declarations(v2: bool) -> Vec<OptionDecl> {
     let mut decls = vec![OptionDecl::Check {
         name: "USI_OwnBook",
         default: true,
     }];
 
-    // `NarrowBook` exists only under V1 (`book.cpp`); V2 behaves as if
-    // it were permanently false.
+    // V1 only (`book.cpp`); V2 behaves as if it were always false.
     if !v2 {
         decls.push(OptionDecl::Check {
             name: "NarrowBook",
@@ -386,12 +325,8 @@ fn book_declarations(v2: bool) -> Vec<OptionDecl> {
             max: 100,
         },
         OptionDecl::Combo {
-            // DELIBERATE DIVERGENCE #1: the pin defaults to `standard_book.db`
-            // (V1) / `user_book1.db` (V2); this engine is bookless in BOTH
-            // profiles unless `BookFile` is set explicitly.
-            // DELIBERATE DIVERGENCE #2: the choice list offers the `.ybb`
-            // spellings of the pin's stems, not the pin's `.db` / `.bin` names —
-            // see [`BOOK_FILE_CHOICES`].
+            // The reference defaults to a real book file; this engine is
+            // bookless in both profiles unless `BookFile` is set explicitly.
             name: "BookFile",
             default: "no_book",
             choices: BOOK_FILE_CHOICES,
@@ -402,8 +337,8 @@ fn book_declarations(v2: bool) -> Vec<OptionDecl> {
         },
     ]);
 
-    // The eval-diff filter: one option under V1, split per root side to move
-    // under V2 (`book.cpp`).
+    // One option under V1, split per root side to move under V2
+    // (`book.cpp`).
     if v2 {
         decls.extend([
             OptionDecl::Spin {
@@ -443,8 +378,7 @@ fn book_declarations(v2: bool) -> Vec<OptionDecl> {
         },
     ]);
 
-    // The depth floor: likewise split per root side to move under V2
-    // (`book.cpp`).
+    // Likewise split per root side to move under V2 (`book.cpp`).
     if v2 {
         decls.extend([
             OptionDecl::Spin {
@@ -469,14 +403,13 @@ fn book_declarations(v2: bool) -> Vec<OptionDecl> {
         });
     }
 
-    // V2 targets huge books, so streaming reads are on by default
-    // (`book.cpp`).
+    // V2 targets huge books, so streaming reads default on (`book.cpp`).
     decls.push(OptionDecl::Check {
         name: "BookOnTheFly",
         default: v2,
     });
 
-    // `ConsiderBookMoveCount` exists only under V1 (`book.cpp`).
+    // V1 only (`book.cpp`).
     if !v2 {
         decls.push(OptionDecl::Check {
             name: "ConsiderBookMoveCount",
@@ -491,7 +424,7 @@ fn book_declarations(v2: bool) -> Vec<OptionDecl> {
             min: 1,
             max: MAX_PLY,
         },
-        // Likewise on by default under V2 (`book.cpp`).
+        // Also defaults on under V2 (`book.cpp`).
         OptionDecl::Check {
             name: "IgnoreBookPly",
             default: v2,
@@ -508,28 +441,26 @@ fn book_declarations(v2: bool) -> Vec<OptionDecl> {
 #[derive(Clone, Debug)]
 pub struct OptionStore {
     /// The declared options, in declaration order. Owned per store because the
-    /// `Threads` upper bound is computed at runtime (see [`max_threads`]).
+    /// `Threads` upper bound is computed at runtime.
     decls: Vec<OptionDecl>,
     values: BTreeMap<&'static str, OptionValue>,
-    /// Options locked by an `engine_options.txt` / `eval_options.txt` override
-    /// (`OptionsMap::build_option` sets `Option::fixed`, `usioption.cpp`).
-    /// A fixed option ignores every later [`set_value`] — the reference
-    /// `Option::operator=` cancels the assignment silently (`usioption.cpp`).
+    /// Options locked by an override file (`usioption.cpp`). A fixed option
+    /// ignores every later [`set_value`] silently, as the reference
+    /// `Option::operator=` does (`usioption.cpp`).
     fixed: BTreeSet<&'static str>,
-    /// The book-option profile this store was built with (the reference
-    /// `OptionsMap::book_options_version`, `usioption.h`). The probe reads it
-    /// back to pick the side-to-move-dependent option names.
+    /// The book-option profile this store was built with (`usioption.h`).
+    /// The probe reads it back to pick the side-to-move-dependent option names.
     book_options: BookOptionsVersion,
 }
 
 impl OptionStore {
-    /// A store with the default (V1) book-option surface — the reference's
-    /// behaviour when no `engine_option_profile.txt` is present.
+    /// A store with the default V1 book-option surface, as the reference uses
+    /// when no `engine_option_profile.txt` is present.
     pub fn new() -> Self {
         Self::with_book_options(BookOptionsVersion::default())
     }
 
-    /// A store whose book-option group follows `book_options`, as selected by
+    /// A store whose book-option group follows `book_options`, selected by
     /// `engine_option_profile.txt` before the `usi` reply.
     pub fn with_book_options(book_options: BookOptionsVersion) -> Self {
         let decls = declarations(book_options);
@@ -555,8 +486,8 @@ impl OptionStore {
         self.decls.iter()
     }
 
-    /// Whether the book options were registered under the V2 profile — the
-    /// reference `OptionsMap::book_options_v2()` (`usioption.h`).
+    /// Whether the book options were registered under the V2 profile
+    /// (`usioption.h`).
     pub fn book_options_v2(&self) -> bool {
         self.book_options.is_v2()
     }
@@ -568,13 +499,11 @@ impl OptionStore {
             .and_then(|d| self.values.get(d.name()))
     }
 
-    /// The current `Threads` value as a pool size (always ≥ 1 by the option's
-    /// declared minimum). Used by the driver to size its worker pool.
+    /// The current `Threads` value as a pool size, at least 1.
     pub fn threads(&self) -> usize {
         match self.get("Threads") {
             Some(OptionValue::Spin(n)) => (*n).max(1) as usize,
-            // Threads is a declared spin, so this is unreachable; fall back to a
-            // single worker for totality.
+            // Unreachable: `Threads` is a declared spin.
             _ => 1,
         }
     }
@@ -585,9 +514,8 @@ impl OptionStore {
             .iter()
             .find(|d| d.name() == name)
             .ok_or(OptionError::UnknownOption)?;
-        // A fixed (overridden) option silently ignores the assignment, mirroring
-        // the reference `Option::operator=` cancel (`usioption.cpp`): no
-        // mutation, no error, no output — the value stays what the override set.
+        // A fixed option silently ignores the assignment — no mutation, no
+        // error, no output (`usioption.cpp`).
         if self.fixed.contains(decl.name()) {
             return Ok(());
         }
@@ -624,8 +552,7 @@ impl OptionStore {
         Ok(())
     }
 
-    /// A declared spin's current value (`0` if the name is not a spin — never
-    /// happens for a declared name; the fallback keeps callers total).
+    /// A declared spin's current value, `0` if the name is not a spin.
     pub fn spin(&self, name: &str) -> i64 {
         match self.get(name) {
             Some(OptionValue::Spin(v)) => *v,
@@ -642,8 +569,8 @@ impl OptionStore {
     }
 
     /// Resolve `name` to its canonical declared spelling, comparing
-    /// case-insensitively like the reference `OptionsMap` (keyed by
-    /// `CaseInsensitiveLess`, `usioption.h`). `None` if no such option.
+    /// case-insensitively as the reference `OptionsMap` does
+    /// (`usioption.h`).
     pub fn canonical_name(&self, name: &str) -> Option<&'static str> {
         self.decls
             .iter()
@@ -651,8 +578,8 @@ impl OptionStore {
             .map(|d| d.name())
     }
 
-    /// Lock an option against further [`set_value`] mutation — the reference
-    /// `Option::fixed` an override sets (`usioption.cpp`). Idempotent.
+    /// Lock an option against further [`set_value`] mutation, the reference's
+    /// `Option::fixed` (`usioption.cpp`). Idempotent.
     pub fn mark_fixed(&mut self, name: &'static str) {
         self.fixed.insert(name);
     }
@@ -704,8 +631,6 @@ mod tests {
             Some(&OptionValue::String("eval".to_string()))
         );
         assert_eq!(s.get("FV_SCALE"), Some(&OptionValue::Spin(16)));
-        // Book option surface: BookFile is a combo defaulting to `no_book`
-        // (deliberate divergence from the pin's `standard_book.db`).
         assert_eq!(
             s.get("BookFile"),
             Some(&OptionValue::Combo("no_book".to_string()))
@@ -716,20 +641,16 @@ mod tests {
         assert_eq!(s.get("BookMoves"), Some(&OptionValue::Spin(16)));
         assert_eq!(s.get("BookEvalWhiteLimit"), Some(&OptionValue::Spin(-140)));
         assert_eq!(s.get("BookPvMoves"), Some(&OptionValue::Spin(8)));
-        // Entering-king rule: combo defaulting to the CSA 27-point rule.
         assert_eq!(
             s.get("EnteringKingRule"),
             Some(&OptionValue::Combo("CSARule27".to_string()))
         );
-        // Drive / limit group: all default to 0 (unlimited).
         assert_eq!(s.get("DepthLimit"), Some(&OptionValue::Spin(0)));
         assert_eq!(s.get("NodesLimit"), Some(&OptionValue::Spin(0)));
         assert_eq!(s.get("MaxMovesToDraw"), Some(&OptionValue::Spin(0)));
-        // MultiPV / PV-output group.
         assert_eq!(s.get("PvInterval"), Some(&OptionValue::Spin(300)));
         assert_eq!(s.get("ConsiderationMode"), Some(&OptionValue::Check(false)));
         assert_eq!(s.get("OutputFailLHPV"), Some(&OptionValue::Check(true)));
-        // Behavior options group.
         assert_eq!(s.get("DrawValueBlack"), Some(&OptionValue::Spin(-2)));
         assert_eq!(s.get("DrawValueWhite"), Some(&OptionValue::Spin(-2)));
         assert_eq!(s.get("ResignValue"), Some(&OptionValue::Spin(99999)));
@@ -744,7 +665,6 @@ mod tests {
         let s = OptionStore::with_book_options(BookOptionsVersion::V2);
         assert!(s.book_options_v2());
 
-        // The split filters replace their single-option V1 counterparts.
         assert_eq!(s.get("BookEvalBlackDiff"), Some(&OptionValue::Spin(0)));
         assert_eq!(s.get("BookEvalWhiteDiff"), Some(&OptionValue::Spin(0)));
         assert_eq!(s.get("BookDepthBlackLimit"), Some(&OptionValue::Spin(0)));
@@ -758,12 +678,11 @@ mod tests {
             assert_eq!(s.get(gone), None, "{gone} must be absent under V2");
         }
 
-        // Large-book defaults.
         assert_eq!(s.get("BookMoves"), Some(&OptionValue::Spin(200)));
         assert_eq!(s.get("BookOnTheFly"), Some(&OptionValue::Check(true)));
         assert_eq!(s.get("IgnoreBookPly"), Some(&OptionValue::Check(true)));
 
-        // Unchanged in both profiles — including the `no_book` divergence.
+        // Unchanged in both profiles.
         assert_eq!(
             s.get("BookFile"),
             Some(&OptionValue::Combo("no_book".to_string()))
@@ -779,7 +698,6 @@ mod tests {
         assert_eq!(s.get("BookPvMoves"), Some(&OptionValue::Spin(8)));
         assert_eq!(s.get("FlippedBook"), Some(&OptionValue::Check(true)));
 
-        // Everything outside the book group is profile-independent.
         assert_eq!(s.get("USI_Hash"), Some(&OptionValue::Spin(1024)));
         assert_eq!(s.get("Threads"), Some(&OptionValue::Spin(4)));
         assert_eq!(s.get("ResignValue"), Some(&OptionValue::Spin(99999)));
@@ -848,8 +766,8 @@ mod tests {
             s.set_value("BookFile", "not_listed.ybb"),
             Err(OptionError::InvalidComboChoice(_))
         ));
-        // The pin's `.db` spellings are not offered, so they are rejected like
-        // any other unlisted value — and the store keeps its prior value.
+        // The reference's `.db` spellings are not offered, so they are rejected
+        // like any other unlisted value and the prior value stands.
         assert!(matches!(
             s.set_value("BookFile", "user_book1.db"),
             Err(OptionError::InvalidComboChoice(_))
@@ -859,10 +777,8 @@ mod tests {
 
     #[test]
     fn every_book_file_choice_carries_a_loadable_spelling() {
-        // The divergence's whole point: apart from the `no_book` sentinel, every
-        // advertised choice names a `.ybb` file, which is the only book format
-        // this engine reads. (That each one actually loads end-to-end is proved
-        // by tests/book_file_choices.rs.)
+        // Apart from the `no_book` sentinel, every advertised choice must name a
+        // `.ybb` file, the only book format this engine reads.
         let mut s = OptionStore::new();
         for choice in BOOK_FILE_CHOICES {
             s.set_value("BookFile", choice)
@@ -922,8 +838,6 @@ mod tests {
         assert_eq!(s.spin("FV_SCALE"), 24);
         s.mark_fixed("FV_SCALE");
         assert!(s.is_fixed("FV_SCALE"));
-        // A subsequent set is silently ignored — no error, value unchanged
-        // (mirrors the reference `Option::operator=` fixed cancel).
         s.set_value("FV_SCALE", "16").unwrap();
         assert_eq!(s.spin("FV_SCALE"), 24);
     }

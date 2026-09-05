@@ -30,7 +30,7 @@ pub struct GoLimits {
     /// (unlike UCI) the token after `mate` is a TIME BUDGET in milliseconds, not
     /// a move count; `infinite` or a bare `mate` means unlimited. `None` means
     /// this is not a mate search; `Some(ms)` carries the budget, with the
-    /// sentinel [`MATE_UNLIMITED_MS`] standing for unlimited (the pin's
+    /// sentinel [`MATE_UNLIMITED_MS`] standing for unlimited (the reference's
     /// `INT32_MAX`).
     pub mate: Option<u64>,
     /// `go rtime <ms>` — a randomised minimum-thinking-time budget used for
@@ -151,7 +151,7 @@ fn parse_go<'a>(line: &str, parts: impl Iterator<Item = &'a str>) -> Command {
             // `go mate [ms|infinite]` (`usi.cpp`): the token after `mate`
             // is a millisecond time budget; `infinite`, or nothing following,
             // means unlimited. Anything else that is not a valid `u64` is an
-            // error (the pin's `stoi` would throw).
+            // error (the reference's `stoi` would throw).
             "mate" => match tokens.get(i + 1) {
                 None => {
                     limits.mate = Some(MATE_UNLIMITED_MS);

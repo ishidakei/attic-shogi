@@ -4,9 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
-# `src/main.rs` is auto-discovered and takes the package name, so the binary is
-# `target/<profile>/attic` without an explicit `[[bin]]` override. The `[[test]]`
-# below is NOT auto-discovered — it lives one directory down.
+# The `[[test]]` below is not auto-discovered: it lives one directory down.
 [[test]]
 name = "parity_perft"
 path = "tests/parity/perft.rs"
@@ -15,15 +13,14 @@ path = "tests/parity/perft.rs"
 attic-protocol = { path = "../attic-protocol", default-features = false }
 attic-state = { path = "../attic-state", default-features = false }
 
-# Global allocator for the shipped binary only (`src/main.rs`); every library
-# crate stays allocator-agnostic. Default features — `secure` is deliberately
-# left off, it buys hardening this engine has no threat model for and costs
-# throughput. This is a divergence from the reference build, which uses the
-# system allocator; it is a performance choice with no semantic effect.
+# Global allocator for the shipped binary only; every library crate stays
+# allocator-agnostic. `secure` is left off: it costs throughput for hardening
+# this engine has no threat model for. The reference build uses the system
+# allocator, so this is a performance divergence with no semantic effect.
 mimalloc = "0.1"
 
-# Pass-through only; see `attic-state/Cargo.toml`. This is the crate that builds
-# the shipped binary, so its default is what the tournament build gets.
+# Pass-through only; see `attic-state/Cargo.toml`. This crate builds the shipped
+# binary, so its default is what a release gets.
 [features]
 default = ["quick-draw"]
 quick-draw = ["attic-protocol/quick-draw", "attic-state/quick-draw"]

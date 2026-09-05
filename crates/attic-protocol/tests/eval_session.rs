@@ -1,20 +1,11 @@
-//! Driver-level session tests against a **synthetic** SFNN-1536 network.
+//! Driver-level session tests against a synthetic SFNN-1536 network built in a
+//! temp dir, so they run everywhere rather than only where the real network is
+//! staged.
 //!
-//! These are hermetic: they build a byte-for-byte valid `nn.bin` (the same
-//! format `attic-eval`'s loader accepts) in a temp dir, point `EvalDir` at it
-//! via `setoption`, and drive a full `usi → setoption → isready → position →
-//! go` session in-process — so they run everywhere, not just where the real
-//! network is staged.
-//!
-//! The synthetic network is all zeros, so every position evaluates to the same
-//! constant. The chosen move is therefore fully deterministic, which lets the
-//! tests assert the driver's `bestmove` equals a direct
-//! [`QSearch::run_root`] call for the same network, position, and transposition
-//! table sizing — proving the driver drives the ported depth-1 root search.
-//!
-//! The byte layout is adapted from `attic-eval`'s loader test helpers; the
-//! format constants below mirror `crates/attic-eval/src/loader.rs` (which owns
-//! the ground truth) and `crates/attic-eval/src/types.rs` (the dimensions).
+//! That network is all zeros, so every position evaluates to the same constant
+//! and the chosen move is fully deterministic — which lets these assert the
+//! driver's `bestmove` equals a direct [`QSearch::run_root`] call for the same
+//! network, position, and table sizing.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -24,13 +15,11 @@ use attic_search::{QSearch, RootKind, RootOutcome, Search};
 use attic_state::{Move, Position, format_usi_move, parse_sfen, parse_usi_move};
 use attic_storage::TranspositionTable;
 
-/// Engine default `USI_Hash` in MiB — the size the driver allocates on the
-/// first successful `isready`, reproduced here so the direct `run_root` call
-/// searches under identical TT conditions.
+/// Engine default `USI_Hash` in MiB, reproduced here so the direct `run_root`
+/// call searches under the same table conditions the driver creates.
 const HASH_MB: usize = 1024;
 
-/// The USI-string form of a `run_root` outcome's bestmove (the synthetic
-/// positions never hit the declaration-win exit, but the mapping is exhaustive).
+/// The USI-string form of a `run_root` outcome's bestmove.
 fn bestmove_usi(outcome: &RootOutcome) -> String {
     match outcome.kind {
         RootKind::Resign => "resign".to_string(),
@@ -39,7 +28,7 @@ fn bestmove_usi(outcome: &RootOutcome) -> String {
     }
 }
 
-// --- SFNN-1536 file-format constants (mirror attic-eval/src/loader.rs).
+// SFNN-1536 file-format constants, mirroring `attic-eval`'s loader.
 const NNUE_VERSION: u32 = 0x7AF3_2F16;
 const NNUE_HASH_VALUE: u32 = 0x3C20_3B32;
 const FT_HASH: u32 = 0x5F13_4AB8;
@@ -47,7 +36,7 @@ const NET_HASH: u32 = 0x6333_718A;
 const LEB128_MAGIC: &[u8; 17] = b"COMPRESSED_LEB128";
 const ARCH_STRING: &str = "ModelType=SFNNWithoutPsqt;Features=HalfKA_hm(Friend)[73305->1536x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-15](ClippedReLU[15](AffineTransform[15<-3072](InputSlice[3072(0:3072)]))))){LayerStack=9}";
 
-// --- Dimensions (mirror attic-eval/src/types.rs).
+// Dimensions.
 const HIDDEN_SIZE: usize = 1_536;
 const NUM_FEATURES: usize = 73_305;
 const LAYER_STACKS: usize = 9;
@@ -59,7 +48,7 @@ const FC_2_OUTPUT: usize = 1;
 const FC_2_PADDED_INPUT: usize = 32;
 
 /// A temp directory removed on drop, so a ~107 MiB synthetic network does not
-/// litter `$TMPDIR` after the test binary exits.
+/// outlive the test binary.
 struct TempDir {
     path: PathBuf,
 }
@@ -96,8 +85,8 @@ fn build_zero_network_bytes() -> Vec<u8> {
     out.extend_from_slice(&(ARCH_STRING.len() as u32).to_le_bytes());
     out.extend_from_slice(ARCH_STRING.as_bytes());
     out.extend_from_slice(&FT_HASH.to_le_bytes());
-    // Feature-transformer biases, then weights. All zeros: each i16 is a single
-    // 0x00 LEB128 byte, so bytes_left == count.
+    // Biases then weights, all zero: each i16 is a single 0x00 LEB128 byte, so
+    // `bytes_left == count`.
     append_zero_leb128_block(&mut out, HIDDEN_SIZE);
     append_zero_leb128_block(&mut out, HIDDEN_SIZE * NUM_FEATURES);
     for _ in 0..LAYER_STACKS {
@@ -156,9 +145,8 @@ fn synthetic_network_session_matches_direct_search_choice() {
     let path = write_synthetic_nn_bin(dir.path());
     let evaldir = dir.path().to_str().expect("utf-8 temp path");
 
-    // Independent, direct depth-1 root-search choice for the same network +
-    // startpos, under the same TT sizing the driver uses. Scoped so the network
-    // and 1024 MiB table free before the driver session allocates its own.
+    // Scoped so the network and its 1024 MiB table free before the driver
+    // session allocates its own.
     let startpos = parse_sfen(attic_state::STARTPOS_SFEN).expect("startpos SFEN");
     let expected_usi = {
         let search = Search::from_network_file(&path).expect("synthetic network loads");
@@ -168,10 +156,9 @@ fn synthetic_network_session_matches_direct_search_choice() {
         bestmove_usi(&outcome)
     };
 
-    // Full session, with a repeat `isready` to exercise idempotent reload.
-    // `Threads value 1` pins the single-worker search so the driver's choice
-    // matches the direct `run_root` above (the default 4 workers share and
-    // pollute the TT).
+    // The repeat `isready` exercises the idempotent reload. `Threads value 1`
+    // makes the driver's choice match the direct `run_root` above: the default
+    // four workers share and pollute the table.
     let session = format!(
         "usi\n\
          setoption name Threads value 1\n\
@@ -184,7 +171,6 @@ fn synthetic_network_session_matches_direct_search_choice() {
     );
     let out = drive(&session);
 
-    // Both `isready`s acknowledge; no load failure.
     assert_eq!(
         out.matches("readyok\n").count(),
         2,
@@ -195,13 +181,11 @@ fn synthetic_network_session_matches_direct_search_choice() {
         "unexpected load failure in:\n{out}"
     );
 
-    // The search emitted its depth-1 progress report.
     assert!(
         out.lines().any(|l| l.starts_with("info depth 1 ")),
         "missing search info report in:\n{out}"
     );
 
-    // Exactly one bestmove, equal to the direct search choice, and legal.
     let bestmoves = bestmove_lines(&out);
     assert_eq!(bestmoves.len(), 1, "expected one bestmove in:\n{out}");
     assert_eq!(
@@ -219,12 +203,8 @@ fn synthetic_network_session_matches_direct_search_choice() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn isready_keep_alive_emits_bare_newline_during_heavy_load() {
-    // The isready keep-alive (reference `Engine::run_heavy_job`): a helper thread
-    // emits a bare newline every `KEEP_ALIVE_TICKS_PER_NEWLINE` polls so a GUI
-    // does not time out while the heavy initialisation runs. With a very short
-    // injected poll the real heavy work here — the ~112 M-weight `nn.bin`
-    // load/parse and the 1024 MiB TT sizing/zeroing — spans many ticks and
-    // reliably emits at least one bare newline before `readyok`.
+    // With a very short injected poll the real heavy work here — the `nn.bin`
+    // load and the 1024 MiB table zeroing — spans many keep-alive ticks.
     let dir = TempDir::new("keepalive");
     write_synthetic_nn_bin(dir.path());
     let evaldir = dir.path().to_str().expect("utf-8 temp path");
@@ -241,16 +221,14 @@ fn isready_keep_alive_emits_bare_newline_during_heavy_load() {
     driver.run().expect("driver run");
     let out = String::from_utf8(output.lock().expect("output lock").clone()).expect("utf-8");
 
-    // The load succeeded: exactly one readyok, no failure notice.
     assert!(
         !out.contains("eval load failed"),
         "unexpected load failure in:\n{out:?}"
     );
     let readyok_pos = out.find("readyok\n").expect("readyok emitted");
 
-    // At least one bare keep-alive newline (an empty transcript line) appeared
-    // before readyok. No line the driver emits is otherwise empty, so any empty
-    // line is a keep-alive newline.
+    // No line the driver emits is otherwise empty, so any empty line is a
+    // keep-alive newline.
     let before = &out[..readyok_pos];
     let bare_before = before.split('\n').filter(|s| s.is_empty()).count();
     assert!(
@@ -258,9 +236,8 @@ fn isready_keep_alive_emits_bare_newline_during_heavy_load() {
         "expected a bare keep-alive newline before readyok in:\n{out:?}"
     );
 
-    // No interleaving: the keep-alive newline goes through the shared writer as a
-    // whole line, so `usiok` and `readyok` survive intact and every non-empty
-    // line is a complete USI line (never split by a stray newline).
+    // The keep-alive newline goes through the shared writer as a whole line, so
+    // no USI line is split by a stray newline.
     assert!(out.contains("usiok\n"), "usiok must be intact in:\n{out:?}");
     assert!(
         out.lines().any(|l| l == "readyok"),
@@ -275,17 +252,16 @@ fn synthetic_network_reuse_reset_and_mate_resign() {
     write_synthetic_nn_bin(dir.path());
     let evaldir = dir.path().to_str().expect("utf-8 temp path");
 
-    // A single load (one `isready`) serves all three `go`s below: this pins that
-    // the loaded network is reused across positions without reloading.
+    // One `isready` serves all three `go`s, pinning that the loaded network is
+    // reused across positions without reloading.
     let mut post_7g7f = parse_sfen(attic_state::STARTPOS_SFEN).expect("startpos");
     let m = parse_usi_move("7g7f", &post_7g7f).expect("legal 7g7f");
     post_7g7f.do_move(m);
     let startpos = parse_sfen(attic_state::STARTPOS_SFEN).expect("startpos");
 
-    // Independent depth-1 root-search choices, reproducing the session's TT
-    // lifecycle: one 1024 MiB table for `go` #1 (post-7g7f), then `usinewgame`
-    // (tt.clear) before `go` #2 (startpos). Scoped so it frees before the driver
-    // allocates its own table.
+    // Reproduces the session's table lifecycle: one 1024 MiB table for the first
+    // `go`, then the `usinewgame` clear before the second. Scoped so it frees
+    // before the driver allocates its own.
     let (expected_after_7g7f, expected_startpos) = {
         let search =
             Search::from_network_file(&dir.path().join("nn.bin")).expect("synthetic network loads");
@@ -297,15 +273,11 @@ fn synthetic_network_reuse_reset_and_mate_resign() {
         (e1, e2)
     };
 
-    // A mate for the side to move (White): no legal move → search resigns.
+    // A mate for White: no legal move, so the search resigns.
     let mate = "4k4/4G4/3S5/9/9/9/9/9/4K4 w - 1";
 
-    // `go depth 1` pins each search to the depth-1 root path so the choice is the
-    // deterministic `run_root(pos, 1)` above. (A bare `go` is now an infinite,
-    // clock-driven search — so it is not used where a fixed,
-    // reproducible depth-1 result is asserted.)
-    // `Threads value 1` pins the single-worker search so each driver choice
-    // matches the direct `run_root` above.
+    // `go depth 1` and `Threads value 1` make each search the deterministic
+    // `run_root(pos, 1)` above; a bare `go` would be clock-driven.
     let session = format!(
         "usi\n\
          setoption name Threads value 1\n\
@@ -329,23 +301,20 @@ fn synthetic_network_reuse_reset_and_mate_resign() {
 
     let bestmoves = bestmove_lines(&out);
     assert_eq!(bestmoves.len(), 3, "expected three bestmoves in:\n{out}");
-    // 1) post-7g7f position (White to move).
     assert_eq!(
         bestmoves[0], expected_after_7g7f,
         "first go must reflect the post-7g7f position"
     );
-    // 2) after usinewgame the position is reset to startpos (Black to move).
+    // `usinewgame` resets the position to startpos.
     assert_eq!(
         bestmoves[1], expected_startpos,
         "usinewgame must reset the position to startpos"
     );
-    // 3) mate → the search finds no legal move → resign.
     assert_eq!(bestmoves[2], "resign", "mate position must resign");
 }
 
-/// A CSA-27-point-declarable position for the side to move (Black king walled
-/// into the enemy field with 12 own pieces there — the same shape as
-/// attic-search's `NYUGYOKU` fixture), reached via `position sfen`.
+/// A CSA-27-point-declarable position for the side to move: the Black king
+/// walled into the enemy field with 12 own pieces there.
 const DECLARABLE_SFEN: &str = "+R+R+B+B5/3GKG3/2SGGGS2/9/9/9/9/9/4k4 b R 1";
 
 /// A TryRule-declarable position: Black king on 5b, the try square 5a empty and
@@ -356,9 +325,8 @@ const TRYABLE_SFEN: &str = "9/4K4/9/9/9/9/9/9/8k b - 1";
 #[test]
 #[cfg_attr(miri, ignore)]
 fn entering_king_default_declares_win_without_searching() {
-    // With default options a 27-point-declarable position
-    // yields `bestmove win` and emits no search `info` line (the pre-search
-    // declaration shortcut fires before any worker runs).
+    // The declaration shortcut fires before any worker runs, so no search `info`
+    // line is emitted at all.
     let dir = TempDir::new("ekr-default");
     write_synthetic_nn_bin(dir.path());
     let evaldir = dir.path().to_str().expect("utf-8 temp path");
@@ -385,8 +353,6 @@ fn entering_king_default_declares_win_without_searching() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn entering_king_none_runs_a_real_search() {
-    // `NoEnteringKing` disables the declaration, so the same
-    // position runs an ordinary search and reports a normal move.
     let dir = TempDir::new("ekr-none");
     write_synthetic_nn_bin(dir.path());
     let evaldir = dir.path().to_str().expect("utf-8 temp path");
@@ -413,7 +379,6 @@ fn entering_king_none_runs_a_real_search() {
         out.lines().any(|l| l.starts_with("info depth 1 ")),
         "a real search must run under NoEnteringKing in:\n{out}"
     );
-    // The reported move is a real, legal move of the declarable position.
     let p = parse_sfen(DECLARABLE_SFEN).expect("declarable SFEN");
     let best = bestmoves[0]
         .split_whitespace()
@@ -429,8 +394,8 @@ fn entering_king_none_runs_a_real_search() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn entering_king_try_rule_declares_the_king_move() {
-    // Under `TryRule` a try-able position yields the actual
-    // king move onto the try square (`5b5a`) with no search.
+    // Under `TryRule` the reply is the actual king move onto the try square,
+    // not the bare `win` token.
     let dir = TempDir::new("ekr-try");
     write_synthetic_nn_bin(dir.path());
     let evaldir = dir.path().to_str().expect("utf-8 temp path");
@@ -457,7 +422,6 @@ fn entering_king_try_rule_declares_the_king_move() {
         !out.lines().any(|l| l.starts_with("info depth ")),
         "the try declaration must not run a search in:\n{out}"
     );
-    // The emitted move is the legal king step it claims to be.
     let p = parse_sfen(TRYABLE_SFEN).expect("try-able SFEN");
     let parsed = parse_usi_move(best, &p).expect("well-formed USI move");
     assert!(
@@ -469,11 +433,8 @@ fn entering_king_try_rule_declares_the_king_move() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn threads4_stop_then_quit_joins_all_workers_and_exits_cleanly() {
-    // A `stop` then `quit` while a `Threads=4` search is
-    // running must join every worker (the main coordinator plus its three
-    // helpers) and let the driver exit cleanly, emitting exactly one bestmove.
-    // `drive` returning at all proves the join did not hang; the bestmove count
-    // proves the parallel search resolves to a single reply.
+    // `drive` returning at all proves the join of every worker did not hang; the
+    // bestmove count proves the parallel search resolves to a single reply.
     let dir = TempDir::new("threads4");
     write_synthetic_nn_bin(dir.path());
     let evaldir = dir.path().to_str().expect("utf-8 temp path");
@@ -496,7 +457,6 @@ fn threads4_stop_then_quit_joins_all_workers_and_exits_cleanly() {
         1,
         "a Threads=4 go/stop/quit must emit exactly one bestmove in:\n{out}"
     );
-    // A real, legal startpos move (never resign here — startpos has legal moves).
     let startpos = parse_sfen(attic_state::STARTPOS_SFEN).expect("startpos");
     let best = bestmoves[0]
         .split_whitespace()

@@ -1,12 +1,10 @@
-//! Parity test for perft: assert our `perft` is byte-equal to the reference's
-//! captured node counts at every depth in each fixture under
-//! `tests/fixtures/perft/`.
+//! Perft parity against the reference's captured node counts, for every depth
+//! in each fixture under `tests/fixtures/perft/`.
 //!
-//! Default `cargo test` runs every (fixture, depth) pair where
-//! `depth <= DEFAULT_DEPTH_LIMIT`. Depths above the limit (currently startpos
-//! 4 and 5) are gated behind `#[ignore]` because debug-profile perft over
-//! them is too slow to belong on the default gate; CI invokes them via
-//! `cargo test --release -- --include-ignored`.
+//! Depths above `DEFAULT_DEPTH_LIMIT` are `#[ignore]`-gated: debug-profile perft
+//! over them is too slow for the default `cargo test` run, so they run in a
+//! release build
+//! with `--include-ignored`.
 
 use std::path::PathBuf;
 
@@ -17,10 +15,8 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 struct Fixture {
     sfen: String,
-    /// Optional USI moves to apply after the SFEN before running perft. Used
-    /// by fixtures whose perft tree depends on position history (e.g.
-    /// `sennichite.json`, where the prefix sets up an N-fold repetition
-    /// state). Defaults to empty, so a fixture without a prefix parses.
+    /// Optional USI moves to apply after the SFEN, for fixtures whose perft tree
+    /// depends on position history — a repetition state, say.
     #[serde(default)]
     moves: Vec<String>,
     results: Vec<DepthResult>,

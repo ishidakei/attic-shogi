@@ -1,5 +1,5 @@
-//! Smoke test: spawn the built `attic` binary, drive a USI handshake, assert
-//! on stdout. Confirms the no-arg entry point routes to `UsiDriver` correctly.
+//! Smoke test: spawn the built `attic` binary, drive a USI handshake, and
+//! assert on stdout.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -61,10 +61,9 @@ fn handshake_round_trip_via_spawned_binary() {
         "missing USI_OwnBook option in:\n{stdout}"
     );
     assert!(stdout.contains("usiok\n"), "missing usiok in:\n{stdout}");
-    // No EvalDir was set, so `isready` loads the default `eval/nn.bin`, which is
-    // absent in the spawned binary's CWD: the contract is a load-failure notice
-    // and no `readyok`. The positive isready path is covered by
-    // engine/tests/real_network_selfplay against the real network.
+    // No `EvalDir` was set, so `isready` looks for the default `eval/nn.bin`,
+    // absent in the spawned binary's CWD: a load-failure notice and no
+    // `readyok`.
     assert!(
         stdout.contains("info string eval load failed:"),
         "missing eval-load-failure notice in:\n{stdout}"
