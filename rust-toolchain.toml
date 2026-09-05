@@ -2,5 +2,5 @@
 # rustfmt + clippy along, so `cargo fmt` and `cargo clippy` run on a fresh
 # checkout.
 [toolchain]
-channel = "1.98.0"
+channel = "1.98.1"
 components = ["rustfmt", "clippy"]
