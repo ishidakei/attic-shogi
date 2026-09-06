@@ -1,8 +1,8 @@
 //! Opening-book probe and move-selection policy, ported from
-//! `BookMoveSelector::probe_impl` / `find_in_books` / `MemoryBook::find`
-//! (`book/book.cpp`). It covers the BookOptions V2 profile and Multiple Book,
-//! where an ordered list is consulted in priority order and the first hit wins
-//! (`book.cpp`); the `.ybb8` rework is out of scope.
+//! `BookMoveSelector::probe_impl` / `find_in_books` / `MemoryBook::find`. It
+//! covers the BookOptions V2 profile and Multiple Book, where an ordered list
+//! is consulted in priority order and the first hit wins; the `.ybb8` rework is
+//! out of scope.
 //!
 //! The raw reader speaks only packed keys and move fragments, so everything
 //! needing [`Position`] or movegen knowledge lives here, above Storage. The
@@ -46,7 +46,7 @@ impl Prng {
     /// A fresh process-entropy seed, mixing the wall clock, an ASLR-varied stack
     /// address, and a process-monotonic counter so that two seeds drawn in the
     /// same nanosecond still differ. The reference's default `PRNG()` mixes the
-    /// same three kinds of source (`misc.h`).
+    /// same three kinds of source.
     pub fn random_seed() -> u64 {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -94,7 +94,7 @@ impl Prng {
 ///
 /// `book_options_v2` selects between the V1 fields and the V2 `*_black_*` /
 /// `*_white_*` pairs, as the reference resolves the option *name* at probe time
-/// from the root side to move (`book.cpp`).
+/// from the root side to move.
 #[derive(Clone, Debug)]
 pub struct BookConfig {
     /// Whether the options were registered under `BOOK_OPTIONS=V2`.
@@ -131,19 +131,19 @@ pub struct BookConfig {
 }
 
 impl BookConfig {
-    /// `NarrowBook`, forced false under V2 (`book.cpp`).
+    /// `NarrowBook`, forced false under V2.
     fn narrow_book_active(&self) -> bool {
         !self.book_options_v2 && self.narrow_book
     }
 
-    /// `ConsiderBookMoveCount`, forced false under V2 (`book.cpp`).
+    /// `ConsiderBookMoveCount`, forced false under V2.
     fn consider_move_count_active(&self) -> bool {
         !self.book_options_v2 && self.consider_move_count
     }
 
     /// The depth-floor option consulted at the root, as a `(name, value)` pair.
-    /// Under V2 the *name* is side-to-move dependent (`book.cpp`), and
-    /// it is what the info string reports.
+    /// Under V2 the *name* is side-to-move dependent, and it is what the info
+    /// string reports.
     fn depth_limit_for(&self, stm: Color) -> (&'static str, i64) {
         match (self.book_options_v2, stm) {
             (false, _) => ("BookDepthLimit", self.depth_limit),
@@ -152,8 +152,7 @@ impl BookConfig {
         }
     }
 
-    /// The eval-gap option actually consulted at the root, likewise
-    /// (`book.cpp`).
+    /// The eval-gap option actually consulted at the root, likewise.
     fn eval_diff_for(&self, stm: Color) -> (&'static str, i64) {
         match (self.book_options_v2, stm) {
             (false, _) => ("BookEvalDiff", self.eval_diff),
@@ -163,7 +162,7 @@ impl BookConfig {
     }
 
     /// The per-side eval floor and its option name, already side-to-move
-    /// dependent under V1 (`book.cpp`).
+    /// dependent under V1.
     fn eval_limit_for(&self, stm: Color) -> (&'static str, i64) {
         if stm == Color::Black {
             ("BookEvalBlackLimit", self.eval_black_limit)
@@ -225,7 +224,7 @@ struct Candidate {
 ///
 /// `books` is the Multiple Book priority list, and every lookup on this path
 /// goes through [`find_in_books`], which returns the **first** non-empty hit and
-/// never merges across books (`book.cpp`).
+/// never merges across books.
 ///
 /// The `USI_OwnBook` gate is the caller's responsibility. Returns a miss for
 /// every early-out the reference takes.
@@ -436,8 +435,8 @@ fn build_pv(
     pv
 }
 
-/// `BookMoveSelector::find_in_books` (`book.cpp`): consult the books in
-/// priority order and return the FIRST non-empty hit.
+/// `BookMoveSelector::find_in_books`: consult the books in priority order and
+/// return the FIRST non-empty hit.
 ///
 /// A hit in an upper book never falls through to a lower one and results are
 /// never merged — so a position present in book 0 is answered by book 0 alone,
@@ -446,9 +445,8 @@ fn build_pv(
 /// both map to "keep walking" here.
 ///
 /// The per-book flipped-position fallback lives inside [`find_in_book`] (the
-/// reference does it inside `MemoryBook::find`, `book.cpp`), so a
-/// flipped hit in
-/// book 0 also stops the walk.
+/// reference does it inside `MemoryBook::find`), so a flipped hit in book 0
+/// also stops the walk.
 fn find_in_books(
     books: &[Book],
     ignore_book_ply: bool,

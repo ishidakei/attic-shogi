@@ -1,11 +1,10 @@
 //! `.ybb` opening-book reader — the YaneuraOu "YANE-BINBOOK-V1" binary book.
 //!
-//! The format is transcribed from `book.cpp`. A `.ybb` file
-//! is a header, then a fixed-stride index region sorted ascending by the
-//! 32-byte packed key, then a variable moves region; a position is looked up by
-//! binary search over the index. The two read modes,
-//! [`Book::open_in_memory`] and [`Book::open_on_the_fly`], return identical
-//! results.
+//! The format is transcribed from the reference reader. A `.ybb` file is a
+//! header, then a fixed-stride index region sorted ascending by the 32-byte
+//! packed key, then a variable moves region; a position is looked up by binary
+//! search over the index. The two read modes, [`Book::open_in_memory`] and
+//! [`Book::open_on_the_fly`], return identical results.
 //!
 //! The Storage layer speaks only in primitives, so this reader takes the packed
 //! key as a raw `&[u8; 32]` and returns raw move fragments. Computing that key
@@ -23,22 +22,22 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// 16-byte magic identifying a `.ybb` file (`YbbMagic`, `book.cpp`).
+/// 16-byte magic identifying a `.ybb` file (`YbbMagic`).
 const MAGIC: &[u8; 16] = b"YANE-BINBOOK-V1\0";
-/// Header size in bytes (`YbbHeaderSize`, `book.cpp`).
+/// Header size in bytes (`YbbHeaderSize`).
 const HEADER_SIZE: u64 = 32;
-/// Index record stride in bytes (`YbbIndexRecordSize`, `book.cpp`).
+/// Index record stride in bytes (`YbbIndexRecordSize`).
 const INDEX_RECORD_SIZE: u64 = 44;
 /// `flags` bit 0 — when set, each move record carries a trailing `depth` u16
-/// (`YbbFlagMoveDepth`, `book.cpp`).
+/// (`YbbFlagMoveDepth`).
 const FLAG_MOVE_DEPTH: u64 = 1;
-/// The set of flag bits this reader understands (`YbbKnownFlags`,
-/// `book.cpp`). Any other bit set means the file is not one we can read.
+/// The set of flag bits this reader understands (`YbbKnownFlags`). Any other
+/// bit set means the file is not one we can read.
 const KNOWN_FLAGS: u64 = FLAG_MOVE_DEPTH;
 
-/// One decoded move from a book position record (`read_ybb_moves`,
-/// `book.cpp`). The reference's `BookMove` also carries a ponder move
-/// and an adoption count, neither of which a `.ybb` stores.
+/// One decoded move from a book position record (`read_ybb_moves`). The
+/// reference's `BookMove` also carries a ponder move and an adoption count,
+/// neither of which a `.ybb` stores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BookMove {
     /// 16-bit move fragment (YaneuraOu `Move16`).
@@ -103,7 +102,7 @@ impl From<std::io::Error> for BookError {
     }
 }
 
-/// A decoded index record (`YbbIndexEntry`, `book.cpp`).
+/// A decoded index record (`YbbIndexEntry`).
 struct IndexEntry {
     packed: [u8; 32],
     moves_offset: u64,
@@ -234,7 +233,7 @@ impl Book {
     }
 
     /// Per-move record size in bytes: 6 with the depth flag, else 4
-    /// (`ybb_move_record_size`, `book.cpp`).
+    /// (`ybb_move_record_size`).
     fn move_record_size(&self) -> u64 {
         if self.has_move_depth() { 6 } else { 4 }
     }
@@ -321,7 +320,7 @@ fn parse_header(head: &[u8]) -> Result<(u64, u64), BookError> {
 }
 
 /// `32 + record_count * 44`, with overflow reported as a corrupt record count
-/// (`ybb_index_size`, `book.cpp`).
+/// (`ybb_index_size`).
 fn moves_base(record_count: u64) -> Result<u64, BookError> {
     record_count
         .checked_mul(INDEX_RECORD_SIZE)

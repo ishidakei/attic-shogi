@@ -10,10 +10,10 @@
 //! (perspective, king square), with the active-feature list it was built from,
 //! turns most rebuilds into a diff of a handful of columns.
 //!
-//! Upstream added the same structure (`FinnyEntry` / `FinnyCache` in
-//! `nnue_feature_transformer.h`) but ships it dormant: `USE_FINNY_TABLES` is
-//! defined by no Makefile or config header, so a default build never compiles
-//! it. This module is an adaptation of code the reference does not run.
+//! Upstream added the same structure (`FinnyEntry` / `FinnyCache`) but ships it
+//! dormant: `USE_FINNY_TABLES` is defined by no Makefile or config header, so a
+//! default build never compiles it. This module is an adaptation of code the
+//! reference does not run.
 //!
 //! ## The invariant
 //!

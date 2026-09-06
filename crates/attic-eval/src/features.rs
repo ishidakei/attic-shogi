@@ -295,8 +295,7 @@ pub fn active_features_both(pos: &Position) -> [Vec<FeatureIndex>; Color::COUNT]
 }
 
 /// Whether `perspective`'s accumulator half must be fully refreshed after `mv`
-/// rather than updated incrementally (`requires_full_refresh`,
-/// `half_ka_hm2.cpp`).
+/// rather than updated incrementally.
 ///
 /// A `HalfKA_hm2` index embeds the perspective's own-king `sq_k_code`, so when
 /// that king moves *every* index shifts — and the mirror flag may flip with it —

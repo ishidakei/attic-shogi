@@ -1,4 +1,4 @@
-//! Tests for the transposition table, against the semantics of `tt.cpp`.
+//! Tests for the transposition table, against the reference's semantics.
 //!
 //! # Addressing model used throughout
 //!

@@ -1,5 +1,5 @@
 //! Static Exchange Evaluation "greater-or-equal" test, ported from
-//! `Position::see_ge` (`position.cpp`, the `#if !STOCKFISH` shogi path).
+//! `Position::see_ge` (the `#if !STOCKFISH` shogi path).
 //!
 //! `see_ge(m, threshold)` returns `true` iff the material swing of the optimal
 //! capture/recapture sequence on `m`'s destination square is at least
@@ -24,8 +24,8 @@ use crate::piece::Piece;
 use crate::position::Position;
 use crate::square::Square;
 
-// The Apery material values, verbatim from the reference's `Eval::` enum
-// (`evaluate.h`, the `USE_PIECE_VALUE` block).
+// The Apery material values, verbatim from the reference's `Eval::` enum (the
+// `USE_PIECE_VALUE` block).
 const PAWN_VALUE: i32 = 90;
 const LANCE_VALUE: i32 = 315;
 const KNIGHT_VALUE: i32 = 405;

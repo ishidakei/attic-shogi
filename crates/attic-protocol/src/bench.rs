@@ -1,17 +1,17 @@
 //! The `bench` command's argument parsing and default position set — a port of
-//! the reference `setup_bench` (`benchmark.cpp`, the non-Stockfish
-//! branch) and its `Defaults` list (`benchmark.cpp`).
+//! the reference `setup_bench` (the non-Stockfish branch) and its `Defaults`
+//! list.
 //!
-//! Reference syntax (`benchmark.cpp`):
+//! Reference syntax:
 //!
 //! ```text
 //! bench [ttSizeMB] [threads] [limit] [default|current|<fenFile>] [limitType]
 //! ```
 //!
-//! The defaults mirrored here are the reference's non-Stockfish ones
-//! (`benchmark.cpp`): `ttSize=1024`, `threads=1`, `limit=15000`,
-//! `fenFile=default`, `limitType=movetime` — the code, not the stale comment
-//! example beside it, is the ground truth.
+//! The defaults mirrored here are the reference's non-Stockfish ones:
+//! `ttSize=1024`, `threads=1`, `limit=15000`, `fenFile=default`,
+//! `limitType=movetime` — the code, not the stale comment example beside it, is
+//! the ground truth.
 //!
 //! The reference `limitType` also accepts `perft` and `eval`; those are outside
 //! this NPS bench's scope and parse to a [`BenchParseError`].
@@ -22,8 +22,8 @@ use attic_state::format_sfen;
 
 use crate::parser::GoLimits;
 
-/// The reference `Defaults` position list (`benchmark.cpp`), transcribed
-/// verbatim. Used when the position source is `default` or omitted.
+/// The reference `Defaults` position list, transcribed verbatim. Used when the
+/// position source is `default` or omitted.
 pub const BENCH_DEFAULT_POSITIONS: [&str; 4] = [
     // 初期局面に近い曲面。
     "lnsgkgsnl/1r7/p1ppp1bpp/1p3pp2/7P1/2P6/PP1PPPP1P/1B3S1R1/LNSGKG1NL b - 9",
@@ -35,7 +35,7 @@ pub const BENCH_DEFAULT_POSITIONS: [&str; 4] = [
     "l6nl/5+P1gk/2np1S3/p1p4Pp/3P2Sp1/1PPb2P1P/P5GS1/R8/LN4bKL w RGgsn5p 1",
 ];
 
-/// The reference non-Stockfish defaults (`benchmark.cpp`).
+/// The reference non-Stockfish defaults.
 const DEFAULT_TT_MB: &str = "1024";
 const DEFAULT_THREADS: &str = "1";
 const DEFAULT_LIMIT: &str = "15000";

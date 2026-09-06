@@ -1,6 +1,4 @@
-//! Quiescence search, ported from `Search::YaneuraOuWorker::qsearch`
-//! (`yaneuraou-search.cpp`), which the line numbers in the comments
-//! below point into.
+//! Quiescence search, ported from `Search::YaneuraOuWorker::qsearch`.
 //!
 //! Every structural detail is derived from the reference's **code**, not from
 //! the design-note comment block at the top of that function, which describes a
@@ -58,68 +56,66 @@ use crate::update::{
 };
 
 // -----------------------------------------------------------------------------
-// Value / depth constants and helpers (source/types.h, source/config.h).
+// Value / depth constants and helpers.
 // -----------------------------------------------------------------------------
 
-/// `MAX_PLY` (`config.h` → `types.h`): the standard engine build value.
+/// `MAX_PLY`: the standard engine build value.
 const MAX_PLY: i32 = 246;
-/// `VALUE_INFINITE` (`types.h`).
+/// `VALUE_INFINITE`.
 const VALUE_INFINITE: Value = 32001;
-/// `VALUE_NONE` (`types.h`).
+/// `VALUE_NONE`.
 const VALUE_NONE: Value = 32002;
-/// `VALUE_MATE` (`types.h`).
+/// `VALUE_MATE`.
 const VALUE_MATE: Value = 32000;
-/// `VALUE_MATE_IN_MAX_PLY` == `VALUE_TB_WIN_IN_MAX_PLY` (`types.h`).
+/// `VALUE_MATE_IN_MAX_PLY` == `VALUE_TB_WIN_IN_MAX_PLY`.
 const VALUE_TB_WIN_IN_MAX_PLY: Value = VALUE_MATE - MAX_PLY; // 31754
-/// `VALUE_MAX_EVAL` == `VALUE_SUPERIOR` (`types.h`).
+/// `VALUE_MAX_EVAL` == `VALUE_SUPERIOR`.
 const VALUE_MAX_EVAL: Value = VALUE_TB_WIN_IN_MAX_PLY - 1; // 31753
-/// `VALUE_DRAW` (`types.h`).
+/// `VALUE_DRAW`.
 const VALUE_DRAW: Value = 0;
-/// `DEPTH_QS` (`types.h`).
+/// `DEPTH_QS`.
 const DEPTH_QS: i32 = 0;
-/// `DEPTH_UNSEARCHED` (`types.h`).
+/// `DEPTH_UNSEARCHED`.
 const DEPTH_UNSEARCHED: i32 = -2;
-/// Futility margin added to `ss->staticEval` (`yaneuraou-search.cpp`).
+/// Futility margin added to `ss->staticEval`.
 const FUTILITY_MARGIN: Value = 328;
-/// SEE cutoff for a capture with no futility exemption
-/// (`yaneuraou-search.cpp`).
+/// SEE cutoff for a capture with no futility exemption.
 const SEE_CAPTURE_MARGIN: i32 = -73;
-/// The default-remapped `MaxMovesToDraw` (`yaneuraou-search.cpp`): the
-/// `0` option default is rewritten to `100000`.
+/// The default-remapped `MaxMovesToDraw`: the `0` option default is rewritten
+/// to `100000`.
 const MAX_MOVES_TO_DRAW: i32 = 100_000;
 
-/// `mate_in(ply)` (`types.h`).
+/// `mate_in(ply)`.
 fn mate_in(ply: i32) -> Value {
     VALUE_MATE - ply
 }
 
-/// `mated_in(ply)` (`types.h`).
+/// `mated_in(ply)`.
 fn mated_in(ply: i32) -> Value {
     -VALUE_MATE + ply
 }
 
-/// `is_valid(v)` (`types.h`).
+/// `is_valid(v)`.
 fn is_valid(v: Value) -> bool {
     v != VALUE_NONE
 }
 
-/// `is_win(v)` (`types.h`).
+/// `is_win(v)`.
 fn is_win(v: Value) -> bool {
     v >= VALUE_TB_WIN_IN_MAX_PLY
 }
 
-/// `is_loss(v)` (`types.h`).
+/// `is_loss(v)`.
 fn is_loss(v: Value) -> bool {
     v <= -VALUE_TB_WIN_IN_MAX_PLY
 }
 
-/// `is_decisive(v)` (`types.h`).
+/// `is_decisive(v)`.
 fn is_decisive(v: Value) -> bool {
     is_win(v) || is_loss(v)
 }
 
-/// `value_to_tt(v, ply)` (`yaneuraou-search.cpp`): shift a mate score away
-/// from the root before storing.
+/// `value_to_tt(v, ply)`: shift a mate score away from the root before storing.
 fn value_to_tt(v: Value, ply: i32) -> Value {
     if is_win(v) {
         v + ply
@@ -130,8 +126,7 @@ fn value_to_tt(v: Value, ply: i32) -> Value {
     }
 }
 
-/// `value_from_tt(v, ply)` (`yaneuraou-search.cpp`): shift a stored mate
-/// score back toward the root.
+/// `value_from_tt(v, ply)`: shift a stored mate score back toward the root.
 fn value_from_tt(v: Value, ply: i32) -> Value {
     if !is_valid(v) {
         VALUE_NONE
@@ -144,13 +139,12 @@ fn value_from_tt(v: Value, ply: i32) -> Value {
     }
 }
 
-/// `value_draw(nodes)` (`yaneuraou-search.cpp`): a ±1 dither keyed on bit 1
-/// of the node counter.
+/// `value_draw(nodes)`: a ±1 dither keyed on bit 1 of the node counter.
 fn value_draw(nodes: u64) -> Value {
     VALUE_DRAW - 1 + (nodes & 0x2) as Value
 }
 
-/// `RootMove::operator<` (`search.h`) as a stable-sort comparator.
+/// `RootMove::operator<` as a stable-sort comparator.
 fn root_move_order(a: &RootMove, b: &RootMove) -> std::cmp::Ordering {
     if a.score != b.score {
         b.score.cmp(&a.score)
@@ -159,11 +153,10 @@ fn root_move_order(a: &RootMove, b: &RootMove) -> std::cmp::Ordering {
     }
 }
 
-/// The reference fail-high/low PV-output gate
-/// (`yaneuraou-search.cpp`), as a pure predicate so that it can be
-/// unit-tested. The `nodes > 10_000_000` conjunct and the `rootDepth < 3`
-/// disjunct are easy to drop when reading the condition informally; both are in
-/// the reference.
+/// The reference fail-high/low PV-output gate, as a pure predicate so that it
+/// can be unit-tested. The `nodes > 10_000_000` conjunct and the
+/// `rootDepth < 3` disjunct are easy to drop when reading the condition
+/// informally; both are in the reference.
 #[allow(clippy::too_many_arguments)]
 pub fn fail_lh_pv_gate(
     main_thread: bool,
@@ -184,7 +177,7 @@ pub fn fail_lh_pv_gate(
         && output_fail_lh_pv
 }
 
-/// `to_corrected_static_eval(v, cv)` (`yaneuraou-search.cpp`).
+/// `to_corrected_static_eval(v, cv)`.
 fn to_corrected_static_eval(v: Value, cv: i32) -> Value {
     (v + cv / 131072).clamp(-VALUE_MAX_EVAL, VALUE_MAX_EVAL)
 }
@@ -238,8 +231,7 @@ const ACC_LEN: usize = MAX_PLY as usize + 8;
 pub struct QSearchOutcome {
     /// Search value from the root side-to-move's point of view.
     pub value: Value,
-    /// Number of `do_move` calls made — the reference's node-count semantics
-    /// (`yaneuraou-search.cpp`).
+    /// Number of `do_move` calls made — the reference's node-count semantics.
     pub nodes: u64,
     /// Principal variation collected at the root (empty for a non-PV run or a
     /// fail-low).
@@ -249,9 +241,8 @@ pub struct QSearchOutcome {
 }
 
 /// How many `check_time` calls elapse between two real clock / node / flag
-/// checks — the reference `SearchManager::callsCnt` reset value
-/// (`yaneuraou-search.cpp`), reading `Instant::now()` per node being too
-/// costly.
+/// checks — the reference `SearchManager::callsCnt` reset value, reading
+/// `Instant::now()` per node being too costly.
 ///
 /// The counter is seeded to this value rather than the reference's `0`, so that
 /// the **first** checkpoint lands after a full interval and a short fixed-depth
@@ -272,8 +263,7 @@ pub struct PonderSignal {
     /// True while `go ponder` is pondering.
     active: AtomicBool,
     /// The instant a `ponderhit` arrived, stamped **before** the flag is
-    /// cleared, so that a worker observing `active == false` always sees it
-    /// (`yaneuraou-search.cpp`).
+    /// cleared, so that a worker observing `active == false` always sees it.
     hit_at: Mutex<Option<Instant>>,
 }
 
@@ -328,22 +318,19 @@ pub struct SearchControl {
 pub struct TimeControl {
     /// The reference `TimeManagement` for this `go`.
     pub tm: TimeManagement,
-    /// `limits.use_time_management()` (`search.h`): true only for a real
-    /// clock or `go rtime`. Gates the dynamic optimum-time block and the
-    /// `maximum()` stop.
+    /// `limits.use_time_management()`: true only for a real clock or `go rtime`.
+    /// Gates the dynamic optimum-time block and the `maximum()` stop.
     pub use_time_management: bool,
     /// `limits.movetime` in ms, `Some` only for `go movetime`.
     pub movetime: Option<i64>,
-    /// The worker count, the divisor of the best-move instability factor
-    /// (`yaneuraou-search.cpp`).
+    /// The worker count, the divisor of the best-move instability factor.
     pub n_threads: usize,
     /// The previous `go`'s reported score, `VALUE_INFINITE` for the first move
-    /// of a game (`yaneuraou-search.cpp`).
+    /// of a game.
     pub best_previous_score: Value,
-    /// The previous `go`'s reported average score (`yaneuraou-search.cpp`).
+    /// The previous `go`'s reported average score.
     pub best_previous_average_score: Value,
-    /// The previous `go`'s final `timeReduction`, `0.85` for the first move
-    /// (`yaneuraou-search.cpp`).
+    /// The previous `go`'s final `timeReduction`, `0.85` for the first move.
     pub previous_time_reduction: f64,
 }
 
@@ -365,17 +352,17 @@ pub struct QSearch<'a> {
     /// its atomics, so the driver can hand each worker a cheap `Arc` clone.
     tt: &'a TranspositionTable,
 
-    /// `nodes` counter — bumped once per `do_move` (`yaneuraou-search.cpp`).
+    /// `nodes` counter — bumped once per `do_move`.
     nodes: u64,
-    /// `selDepth` (`yaneuraou-search.cpp`).
+    /// `selDepth`.
     sel_depth: i32,
-    /// `nmpMinPly` (`yaneuraou-search.h`): while a null-move verification
-    /// search is running, the ply below which null-move pruning stays disabled.
-    /// Zero means "no verification in flight", which is also the value between
-    /// searches — the reference's per-`go` reset (`yaneuraou-search.cpp`)
-    /// sits inside `#if STOCKFISH` and is therefore dead in the live build, so
-    /// the field is only ever seeded once at construction and restored to 0 by
-    /// the verification block itself (Step 9).
+    /// `nmpMinPly`: while a null-move verification search is running, the ply
+    /// below which null-move pruning stays disabled. Zero means "no
+    /// verification in flight", which is also the value between searches — the
+    /// reference's per-`go` reset sits inside `#if STOCKFISH` and is therefore
+    /// dead in the live build, so the field is only ever seeded once at
+    /// construction and restored to 0 by the verification block itself (Step
+    /// 9).
     nmp_min_ply: i32,
 
     /// Whether this run is a PV search (`nodeType == PV`). Invariant down the
@@ -386,13 +373,12 @@ pub struct QSearch<'a> {
 
     /// Root side-to-move, used by [`Self::draw_value`] to reproduce the
     /// contempt-signed `drawValueTable[REPETITION_DRAW]` (set once per search
-    /// from the root side, `yaneuraou-search.cpp`).
+    /// from the root side).
     root_us: Color,
     /// `drawValueTable[REPETITION_DRAW][root_us]`, i.e. the contempt draw score
-    /// for the root side. With default options (`DrawValueBlack/White = -2`,
-    /// `types.cpp` / `yaneuraou-search.cpp`) and `PawnValue = 90` this
-    /// is `-2 * 90 / 100 == -1` (C++ truncation toward zero); the opponent side
-    /// gets `-draw_contempt`.
+    /// for the root side. With default options (`DrawValueBlack/White = -2`)
+    /// and `PawnValue = 90` this is `-2 * 90 / 100 == -1` (C++ truncation
+    /// toward zero); the opponent side gets `-draw_contempt`.
     draw_contempt: Value,
 
     /// The persistent search stack (`STACK_BASE` sentinels + `MAX_PLY` + 1),
@@ -443,8 +429,8 @@ pub struct QSearch<'a> {
     /// [`Self::correction_value`]). One set of tables, so an interior update is
     /// visible to a later leaf qsearch — the reference contract.
     histories: WorkerHistories,
-    /// `reductions[i] = int(2763/128.0 * ln(i))` for `i in 1..600`, `[0] == 0`
-    /// (`yaneuraou-search.cpp`). Read by [`Self::reduction`].
+    /// `reductions[i] = int(2763/128.0 * ln(i))` for `i in 1..600`, `[0] == 0`.
+    /// Read by [`Self::reduction`].
     reductions: Vec<i32>,
     /// `rootDelta` — the width `beta - alpha` of the *root* aspiration window,
     /// read by [`Self::reduction`]. [`Self::run_root`] sets it before each
@@ -471,16 +457,14 @@ pub struct QSearch<'a> {
     /// thresholds, which is what the fixed-depth parity path searches with; the
     /// driver overrides it per `go` via [`Self::set_entering_king`].
     entering_king: EnteringKingConfig,
-    /// The game ply past which the search adjudicates an unconditional draw
-    /// (`yaneuraou-search.cpp`), already `0 → 100000` remapped.
+    /// The game ply past which the search adjudicates an unconditional draw,
+    /// already `0 → 100000` remapped.
     max_moves_to_draw: i32,
-    /// `generate_all_legal_moves` (`yaneuraou-search.cpp`): when true
-    /// the move generators also yield the non-promoting moves they otherwise
-    /// suppress.
+    /// `generate_all_legal_moves`: when true the move generators also yield the
+    /// non-promoting moves they otherwise suppress.
     generate_all_legal_moves: bool,
     /// `go mate` mode. It disables the early mate/mated break so that the search
-    /// keeps proving within its budget (`yaneuraou-search.cpp`), and
-    /// arms the mate-found stop rule (`1918-1923`).
+    /// keeps proving within its budget, and arms the mate-found stop rule.
     mate_mode: bool,
     /// The reference `callsCnt` down-counter: `check_time` fires its real check
     /// once this reaches zero, then reloads it (see [`CHECK_INTERVAL`]).
@@ -488,16 +472,15 @@ pub struct QSearch<'a> {
     /// Latched abort state, set once a checkpoint observes the stop flag, the
     /// node ceiling or the hard deadline.
     stopped: bool,
-    /// `completedDepth` (`yaneuraou-search.cpp`), published so that
-    /// `check_time` can gate its stops on at least one iteration having
-    /// finished.
+    /// `completedDepth`, published so that `check_time` can gate its stops on
+    /// at least one iteration having finished.
     completed_depth: i32,
-    /// This worker's `bestMoveChanges` since the last iteration
-    /// (`yaneuraou-search.cpp`). Used only on the single-worker path; the
-    /// Lazy-SMP one increments a shared slot instead, so that the main worker
-    /// can sum every worker's count as the reference does.
+    /// This worker's `bestMoveChanges` since the last iteration. Used only on
+    /// the single-worker path; the Lazy-SMP one increments a shared slot
+    /// instead, so that the main worker can sum every worker's count as the
+    /// reference does.
     best_move_changes: f64,
-    /// `main_manager()->stopOnPonderhit` (`yaneuraou-search.cpp`).
+    /// `main_manager()->stopOnPonderhit`.
     stop_on_ponderhit: bool,
     /// Whether this worker has already copied the ponderhit instant out of the
     /// shared [`PonderSignal`] — a one-time sync per `go`.
@@ -509,12 +492,12 @@ pub struct QSearch<'a> {
     /// Lazy-SMP shared best-move-change counters, in the same slot-per-worker
     /// shape as [`Self::node_tally`]. Each worker adds into its own slot, and the
     /// **main** worker folds *every* slot in and zeroes each at every iteration
-    /// end (`yaneuraou-search.cpp`); helpers never fold or reset. The
+    /// end; helpers never fold or reset. The
     /// reference's cross-thread reads here are benign races, so the atomics are
     /// relaxed.
     best_move_tally: Option<(Arc<Vec<AtomicU64>>, usize)>,
 
-    /// `pvIdx` — the current MultiPV line index (`yaneuraou-search.cpp`).
+    /// `pvIdx` — the current MultiPV line index.
     pv_idx: usize,
     /// The raw `MultiPV` option value, before the clamp against the root move
     /// count.
@@ -542,20 +525,18 @@ pub struct WorkerResult {
     /// This worker's own node count.
     pub nodes: u64,
     /// Whether the main worker already emitted the last completed iteration's
-    /// final PV (`uciPvSent`, `yaneuraou-search.cpp`). The coordinator's
-    /// fallback keys off this, so that a fully throttled search still emits one
-    /// PV before `bestmove`.
+    /// final PV (`uciPvSent`). The coordinator's fallback keys off this, so
+    /// that a fully throttled search still emits one PV before `bestmove`.
     pub uci_pv_sent: bool,
     /// The last completed iteration's top-`multiPV` root moves, in score order,
     /// which the coordinator re-emits when the final PV was throttled.
     pub pv_lines: Vec<RootMove>,
-    /// `timeReduction` after iterative deepening
-    /// (`yaneuraou-search.cpp`), which the driver carries into the next
-    /// `go`. `1.0` when the time-management block never ran.
+    /// `timeReduction` after iterative deepening, which the driver carries into
+    /// the next `go`. `1.0` when the time-management block never ran.
     pub time_reduction: f64,
 }
 
-/// USI `info` bound marker for one PV line (`yaneuraou-search.cpp`).
+/// USI `info` bound marker for one PV line.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PvBound {
     /// An exact score (no `lowerbound` / `upperbound` marker).
@@ -566,8 +547,8 @@ pub enum PvBound {
     Upper,
 }
 
-/// One PV line's data for a USI `info` output (`InfoFull`, `search.h`). The
-/// Protocol layer formats it into the wire line.
+/// One PV line's data for a USI `info` output (`InfoFull`). The Protocol layer
+/// formats it into the wire line.
 #[derive(Clone, Debug)]
 pub struct PvInfo {
     /// `info.depth`.
@@ -600,27 +581,26 @@ pub trait PvSink: Send {
     fn emit(&mut self, info: &PvInfo);
 }
 
-/// The PV-output configuration snapshot for one `go`
-/// (`yaneuraou-search.cpp`, `989-997`). Main worker only.
+/// The PV-output configuration snapshot for one `go`. Main worker only.
 #[derive(Clone)]
 pub struct PvOutputConfig {
     /// The raw `MultiPV` option value; the clamp is applied inside the worker.
     pub multi_pv: usize,
-    /// `computed_pv_interval` (`993-997`): zero, never suppressing, under `go
-    /// infinite` or `ConsiderationMode`, else the `PvInterval` option.
+    /// `computed_pv_interval`: zero, never suppressing, under `go infinite` or
+    /// `ConsiderationMode`, else the `PvInterval` option.
     pub pv_interval: Duration,
-    /// `ConsiderationMode` (`88-92`): collect each PV from the transposition table
-    /// instead of the searched PV array.
+    /// `ConsiderationMode`: collect each PV from the transposition table instead
+    /// of the searched PV array.
     pub consideration_mode: bool,
-    /// `OutputFailLHPV` (`94-98`): emit a PV on a fail-high/low re-search.
+    /// `OutputFailLHPV`: emit a PV on a fail-high/low re-search.
     pub output_fail_lh_pv: bool,
-    /// `limits.startTime` — the `lastPvInfoTime` seed (`989`).
+    /// `limits.startTime` — the `lastPvInfoTime` seed.
     pub start_time: Instant,
 }
 
-/// `DrawValueBlack` / `DrawValueWhite` default (`yaneuraou-search.cpp`).
+/// `DrawValueBlack` / `DrawValueWhite` default.
 const DRAW_VALUE_OPTION_DEFAULT: i32 = -2;
-/// `Eval::PawnValue` (`evaluate.h`), used to scale the contempt option.
+/// `Eval::PawnValue`, used to scale the contempt option.
 const PAWN_VALUE: i32 = 90;
 
 impl<'a> QSearch<'a> {
@@ -740,10 +720,10 @@ impl<'a> QSearch<'a> {
         self.max_moves_to_draw = value;
     }
 
-    /// Install the root-side draw contempt for this `go`. `contempt` must
-    /// already be the pawn-scaled option value; [`Self::draw_value`] then returns
-    /// it for the root side and its negation for the opponent, reproducing the
-    /// reference's symmetric `±draw_value` (`yaneuraou-search.cpp`).
+    /// Install the root-side draw contempt for this `go`. `contempt` must already
+    /// be the pawn-scaled option value; [`Self::draw_value`] then returns it for
+    /// the root side and its negation for the opponent, reproducing the
+    /// reference's symmetric `±draw_value`.
     pub fn set_draw_value(&mut self, contempt: Value) {
         self.draw_contempt = contempt;
     }
@@ -792,9 +772,9 @@ impl<'a> QSearch<'a> {
         self.histories
     }
 
-    /// The `callsCnt` reload value (`yaneuraou-search.cpp`): the standard
-    /// [`CHECK_INTERVAL`], capped tighter under a small node ceiling so that the
-    /// check rate stays at least ~0.1% of it.
+    /// The `callsCnt` reload value: the standard [`CHECK_INTERVAL`], capped
+    /// tighter under a small node ceiling so that the check rate stays at least
+    /// ~0.1% of it.
     fn calls_reset(&self) -> i32 {
         match self.control.node_limit {
             Some(n) => CHECK_INTERVAL.min((n / 1024) as i32).max(1),
@@ -819,8 +799,7 @@ impl<'a> QSearch<'a> {
 
     /// Copy the shared [`PonderSignal`]'s stamped ponderhit instant into
     /// `tm.ponderhitTime` the first time the ponder flag is observed clear — this
-    /// port's stand-in for the reference writing it on the USI thread
-    /// (`yaneuraou-search.cpp`).
+    /// port's stand-in for the reference writing it on the USI thread.
     fn fold_best_move_changes(&mut self, tot: &mut f64) {
         match &self.best_move_tally {
             Some((slots, 0)) => {
@@ -852,9 +831,9 @@ impl<'a> QSearch<'a> {
         }
     }
 
-    /// The reference `SearchManager::check_time` (`yaneuraou-search.cpp`):
-    /// count down and, once per [`Self::calls_reset`] calls, consult the stop
-    /// flag, then the time and node stops.
+    /// The reference `SearchManager::check_time`: count down and, once per
+    /// [`Self::calls_reset`] calls, consult the stop flag, then the time and
+    /// node stops.
     fn check_time(&mut self) {
         if self.stopped {
             return;
@@ -880,9 +859,8 @@ impl<'a> QSearch<'a> {
             return;
         }
 
-        // While pondering, make no stop decision at all
-        // (`yaneuraou-search.cpp`). The stop check precedes this, so
-        // that `stop` still ends a pondering search.
+        // While pondering, make no stop decision at all. The stop check
+        // precedes this, so that `stop` still ends a pondering search.
         if self.control.ponder.as_ref().is_some_and(|p| p.is_active()) {
             return;
         }
@@ -1057,7 +1035,7 @@ impl<'a> QSearch<'a> {
     }
 
     /// `drawValueTable[rs][c]`, whose `REPETITION_DRAW` row is overwritten from
-    /// contempt at search start (`yaneuraou-search.cpp`).
+    /// contempt at search start.
     fn draw_value(&self, rs: RepetitionState, c: Color) -> Value {
         match rs {
             RepetitionState::None => VALUE_DRAW,
@@ -1120,7 +1098,7 @@ impl<'a> QSearch<'a> {
         legal.iter().copied().find(|&m| move16_of(m) == move16)
     }
 
-    /// The core recursive qsearch (`yaneuraou-search.cpp`).
+    /// The core recursive qsearch.
     fn qsearch(&mut self, pos: &mut Position, ply: i32, mut alpha: Value, beta: Value) -> Value {
         let pv_node = self.pv_node;
 
@@ -1133,7 +1111,7 @@ impl<'a> QSearch<'a> {
         }
 
         // -----------------------------------------------------------------
-        // Step 1. Initialize node (4515-4556).
+        // Step 1. Initialize node.
         // -----------------------------------------------------------------
         if pv_node {
             self.stack[Self::si(ply)].pv.clear();
@@ -1145,7 +1123,7 @@ impl<'a> QSearch<'a> {
         }
 
         // -----------------------------------------------------------------
-        // Step 2. Immediate draw / max ply (4558-4621).
+        // Step 2. Immediate draw / max ply.
         // -----------------------------------------------------------------
         let us = pos.side_to_move();
         let draw_type = pos.is_repetition(ply as u16);
@@ -1154,7 +1132,7 @@ impl<'a> QSearch<'a> {
                 return self.draw_value(RepetitionState::Draw, us) + value_draw(self.nodes);
             } else {
                 // Superior, inferior and perpetual check map to a root-relative
-                // score (4603).
+                // score.
                 return value_from_tt(self.draw_value(draw_type, us), ply);
             }
         }
@@ -1163,23 +1141,23 @@ impl<'a> QSearch<'a> {
         }
 
         // -----------------------------------------------------------------
-        // Step 3. Transposition table lookup (4623-4679).
+        // Step 3. Transposition table lookup.
         // -----------------------------------------------------------------
         let pos_key = pos.key();
         let side = us.index() as u8;
         // Captured once, as the reference's `ttWriter` is; every write below
         // targets this exact slot.
         let (found, tt_data, tt_slot) = self.tt.locate(pos_key, side);
-        // `if constexpr (!ReadTT) ttHit = false;` (4632).
+        // `if constexpr (!ReadTT) ttHit = false;`.
         let tt_hit = found && self.read_tt;
-        // `ttData.move = ttHit ? to_move(ttData.move) : Move::none();` (4640).
-        // The widening is O(1); the MovePicker's TT stage re-validates.
+        // `ttData.move = ttHit ? to_move(ttData.move) : Move::none();`. The
+        // widening is O(1); the MovePicker's TT stage re-validates.
         let tt_move = if tt_hit {
             pos.to_move(tt_data.move16)
         } else {
             None
         };
-        // `ttData.value = ttHit ? value_from_tt(...) : VALUE_NONE;` (4642-4646).
+        // `ttData.value = ttHit ? value_from_tt(...) : VALUE_NONE;`.
         let tt_value = if tt_hit {
             value_from_tt(tt_data.value, ply)
         } else {
@@ -1187,7 +1165,7 @@ impl<'a> QSearch<'a> {
         };
         let pv_hit = tt_hit && tt_data.is_pv;
 
-        // Non-PV early TT cutoff (4661-4670).
+        // Non-PV early TT cutoff.
         if !pv_node
             && tt_data.depth >= DEPTH_QS
             && is_valid(tt_value)
@@ -1197,15 +1175,14 @@ impl<'a> QSearch<'a> {
         }
 
         // -----------------------------------------------------------------
-        // Step 4. Static evaluation (4681-4830).
+        // Step 4. Static evaluation.
         // -----------------------------------------------------------------
         let mut unadjusted_static_eval = VALUE_NONE;
         let mut best_value: Value;
         let futility_base: Value;
 
         if in_check {
-            // Every evasion is generated, so this starts from -infinity
-            // (4687-4696).
+            // Every evasion is generated, so this starts from -infinity.
             best_value = -VALUE_INFINITE;
             futility_base = -VALUE_INFINITE;
         } else {
@@ -1216,8 +1193,8 @@ impl<'a> QSearch<'a> {
                 if !is_valid(unadjusted_static_eval) {
                     unadjusted_static_eval = self.static_eval(pos);
                 } else if pv_node {
-                    // The `USE_CLASSIC_EVAL` re-eval branch (4712-4718) is
-                    // active in the reference build.
+                    // The `USE_CLASSIC_EVAL` re-eval branch is active in the
+                    // reference build.
                     unadjusted_static_eval = self.static_eval(pos);
                 }
                 best_value = to_corrected_static_eval(unadjusted_static_eval, correction_value);
@@ -1229,11 +1206,11 @@ impl<'a> QSearch<'a> {
                     best_value = tt_value;
                 }
             } else {
-                // 🌈 1-ply mate check, only when the TT missed (4738-4775).
+                // 🌈 1-ply mate check, only when the TT missed.
                 if let Some(mate_move) = pos.mate_1ply() {
                     best_value = mate_in(ply + 1);
                     // The stored value is the **raw** root-relative
-                    // `mate_in(ply+1)`, not `value_to_tt`-converted (4768).
+                    // `mate_in(ply+1)`, not `value_to_tt`-converted.
                     let tt_pv = self.stack[Self::si(ply)].tt_pv;
                     self.tt_store(
                         tt_slot,
@@ -1252,7 +1229,7 @@ impl<'a> QSearch<'a> {
                 best_value = to_corrected_static_eval(unadjusted_static_eval, correction_value);
             }
 
-            // Stand pat (4793-4815).
+            // Stand pat.
             if best_value >= beta {
                 if !is_decisive(best_value) {
                     best_value = (best_value + beta) / 2;
@@ -1284,9 +1261,9 @@ impl<'a> QSearch<'a> {
         }
 
         // -----------------------------------------------------------------
-        // Step 5-8. Move loop (4832-5025).
+        // Step 5-8. Move loop.
         // -----------------------------------------------------------------
-        // `prevSq` from `(ss-1)->currentMove` (4842).
+        // `prevSq` from `(ss-1)->currentMove`.
         let prev_move = self.stack[Self::si(ply) - 1].current_move;
         let prev_sq = if prev_move.is_ok() {
             Some(prev_move.to_sq())
@@ -1294,8 +1271,8 @@ impl<'a> QSearch<'a> {
             None
         };
 
-        // `contHist[] = {(ss-1)->continuationHistory}` (`4836`). The evasion
-        // score reads plane `[0]`, the previous ply's real continuation plane.
+        // `contHist[] = {(ss-1)->continuationHistory}`. The evasion score reads
+        // plane `[0]`, the previous ply's real continuation plane.
         let cont_planes: [usize; 6] =
             std::array::from_fn(|i| self.stack[Self::si(ply) - 1 - i].cont_hist);
         let mut mp =
@@ -1305,23 +1282,22 @@ impl<'a> QSearch<'a> {
 
         while let Some(mv) = mp.next_move(pos, &self.histories) {
             // The MovePicker yields only legal moves, so the reference's
-            // `if (!pos.legal(move)) continue;` (4880) is already applied.
+            // `if (!pos.legal(move)) continue;` is already applied.
 
             let gives_check = pos.gives_check(mv);
             // `capture_stage` is plain `capture` in the reference: a non-drop
-            // landing on an occupied square (4886).
+            // landing on an occupied square.
             let capture = !mv.is_drop() && pos.board().get(mv.to_sq()).is_some();
             move_count += 1;
 
-            // Step 6. Pruning (4890-4982), only while not already losing.
+            // Step 6. Pruning, only while not already losing.
             if !is_loss(best_value) {
                 if !gives_check && Some(mv.to_sq()) != prev_sq && !is_loss(futility_base) {
-                    // Prune from the 3rd non-recapture on (4919-4920).
+                    // Prune from the 3rd non-recapture on.
                     if move_count > 2 {
                         continue;
                     }
-                    // `PieceValue[piece_on(to)]`, zero for a quiet target
-                    // (4928-4929).
+                    // `PieceValue[piece_on(to)]`, zero for a quiet target.
                     let futility_value =
                         futility_base + pos.board().get(mv.to_sq()).map_or(0, piece_value);
                     if futility_value <= alpha {
@@ -1334,28 +1310,28 @@ impl<'a> QSearch<'a> {
                     }
                 }
 
-                // This also drops a quiet TT move (4966-4967).
+                // This also drops a quiet TT move.
                 if !capture {
                     continue;
                 }
 
-                // Skip captures with bad SEE (4980-4981).
+                // Skip captures with bad SEE.
                 if !pos.see_ge(mv, SEE_CAPTURE_MARGIN) {
                     continue;
                 }
             }
 
-            // Step 7. Make and search (4984-4994).
+            // Step 7. Make and search.
             let acc_delta = MoveDelta::from_move(pos, mv);
             self.nodes += 1; // sole node-count increment (worker do_move, 2072).
             let undo = pos.do_move_with_check(mv, gives_check);
-            // The reference sets these *inside* `do_move` (2090-2104), for
-            // qsearch moves too. A deeper node reads the continuation planes at
-            // `(ss-2)` / `(ss-4)`, so a qsearch ply that left them stale would
-            // feed a wrong corrected eval once the tables warm up — a divergence
-            // that only surfaces from depth 6.
+            // The reference sets these *inside* `do_move`, for qsearch moves
+            // too. A deeper node reads the continuation planes at `(ss-2)` /
+            // `(ss-4)`, so a qsearch ply that left them stale would feed a wrong
+            // corrected eval once the tables warm up — a divergence that only
+            // surfaces from depth 6.
             let moved = mv.moved_piece_after();
-            self.stack[Self::si(ply)].current_move = mv; // ss->currentMove (2090).
+            self.stack[Self::si(ply)].current_move = mv; // ss->currentMove.
             self.stack[Self::si(ply)].cont_hist =
                 ContinuationHistory::plane_index(in_check, capture, moved, mv.to_sq());
             self.stack[Self::si(ply)].cont_corr =
@@ -1371,7 +1347,7 @@ impl<'a> QSearch<'a> {
                 return best_value;
             }
 
-            // Step 8. New best move (4998-5024).
+            // Step 8. New best move.
             if value > best_value {
                 best_value = value;
                 if value > alpha {
@@ -1389,11 +1365,11 @@ impl<'a> QSearch<'a> {
         }
 
         // -----------------------------------------------------------------
-        // Step 9. Mate check + tail write (5027-5135).
+        // Step 9. Mate check + tail write.
         // -----------------------------------------------------------------
         // In check with no legal move is checkmate. The reference uses the
         // `moveCount == 0` form, not Stockfish's `bestValue == -VALUE_INFINITE`
-        // one (5073-5082).
+        // one.
         if in_check && move_count == 0 {
             return mated_in(ply);
         }
@@ -1402,7 +1378,7 @@ impl<'a> QSearch<'a> {
             best_value = (best_value + beta) / 2;
         }
 
-        // Final TT write (5115-5117).
+        // Final TT write.
         self.tt_store(
             tt_slot,
             pos_key,
@@ -1421,7 +1397,7 @@ impl<'a> QSearch<'a> {
         best_value
     }
 
-    /// `ss->pv->update(move, (ss+1)->pv)` (5015).
+    /// `ss->pv->update(move, (ss+1)->pv)`.
     fn update_pv(&mut self, ply: i32, mv: Move) {
         // `split_at_mut` gives disjoint borrows of this node's cell and its
         // child's, so the copy needs no intermediate allocation.
@@ -1530,8 +1506,7 @@ impl QSearch<'_> {
         // interval in; see [`CHECK_INTERVAL`].
         self.stopped = false;
         self.calls_cnt = CHECK_INTERVAL;
-        // Fresh time-management bookkeeping for this `go`
-        // (`yaneuraou-search.cpp`).
+        // Fresh time-management bookkeeping for this `go`.
         self.completed_depth = 0;
         self.best_move_changes = 0.0;
         self.stop_on_ponderhit = false;
@@ -1539,10 +1514,10 @@ impl QSearch<'_> {
         // lowPlyHistory is refilled to 98 per `go` (1525 / 2175).
         self.histories.low_ply.fill(98);
 
-        // Full search-stack reset (1441-1463): every cell returns to the
-        // sentinel state the interior search's improving / hindsight /
-        // continuation logic assumes. A `static_eval` left over from a previous
-        // `go` would flip `improving`.
+        // Full search-stack reset: every cell returns to the sentinel state the
+        // interior search's improving / hindsight / continuation logic assumes.
+        // A `static_eval` left over from a previous `go` would flip
+        // `improving`.
         for cell in self.stack.iter_mut() {
             // The preallocated `pv` buffer is preserved, so that a later PV
             // update never reallocates.
@@ -1562,20 +1537,19 @@ impl QSearch<'_> {
         // source, so this stays valid for the whole loop.
         self.seed_accumulator(&work);
 
-        // `iterative_deepening` (1519-1918). `searchAgainCounter` is incremented
-        // only when `increaseDepth` is false (1586-1591), and `increaseDepth` is
-        // cleared only inside the time-managed block.
+        // `iterative_deepening`. `searchAgainCounter` is incremented only when
+        // `increaseDepth` is false, and `increaseDepth` is cleared only inside
+        // the time-managed block.
         let mut search_again_counter: i32 = 0;
         let mut increase_depth = true;
-        // The reference's iterative-deepening locals
-        // (`yaneuraou-search.cpp`).
+        // The reference's iterative-deepening locals.
         let mut time_reduction: f64 = 1.0;
         let mut tot_best_move_changes: f64 = 0.0;
         let mut iter_idx: usize = 0;
         let mut last_best_move_depth: i32 = 0;
 
-        // Main-thread persistent inputs for the time-management block
-        // (`yaneuraou-search.cpp`), carried in via the time control.
+        // Main-thread persistent inputs for the time-management block, carried
+        // in via the time control.
         let (best_previous_score, best_previous_average_score, previous_time_reduction, n_threads) =
             match &self.control.time {
                 Some(tc) => (
@@ -1586,8 +1560,7 @@ impl QSearch<'_> {
                 ),
                 None => (VALUE_INFINITE, VALUE_INFINITE, 0.85, 1),
             };
-        // `iterValue.fill(bestPreviousScore == VALUE_INFINITE ? 0 : ...)`
-        // (`yaneuraou-search.cpp`).
+        // `iterValue.fill(bestPreviousScore == VALUE_INFINITE ? 0 : ...)`.
         let iter_seed = if best_previous_score == VALUE_INFINITE {
             0
         } else {
@@ -1595,13 +1568,13 @@ impl QSearch<'_> {
         };
         let mut iter_value = [iter_seed; 4];
 
-        // The previous iteration's `pv[1]` (1909-1910), a fallback for
+        // The previous iteration's `pv[1]`, a fallback for
         // `extract_ponder_from_tt` on a length-1 final PV.
         let mut ponder_candidate = Move::none();
 
-        // `multiPV = min(options["MultiPV"], rootMoves.size())` (1489,
-        // 1509-1510). The Skill-driven `max(multiPV, 4)` bump (1500-1507) is
-        // gated on a Skill that the reference build disables, so it is skipped.
+        // `multiPV = min(options["MultiPV"], rootMoves.size())`. The
+        // Skill-driven `max(multiPV, 4)` bump is gated on a Skill that the
+        // reference build disables, so it is skipped.
         let multi_pv = self.multi_pv.min(root_moves.len()).max(1);
 
         // The last *completed* iteration's root move — the stable result an
@@ -1612,46 +1585,44 @@ impl QSearch<'_> {
         let mut completed_lines: Vec<RootMove> = Vec::new();
         // `rootDepth` of the last completed iteration — reported as `info depth`.
         let mut completed_depth = 0;
-        // `uciPvSent` (1522, 1129): whether the current iteration's final PV was
-        // emitted.
+        // `uciPvSent`: whether the current iteration's final PV was emitted.
         let mut uci_pv_sent = false;
 
         let mut root_depth = 0;
-        // The reference's guard (1535) is on the *post-increment* value, hence
-        // the `+ 1`s here.
+        // The reference's guard is on the *post-increment* value, hence the
+        // `+ 1`s here.
         while root_depth + 1 < MAX_PLY && !self.stopped && root_depth < limit_depth {
             root_depth += 1;
 
-            // Age out the PV-variability metric (1564) and, when the previous
-            // iteration did not deepen, count a repeated depth (1587-1591).
+            // Age out the PV-variability metric and, when the previous
+            // iteration did not deepen, count a repeated depth.
             tot_best_move_changes /= 2.0;
             if !increase_depth {
                 search_again_counter += 1;
             }
 
-            // Saved for the aspiration seed (1576-1577), once per iteration and
-            // before the MultiPV loop.
+            // Saved for the aspiration seed, once per iteration and before the
+            // MultiPV loop.
             for rm in &mut root_moves {
                 rm.previous_score = rm.score;
             }
 
-            // `uciPvSent = false` at the start of each iteration (1565).
+            // `uciPvSent = false` at the start of each iteration.
             uci_pv_sent = false;
 
             // The iteration's last search value, read by the early-mate break
             // below — the reference's function-level `bestValue`.
             let mut iter_best_value = -VALUE_INFINITE;
 
-            // A full root search per PV line (1595).
+            // A full root search per PV line.
             for pv_idx in 0..multi_pv {
                 self.pv_idx = pv_idx;
-                // Shogi uses no tbRank banding (1615-1616), so the finished head
-                // is `[0..pv_idx]` and the active tail `[pv_idx..]`.
+                // Shogi uses no tbRank banding, so the finished head is
+                // `[0..pv_idx]` and the active tail `[pv_idx..]`.
                 self.sel_depth = 0;
 
-                // Aspiration window (1655-1658). On iteration 1 the sentinels
-                // make `delta` huge, so alpha and beta clamp to the full window
-                // naturally.
+                // Aspiration window. On iteration 1 the sentinels make `delta`
+                // huge, so alpha and beta clamp to the full window naturally.
                 let mut delta: Value =
                     5 + (root_moves[pv_idx].mean_squared_score.unsigned_abs() / 9000) as Value;
                 let avg = root_moves[pv_idx].average_score;
@@ -1664,7 +1635,7 @@ impl QSearch<'_> {
                 // This PV line's search value, set by every aspiration attempt.
                 let mut best_value;
 
-                // Re-search until the value lands inside the window (1681-1783).
+                // Re-search until the value lands inside the window.
                 loop {
                     let adjusted_depth =
                         1.max(root_depth - failed_high_cnt - 3 * (search_again_counter + 1) / 4);
@@ -1684,31 +1655,31 @@ impl QSearch<'_> {
                         Some(&mut root_moves),
                     );
 
-                    // Stable re-sort of the active tail (1714). Non-PV moves
-                    // carry `-VALUE_INFINITE`, so only the PV rises and the rest
-                    // keep their order.
+                    // Stable re-sort of the active tail. Non-PV moves carry
+                    // `-VALUE_INFINITE`, so only the PV rises and the rest keep
+                    // their order.
                     root_moves[pv_idx..].sort_by(root_move_order);
 
-                    // Aborted mid-window (1724). The sort above still ran, so
+                    // Aborted mid-window. The sort above still ran, so
                     // `root_moves[0]` remains a legal best-so-far.
                     if self.stopped {
                         break;
                     }
 
-                    // Fail-high/low PV update before the re-search (1738-1758).
+                    // Fail-high/low PV update before the re-search.
                     if self.should_output_fail_lh(multi_pv, best_value, alpha, beta, root_depth) {
                         self.emit_pv(root_pos, &root_moves, pv_idx, root_depth, multi_pv);
                         self.last_pv_info_time = Instant::now();
                     }
 
-                    // Widen and re-search on a fail, else break (1762-1778). The
-                    // fail-low form is `beta = alpha; alpha = bestValue - delta`,
-                    // not Stockfish's `(alpha+beta)/2`.
+                    // Widen and re-search on a fail, else break. The fail-low
+                    // form is `beta = alpha; alpha = bestValue - delta`, not
+                    // Stockfish's `(alpha+beta)/2`.
                     if best_value <= alpha {
                         beta = alpha;
                         alpha = (best_value - delta).max(-VALUE_INFINITE);
                         failed_high_cnt = 0;
-                        // Reset `stopOnPonderhit` on a fail low (1768-1769).
+                        // Reset `stopOnPonderhit` on a fail low.
                         self.stop_on_ponderhit = false;
                     } else if best_value >= beta {
                         alpha = (beta - delta).max(alpha);
@@ -1722,12 +1693,12 @@ impl QSearch<'_> {
 
                 iter_best_value = best_value;
 
-                // Stable-sort the finished head (1791): a later line may have
+                // Stable-sort the finished head: a later line may have
                 // out-scored an earlier one.
                 root_moves[..pv_idx + 1].sort_by(root_move_order);
 
-                // End-of-line PV update (1793-1823). `uciPvSent` records whether
-                // the *final* line of the iteration was the one emitted.
+                // End-of-line PV update. `uciPvSent` records whether the *final*
+                // line of the iteration was the one emitted.
                 if self.pv_sink.is_some()
                     && (self.stopped
                         || pv_idx + 1 == multi_pv
@@ -1748,13 +1719,13 @@ impl QSearch<'_> {
             // Restore the neutral `pvIdx` for any later interior use.
             self.pv_idx = 0;
 
-            // The MultiPV loop broke on an abort (1826), so this iteration is
+            // The MultiPV loop broke on an abort, so this iteration is
             // incomplete and the last completed ordering stands.
             if self.stopped {
                 break;
             }
 
-            // The reference's `if (!threads.stop)` end-of-iteration block (1831).
+            // The reference's `if (!threads.stop)` end-of-iteration block.
             if self.last_iteration_pv.is_empty() || root_moves[0].pv[0] != self.last_iteration_pv[0]
             {
                 last_best_move_depth = root_depth;
@@ -1763,13 +1734,13 @@ impl QSearch<'_> {
             completed_best = Some(root_moves[0].clone());
             completed_lines = root_moves[..multi_pv].to_vec();
             completed_depth = root_depth;
-            // Publish for `check_time`'s `completedDepth >= 1` gate (1833).
+            // Publish for `check_time`'s `completedDepth >= 1` gate.
             self.completed_depth = root_depth;
 
-            // Early mate / mated termination (1885-1900): stop once the search
-            // depth outruns 2.5× the mate distance. Suppressed for MultiPV > 1,
-            // where one PV finding a mate must not stop the others (1882), and
-            // under `go mate`, which keeps proving within its budget.
+            // Early mate / mated termination: stop once the search depth
+            // outruns 2.5× the mate distance. Suppressed for MultiPV > 1, where
+            // one PV finding a mate must not stop the others, and under
+            // `go mate`, which keeps proving within its budget.
             if multi_pv == 1 && !self.mate_mode {
                 if iter_best_value >= VALUE_TB_WIN_IN_MAX_PLY
                     && (VALUE_MATE - iter_best_value + 2) * 5 / 2 < root_depth
@@ -1783,14 +1754,14 @@ impl QSearch<'_> {
                 }
             }
 
-            // Mate-found stop under `go mate` (`yaneuraou-search.cpp`).
-            // The reference keeps this branch under `#if STOCKFISH` because it
-            // defers mate proofs to a separate engine; this port has none, so
-            // without the branch a bare `go mate`, which has no time bound, would
-            // hang. In USI `limits.mate` is a millisecond budget, which makes the
-            // reference's mate-distance bound degenerate — any mate distance is
-            // far below any practical budget — so this reduces to stopping once a
-            // completed iteration's score is a decisive mate or mated.
+            // Mate-found stop under `go mate`. The reference keeps this branch
+            // under `#if STOCKFISH` because it defers mate proofs to a separate
+            // engine; this port has none, so without the branch a bare `go mate`,
+            // which has no time bound, would hang. In USI `limits.mate` is a
+            // millisecond budget, which makes the reference's mate-distance bound
+            // degenerate — any mate distance is far below any practical budget —
+            // so this reduces to stopping once a completed iteration's score is a
+            // decisive mate or mated.
             if self.mate_mode && (is_win(iter_best_value) || is_loss(iter_best_value)) {
                 break;
             }
@@ -1799,13 +1770,12 @@ impl QSearch<'_> {
                 ponder_candidate = root_moves[0].pv[1];
             }
 
-            // Fold into the aged statistic and reset for the next iteration
-            // (1936-1941).
+            // Fold into the aged statistic and reset for the next iteration.
             self.fold_best_move_changes(&mut tot_best_move_changes);
 
-            // Whether there is time for the next iteration
-            // (`yaneuraou-search.cpp`). Main worker only, under active
-            // time management, and only until the end time is fixed.
+            // Whether there is time for the next iteration. Main worker only,
+            // under active time management, and only until the end time is
+            // fixed.
             let time_managed = self
                 .control
                 .time
@@ -1820,10 +1790,10 @@ impl QSearch<'_> {
                 self.sync_ponderhit();
 
                 // A pondering search always deepens and, over budget, arms
-                // `stopOnPonderhit` instead of fixing the end time (2028-2036).
+                // `stopOnPonderhit` instead of fixing the end time.
                 let pondering = self.is_pondering();
                 // Read before the mutable borrow. `nodesEffort` divides by this
-                // worker's **own** node counter (1954-1955), not the aggregate.
+                // worker's **own** node counter, not the aggregate.
                 let own_nodes = self.nodes.max(1);
                 let effort = root_moves[0].effort;
                 let single_root_move = root_moves.len() == 1;
@@ -1832,27 +1802,25 @@ impl QSearch<'_> {
                 let maximum = tc.tm.maximum() as f64;
                 let elapsed = tc.tm.elapsed_from(Instant::now());
 
-                // The best root move's share of the nodes, scaled to 100000
-                // (1954-1955).
+                // The best root move's share of the nodes, scaled to 100000.
                 let nodes_effort = effort * 100_000 / own_nodes;
 
                 // Above 1 when the score is dropping against previous iterations,
-                // below when rising (1957-1961).
+                // below when rising.
                 let falling_eval = ((11.325
                     + 2.115 * (best_previous_average_score - iter_best_value) as f64
                     + 0.987 * (iter_value[iter_idx] - iter_best_value) as f64)
                     / 100.0)
                     .clamp(0.5688, 1.5698);
 
-                // Shorter when the best move is stable across iterations
-                // (1966-1968).
+                // Shorter when the best move is stable across iterations.
                 let k = 0.5189;
                 let center = last_best_move_depth as f64 + 11.57;
                 time_reduction =
                     0.723 + 0.79 / (1.104 + (-k * (completed_depth as f64 - center)).exp());
                 let reduction = (1.455 + previous_time_reduction) / (2.2375 * time_reduction);
 
-                // bestMoveInstability (1971) and highBestMoveEffort (1972).
+                // bestMoveInstability and highBestMoveEffort.
                 let best_move_instability =
                     1.04 + 1.8956 * tot_best_move_changes / n_threads as f64;
                 let high_best_move_effort = if completed_depth >= 10 && nodes_effort >= 92425 {
@@ -1867,7 +1835,7 @@ impl QSearch<'_> {
                     * best_move_instability
                     * high_best_move_effort;
 
-                // Cap the used time for a single legal root move (1977-1981).
+                // Cap the used time for a single legal root move.
                 if single_root_move {
                     total_time = total_time.min(502.0);
                 }
@@ -1875,7 +1843,7 @@ impl QSearch<'_> {
                 // Over budget, a pondering search arms `stopOnPonderhit` so that
                 // the first `check_time` after the ponderhit stops; otherwise the
                 // end time is fixed, rounded up to a whole second, rather than
-                // stopping now (2026-2036).
+                // stopping now.
                 if elapsed as f64 > total_time.min(maximum) {
                     if pondering {
                         self.stop_on_ponderhit = true;
@@ -1892,7 +1860,7 @@ impl QSearch<'_> {
                 }
             }
 
-            // iterValue ring update (2040-2041).
+            // iterValue ring update.
             iter_value[iter_idx] = iter_best_value;
             iter_idx = (iter_idx + 1) & 3;
         }
@@ -1933,8 +1901,8 @@ impl QSearch<'_> {
         }
     }
 
-    /// Whether the PV-output interval has elapsed since the last emit
-    /// (`yaneuraou-search.cpp`). Without a PV config the gate is vacuous.
+    /// Whether the PV-output interval has elapsed since the last emit. Without
+    /// a PV config the gate is vacuous.
     fn pv_interval_elapsed(&self) -> bool {
         match &self.pv_config {
             Some(cfg) => self.last_pv_info_time + cfg.pv_interval <= Instant::now(),
@@ -1942,8 +1910,8 @@ impl QSearch<'_> {
         }
     }
 
-    /// The reference fail-high/low PV-output gate
-    /// (`yaneuraou-search.cpp`) bound to this worker's live state.
+    /// The reference fail-high/low PV-output gate bound to this worker's live
+    /// state.
     fn should_output_fail_lh(
         &self,
         multi_pv: usize,
@@ -1968,8 +1936,8 @@ impl QSearch<'_> {
         )
     }
 
-    /// Build and emit the per-line PV `info` output
-    /// (`yaneuraou-search.cpp`). A no-op when no sink is installed.
+    /// Build and emit the per-line PV `info` output. A no-op when no sink is
+    /// installed.
     fn emit_pv(
         &mut self,
         root_pos: &Position,
@@ -1990,12 +1958,11 @@ impl QSearch<'_> {
         }
     }
 
-    /// Assemble the `info` lines for `pv()` (`yaneuraou-search.cpp`),
-    /// one per PV index.
+    /// Assemble the `info` lines for `pv()`, one per PV index.
     ///
     /// Public so that the coordinator can build its final-PV fallback lines
-    /// (`1289-1315`) from the chosen worker's result, passing
-    /// `pv_idx == lines.len()` to make every line exact.
+    /// from the chosen worker's result, passing `pv_idx == lines.len()` to make
+    /// every line exact.
     pub fn build_pv_infos(
         &self,
         root_pos: &Position,
@@ -2028,11 +1995,11 @@ impl QSearch<'_> {
         let mut out = Vec::with_capacity(multi_pv);
         for (i, rm) in root_moves.iter().enumerate().take(multi_pv) {
             let updated = rm.score != -VALUE_INFINITE;
-            // Skip an un-searched non-first line at depth 1 (5714).
+            // Skip an un-searched non-first line at depth 1.
             if depth == 1 && !updated && i > 0 {
                 continue;
             }
-            // Reported depth / value (5717-5721).
+            // Reported depth / value.
             let d = if updated { depth } else { 1.max(depth - 1) };
             let mut v = if updated {
                 rm.uci_score
@@ -2042,7 +2009,7 @@ impl QSearch<'_> {
             if v == -VALUE_INFINITE {
                 v = VALUE_DRAW;
             }
-            // Only the currently-searched line can carry a fail bound (5738).
+            // Only the currently-searched line can carry a fail bound.
             let is_exact = i != pv_idx || !updated;
             let bound = if is_exact {
                 PvBound::Exact
@@ -2074,10 +2041,9 @@ impl QSearch<'_> {
         out
     }
 
-    /// The ConsiderationMode PV collector (`yaneuraou-search.cpp`):
-    /// walk the root PV as far as it goes, then extend from the transposition
-    /// table, stopping at a repetition after ply 0, a TT miss, an unplayable
-    /// stored move, or a sentinel.
+    /// The ConsiderationMode PV collector: walk the root PV as far as it goes,
+    /// then extend from the transposition table, stopping at a repetition after
+    /// ply 0, a TT miss, an unplayable stored move, or a sentinel.
     ///
     /// The reference also appends a repetition/terminal text marker to the PV
     /// string. This port surfaces the PV as moves only and stops at the same
@@ -2101,7 +2067,7 @@ impl QSearch<'_> {
                     break;
                 }
                 // A hit only extends the PV when the stored move is playable
-                // here (5789-5791).
+                // here.
                 match pos.to_move(data.move16) {
                     Some(mm)
                         if mm.is_ok()
@@ -2113,7 +2079,7 @@ impl QSearch<'_> {
                     _ => break,
                 }
             };
-            // A resign or win sentinel is not playable (5796).
+            // A resign or win sentinel is not playable.
             if !m.is_ok() {
                 break;
             }
@@ -2128,10 +2094,9 @@ impl QSearch<'_> {
         moves
     }
 
-    /// `RootMove::extract_ponder_from_tt` (`yaneuraou-search.cpp`): when
-    /// the final PV is a bare bestmove, play it and look for a legal ponder
-    /// move — first the child TT entry's, then the `ponder_candidate` the
-    /// reference falls back to.
+    /// `RootMove::extract_ponder_from_tt`: when the final PV is a bare
+    /// bestmove, play it and look for a legal ponder move — first the child TT
+    /// entry's, then the `ponder_candidate` the reference falls back to.
     ///
     /// Public so that the Lazy-SMP driver can apply it to the *chosen* worker's
     /// PV after the thread vote.
@@ -2162,8 +2127,8 @@ impl QSearch<'_> {
                 best.pv.push(m);
             }
         } else if ponder_candidate.is_ok() {
-            // TT miss ⇒ fall back to the previous iteration's pv[1] (5896-5901),
-            // pushed only if it is legal in the child position.
+            // TT miss ⇒ fall back to the previous iteration's pv[1], pushed only
+            // if it is legal in the child position.
             let mut legal: Vec<Move> = Vec::new();
             pos.generate_legal_all(&mut legal);
             if legal.contains(&ponder_candidate) {
@@ -2174,12 +2139,11 @@ impl QSearch<'_> {
     }
 }
 
-// The interior main search, ported from the reference's shared `search` body
-// (`yaneuraou-search.cpp`). [`Self::run_root`] enters it at
-// `nodeType == Root`, and its move loop recurses into it until `newDepth`
-// reaches 0 and dives into qsearch. Blocks the reference's own guards make dead
-// are omitted or left inert, with a `debug_assert` tripwire where the singular
-// block would begin.
+// The interior main search, ported from the reference's shared `search` body.
+// [`Self::run_root`] enters it at `nodeType == Root`, and its move loop
+// recurses into it until `newDepth` reaches 0 and dives into qsearch. Blocks
+// the reference's own guards make dead are omitted or left inert, with a
+// `debug_assert` tripwire where the singular block would begin.
 
 /// `NO_PIECE` continuation plane (`continuationHistory[0][0][NO_PIECE][SQ_ZERO]`):
 /// the null-move sentinel plane, index `0` in this port's flat layout.
@@ -2192,10 +2156,10 @@ impl QSearch<'_> {
         !m.is_drop() && pos.board().get(m.to_sq()).is_some()
     }
 
-    /// `is_shuffling(move, ss, pos)` (`yaneuraou-search.cpp`): whether
-    /// `move` merely shuffles a piece back and forth, so that its singular
-    /// extension should be suppressed. Shogi has no 50-move rule and a drop is
-    /// no round trip, so captures and drops are excluded outright.
+    /// `is_shuffling(move, ss, pos)`: whether `move` merely shuffles a piece
+    /// back and forth, so that its singular extension should be suppressed.
+    /// Shogi has no 50-move rule and a drop is no round trip, so captures and
+    /// drops are excluded outright.
     fn is_shuffling(&self, mv: Move, capture: bool, ply: i32, pos: &Position) -> bool {
         if capture || mv.is_drop() {
             return false;
@@ -2212,8 +2176,7 @@ impl QSearch<'_> {
         mv.from_sq() == move2.to_sq() && move2.from_sq() == move4.to_sq()
     }
 
-    /// `ss->statScore` for one move (`yaneuraou-search.cpp`).
-    /// `captured` is present iff `capture`.
+    /// `ss->statScore` for one move. `captured` is present iff `capture`.
     fn move_stat_score(
         &self,
         us: Color,
@@ -2248,8 +2211,8 @@ impl QSearch<'_> {
         }
     }
 
-    /// `reduction(i, d, mn, delta)` (`yaneuraou-search.cpp`). Returns
-    /// the reduction scaled by 1024. Reads [`Self::root_delta`].
+    /// `reduction(i, d, mn, delta)`. Returns the reduction scaled by 1024.
+    /// Reads [`Self::root_delta`].
     fn reduction(&self, improving: bool, d: i32, mn: i32, delta: i32) -> i32 {
         let reduction_scale = self.reductions[d as usize] * self.reductions[mn as usize];
         reduction_scale - delta * 585 / self.root_delta
@@ -2257,9 +2220,9 @@ impl QSearch<'_> {
             + 1133
     }
 
-    /// `correction_value(*this, pos, ss)` (`yaneuraou-search.cpp`): a
-    /// weighted sum of the side-to-move channel reads keyed by the position's
-    /// partial keys, plus the `(ss-2)` / `(ss-4)` continuation-correction reads.
+    /// `correction_value(*this, pos, ss)`: a weighted sum of the side-to-move
+    /// channel reads keyed by the position's partial keys, plus the `(ss-2)` /
+    /// `(ss-4)` continuation-correction reads.
     ///
     /// On fresh tables the sum stays below `131072`, so
     /// [`to_corrected_static_eval`]'s division makes it eval-neutral.
@@ -2340,8 +2303,8 @@ impl QSearch<'_> {
         self.search(pos, 0, alpha, beta, depth, cut_node, pv_node, None, None)
     }
 
-    /// The shared `search<Root/PV/NonPV>` body (`yaneuraou-search.cpp`).
-    /// `prior_captured` is the piece the move that reached this node captured.
+    /// The shared `search<Root/PV/NonPV>` body. `prior_captured` is the piece
+    /// the move that reached this node captured.
     ///
     /// `root_moves` is `Some` **only** for the root call, carrying the live
     /// [`RootMove`] list the reference's `iterative_deepening` owns; its presence
@@ -2363,8 +2326,8 @@ impl QSearch<'_> {
         let root_node = root_moves.is_some();
         let all_node = !(pv_node || cut_node);
 
-        // Dive into qsearch when the depth reaches zero (2240-2241). qsearch
-        // runs at the *same* ply, not `ss+1`.
+        // Dive into qsearch when the depth reaches zero. qsearch runs at the
+        // *same* ply, not `ss+1`.
         if depth <= 0 {
             self.pv_node = pv_node;
             self.read_tt = true;
@@ -2379,12 +2342,11 @@ impl QSearch<'_> {
 
         let s = Self::si(ply);
 
-        // The main-thread `check_time` (`yaneuraou-search.cpp`), once per
-        // interior node.
+        // The main-thread `check_time`, once per interior node.
         self.check_time();
 
         // -----------------------------------------------------------------
-        // Step 1. Initialize node (2333-2410).
+        // Step 1. Initialize node.
         // -----------------------------------------------------------------
         let in_check = pos.in_check();
         self.stack[s].in_check = in_check;
@@ -2394,8 +2356,8 @@ impl QSearch<'_> {
         self.stack[s].ply = ply;
         let mut best_value = -VALUE_INFINITE;
 
-        // `ss->followPV` (2355-2357): always true at the root, and below it
-        // tracks the previous iteration's PV.
+        // `ss->followPV`: always true at the root, and below it tracks the
+        // previous iteration's PV.
         let follow_pv = root_node
             || (ply >= 1
                 && self.stack[s - 1].follow_pv
@@ -2407,10 +2369,10 @@ impl QSearch<'_> {
             self.sel_depth = ply + 1;
         }
 
-        // The root never draws or mate-distance-prunes (2416-2524).
+        // The root never draws or mate-distance-prunes.
         if !root_node {
             // -------------------------------------------------------------
-            // Step 2. Immediate draw / max ply (2419-2461, non-root).
+            // Step 2. Immediate draw / max ply (non-root).
             // -------------------------------------------------------------
             let draw_type = pos.is_repetition(ply as u16);
             if draw_type != RepetitionState::None {
@@ -2420,13 +2382,13 @@ impl QSearch<'_> {
                 return value_from_tt(self.draw_value(draw_type, us), ply);
             }
             // An aborted non-root node yields the draw score without touching
-            // the TT (`yaneuraou-search.cpp`).
+            // the TT.
             if self.stopped || ply >= MAX_PLY || pos.ply() as i32 > self.max_moves_to_draw {
                 return self.draw_value(RepetitionState::Draw, us) + value_draw(self.nodes);
             }
 
             // -------------------------------------------------------------
-            // Step 3. Mate distance pruning (2520-2523).
+            // Step 3. Mate distance pruning.
             // -------------------------------------------------------------
             alpha = mated_in(ply).max(alpha);
             beta = mate_in(ply + 1).min(beta);
@@ -2436,7 +2398,7 @@ impl QSearch<'_> {
         }
 
         // -----------------------------------------------------------------
-        // Stack preparation (2535-2540).
+        // Stack preparation.
         // -----------------------------------------------------------------
         let prev_move = self.stack[s - 1].current_move;
         let prev_sq = if prev_move.is_ok() {
@@ -2451,7 +2413,7 @@ impl QSearch<'_> {
         self.stack[s + 2].cutoff_cnt = 0;
 
         // -----------------------------------------------------------------
-        // Step 4. Transposition table lookup (2543-2783).
+        // Step 4. Transposition table lookup.
         // -----------------------------------------------------------------
         let excluded_move = self.stack[s].excluded_move;
         let pos_key = pos.key();
@@ -2461,8 +2423,8 @@ impl QSearch<'_> {
         let (tt_hit, tt_data, tt_slot) = self.tt.locate(pos_key, side);
         self.stack[s].tt_hit = tt_hit;
         // At the root the current PV line's move is treated as the TT move
-        // whatever the probe returned (2625), while `tt_data`'s other fields are
-        // still consumed as usual.
+        // whatever the probe returned, while `tt_data`'s other fields are still
+        // consumed as usual.
         let tt_move = if let Some(rms) = root_moves.as_deref() {
             Some(rms[self.pv_idx].pv[0])
         } else if tt_hit {
@@ -2485,7 +2447,7 @@ impl QSearch<'_> {
         let mut ttpv = self.stack[s].tt_pv;
         let tt_capture = tt_move.is_some_and(|m| Self::is_capture(pos, m));
 
-        // Non-PV early TT cutoff (2675-2783).
+        // Non-PV early TT cutoff.
         if !pv_node
             && !excluded_move.is_ok()
             && tt_data.depth > depth - (tt_value <= beta) as i32
@@ -2525,7 +2487,7 @@ impl QSearch<'_> {
         }
 
         // -----------------------------------------------------------------
-        // Step 5. Mate-in-1 and declaration win (2881-2985).
+        // Step 5. Mate-in-1 and declaration win.
         // -----------------------------------------------------------------
         let mut unadjusted_static_eval = VALUE_NONE;
         if !root_node
@@ -2552,7 +2514,7 @@ impl QSearch<'_> {
         }
 
         // -----------------------------------------------------------------
-        // Step 6. Static evaluation (2990-3110).
+        // Step 6. Static evaluation.
         // -----------------------------------------------------------------
         let correction_value = self.correction_value(pos, ply);
         let eval: Value;
@@ -2579,7 +2541,7 @@ impl QSearch<'_> {
                 if !is_valid(unadjusted_static_eval) {
                     unadjusted_static_eval = self.static_eval(pos);
                 } else if pv_node {
-                    // USE_CLASSIC_EVAL re-eval on PV nodes (3032-3045).
+                    // USE_CLASSIC_EVAL re-eval on PV nodes.
                     unadjusted_static_eval = self.static_eval(pos);
                 }
                 let corrected = to_corrected_static_eval(unadjusted_static_eval, correction_value);
@@ -2606,7 +2568,7 @@ impl QSearch<'_> {
             }
             self.stack[s].static_eval = static_eval;
 
-            // Eval-diff history update (3111-3118).
+            // Eval-diff history update.
             if self.stack[s - 1].current_move.is_ok()
                 && !self.stack[s - 1].in_check
                 && !prior_capture
@@ -2634,7 +2596,7 @@ impl QSearch<'_> {
             improving = static_eval > self.stack[s - 2].static_eval;
             let opponent_worsening = static_eval > -self.stack[s - 1].static_eval;
 
-            // Hindsight depth adjustment (3161-3163).
+            // Hindsight depth adjustment.
             if prior_reduction >= 3 && !opponent_worsening {
                 depth += 1;
             }
@@ -2645,14 +2607,14 @@ impl QSearch<'_> {
                 depth -= 1;
             }
 
-            // Step 7. Razoring (3176-3177).
+            // Step 7. Razoring.
             if !pv_node && eval < alpha - 502 - 306 * depth * depth {
                 self.pv_node = false;
                 self.read_tt = true;
                 return self.qsearch(pos, ply, alpha, beta);
             }
 
-            // Step 8. Futility pruning (3202-3212).
+            // Step 8. Futility pruning.
             let futility_mult = 76 - 21 * (!tt_hit) as i32;
             let margin = futility_mult * depth
                 - (2686 * improving as i32 + 362 * opponent_worsening as i32) * futility_mult
@@ -2669,8 +2631,8 @@ impl QSearch<'_> {
                 return (2 * beta + eval) / 3;
             }
 
-            // Step 9. Null-move search with verification search (3234-3305).
-            // The reference's `pos.non_pawn_material(us)` term is inside
+            // Step 9. Null-move search with verification search. The
+            // reference's `pos.non_pawn_material(us)` term is inside
             // `#if STOCKFISH`, so it is absent here; `ss->ply >= nmpMinPly` is
             // what disables the pass while a verification search is in flight.
             if cut_node
@@ -2700,10 +2662,10 @@ impl QSearch<'_> {
                     None,
                 );
                 pos.undo_null_move();
-                // Do not return unproven mate scores (3269-3271).
+                // Do not return unproven mate scores.
                 if null_value >= beta && !is_win(null_value) {
                     // A shallow node, or one already inside a verification
-                    // search, trusts the pass outright (3278-3279).
+                    // search, trusts the pass outright.
                     if self.nmp_min_ply != 0 || depth < 16 {
                         return null_value;
                     }
@@ -2715,7 +2677,7 @@ impl QSearch<'_> {
                     // Verify by re-searching this **same** node — same ply, same
                     // stack cell, no `do_move` — at the reduced depth, with
                     // null-move pruning disabled until `ply` climbs past
-                    // `nmp_min_ply` (3290-3295).
+                    // `nmp_min_ply`.
                     self.nmp_min_ply = ply + 3 * (depth - r) / 4;
                     let v = self.search(
                         pos,
@@ -2743,7 +2705,7 @@ impl QSearch<'_> {
             ttpv = self.stack[s].tt_pv;
             improving |= static_eval >= beta;
 
-            // Step 10. Internal iterative reduction (3310-3311).
+            // Step 10. Internal iterative reduction.
             if !self.stack[s].follow_pv
                 && !all_node
                 && depth >= 6
@@ -2753,7 +2715,7 @@ impl QSearch<'_> {
                 depth -= 1;
             }
 
-            // Step 11. ProbCut (3348-3416).
+            // Step 11. ProbCut.
             let prob_cut_beta = beta + 224 - 61 * improving as i32;
             if depth >= 3 && !is_decisive(beta) && !(is_valid(tt_value) && tt_value < prob_cut_beta)
             {
@@ -2817,7 +2779,7 @@ impl QSearch<'_> {
 
         // ---- moves_loop: (in-check nodes resume here) ----
 
-        // Step 12. Small ProbCut (3426-3429).
+        // Step 12. Small ProbCut.
         let prob_cut_beta = beta + 416;
         if bound_matches(tt_data.bound, true)
             && tt_data.depth >= depth - 4
@@ -2830,7 +2792,7 @@ impl QSearch<'_> {
         }
 
         // -----------------------------------------------------------------
-        // Move-loop preparation (3439-3455).
+        // Move-loop preparation.
         // -----------------------------------------------------------------
         // Held as flat plane indices into the live table rather than snapshots,
         // so that a plane an earlier move's subtree updated is seen when a later
@@ -2850,7 +2812,7 @@ impl QSearch<'_> {
         let mut captures_searched = SearchedList::new();
 
         // -----------------------------------------------------------------
-        // Step 13. Loop through the moves (3467-4248).
+        // Step 13. Loop through the moves.
         // -----------------------------------------------------------------
         while let Some(mv) = mp.next_move(pos, &self.histories) {
             if mv == excluded_move {
@@ -2860,7 +2822,7 @@ impl QSearch<'_> {
             // `if (!pos.legal(move)) continue;` is already applied.
             //
             // At the root, skip moves outside the still-active tail
-            // `rootMoves[pvIdx..]` (3502-3512) — the ones earlier PV lines fixed.
+            // `rootMoves[pvIdx..]` — the ones earlier PV lines fixed.
             if let Some(rms) = root_moves.as_deref()
                 && !rms[self.pv_idx..].iter().any(|rm| rm.mv == mv)
             {
@@ -2879,15 +2841,15 @@ impl QSearch<'_> {
             let mut new_depth = depth - 1;
             let delta = beta - alpha;
             let mut r = self.reduction(improving, depth, move_count, delta);
-            // Read **live** here and at every in-loop site below (3564): an
-            // earlier move's singular re-entry can flip it, and the flip persists
-            // for the rest of this node's move loop.
+            // Read **live** here and at every in-loop site below: an earlier
+            // move's singular re-entry can flip it, and the flip persists for the
+            // rest of this node's move loop.
             if self.stack[s].tt_pv {
                 r += 1013;
             }
 
-            // Step 14. Pruning at shallow depths (3577-3691), skipped at the
-            // root, where every move must be searched.
+            // Step 14. Pruning at shallow depths, skipped at the root, where
+            // every move must be searched.
             if !root_node && !is_loss(best_value) {
                 if move_count >= (3 + depth * depth) / (2 - improving as i32) {
                     mp.skip_quiet_moves();
@@ -2953,13 +2915,13 @@ impl QSearch<'_> {
                 }
             }
 
-            // Step 15. Singular extension (3736-3850): re-enter **this** node
-            // with `move` excluded, and if every other move fails low under a
-            // reduced null window the ttMove is singular and gets extended.
+            // Step 15. Singular extension: re-enter **this** node with `move`
+            // excluded, and if every other move fails low under a reduced null
+            // window the ttMove is singular and gets extended.
             //
             // `(ttData.bound & BOUND_LOWER)` is a **bit** test, so Exact passes
             // it too. Every `ttData.value` here is the ply-adjusted `tt_value`,
-            // the reference having reassigned it at Step 4 (2635).
+            // the reference having reassigned it at Step 4.
             if !root_node
                 && Some(mv) == tt_move
                 && !excluded_move.is_ok()
@@ -3017,16 +2979,15 @@ impl QSearch<'_> {
                     // and the final TT-store depth both observe this bump.
                     depth += 1;
                 }
-                // Multi-cut pruning (3808-3811): if excluding the assumed
-                // fail-high ttMove still fails high over beta, this is not a
-                // singular node.
+                // Multi-cut pruning: if excluding the assumed fail-high ttMove
+                // still fails high over beta, this is not a singular node.
                 else if s_value >= beta && !is_decisive(s_value) {
                     self.histories
                         .tt_move
                         .update((-424 - 107 * depth).max(-3375));
                     return s_value;
                 }
-                // Negative extensions (3832-3841).
+                // Negative extensions.
                 else if tt_value >= beta {
                     extension = -3;
                 } else if cut_node {
@@ -3034,7 +2995,7 @@ impl QSearch<'_> {
                 }
             }
 
-            // Step 16. Make the move (3858-3932).
+            // Step 16. Make the move.
             let acc_delta = MoveDelta::from_move(pos, mv);
             self.nodes += 1;
             let undo = pos.do_move_with_check(mv, gives_check);
@@ -3046,12 +3007,12 @@ impl QSearch<'_> {
             self.push_accumulator(pos, &acc_delta);
             new_depth += extension;
 
-            // Taken *after* this move's `do_move` increment (3865), so that
+            // Taken *after* this move's `do_move` increment, so that
             // `rm.effort` sums only the subtree below the move.
             let node_count = self.nodes;
 
-            // Read **live** (3870), so it reflects any singular flip from this
-            // or an earlier move in the loop.
+            // Read **live**, so it reflects any singular flip from this or an
+            // earlier move in the loop.
             if self.stack[s].tt_pv {
                 r -= 2819
                     + pv_node as i32 * 973
@@ -3081,7 +3042,7 @@ impl QSearch<'_> {
                 r += r * 273 / (256 * depth + 260);
             }
 
-            // Step 17. Late-move reduction / extension (3945-4001).
+            // Step 17. Late-move reduction / extension.
             let mut value: Value = best_value;
             if depth >= 2 && move_count > 1 {
                 let d = ((new_depth - r / 1024).min(new_depth + 2)).max(1) + pv_node as i32;
@@ -3127,7 +3088,7 @@ impl QSearch<'_> {
                     );
                 }
             }
-            // Step 18. Full-depth search when LMR is skipped (4008-4021).
+            // Step 18. Full-depth search when LMR is skipped.
             else if !pv_node || move_count > 1 {
                 if tt_move.is_none() {
                     r += 1057;
@@ -3148,7 +3109,7 @@ impl QSearch<'_> {
                 );
             }
 
-            // PV full-window search (4034-4051).
+            // PV full-window search.
             if pv_node && (move_count == 1 || value > alpha) {
                 self.stack[s + 1].pv.clear();
                 if Some(mv) == tt_move
@@ -3172,21 +3133,21 @@ impl QSearch<'_> {
                 );
             }
 
-            // Step 19. Undo move (4059).
+            // Step 19. Undo move.
             pos.undo_move(mv, undo);
             self.pop_accumulator();
 
             // A stop inside this move's subtree makes the returned value
-            // untrustworthy (`yaneuraou-search.cpp`), so nothing — best
-            // move, PV, root-move list, TT — may be updated from it.
+            // untrustworthy, so nothing — best move, PV, root-move list, TT —
+            // may be updated from it.
             if self.stopped {
                 return VALUE_DRAW;
             }
 
-            // Step 20. Root-node special processing (4080-4172): fold this
-            // move's result into its `RootMove` before the generic best-move
-            // logic. A searched root move is always in the list, so the `if let`
-            // is only for totality.
+            // Step 20. Root-node special processing: fold this move's result
+            // into its `RootMove` before the generic best-move logic. A searched
+            // root move is always in the list, so the `if let` is only for
+            // totality.
             if let Some(rms) = root_moves.as_deref_mut()
                 && let Some(rm) = rms.iter_mut().find(|rm| rm.mv == mv)
             {
@@ -3222,8 +3183,8 @@ impl QSearch<'_> {
                     rm.pv.extend(self.stack[s + 1].pv.iter().copied());
 
                     // How often the best move changes within an iteration, for
-                    // time management (4149-4150). Only the first PV line counts,
-                    // and only a *change*.
+                    // time management. Only the first PV line counts, and only a
+                    // *change*.
                     if move_count > 1 && self.pv_idx == 0 {
                         match &self.best_move_tally {
                             Some((slots, idx)) => {
@@ -3239,7 +3200,7 @@ impl QSearch<'_> {
                 }
             }
 
-            // Step 20 (cont). Check for a new best move (4185-4247).
+            // Step 20 (cont). Check for a new best move.
             let inc = ((value == best_value)
                 && (ply + 2 >= self.root_depth)
                 && ((self.nodes as i32) & 14) == 0
@@ -3248,8 +3209,8 @@ impl QSearch<'_> {
                 best_value = value;
                 if value + inc > alpha {
                     best_move = mv;
-                    // Updated even on a fail high, but not at the root (4196),
-                    // where the PV is the `RootMove`'s.
+                    // Updated even on a fail high, but not at the root, where
+                    // the PV is the `RootMove`'s.
                     if pv_node && !root_node {
                         self.update_pv(ply, mv);
                     }
@@ -3273,7 +3234,7 @@ impl QSearch<'_> {
         }
 
         // -----------------------------------------------------------------
-        // Step 21-23. Mate check, stat updates, TT write (4270-4414).
+        // Step 21-23. Mate check, stat updates, TT write.
         // -----------------------------------------------------------------
         if best_value >= beta && !is_decisive(best_value) && !is_decisive(alpha) {
             best_value = (best_value * depth + beta) / (depth + 1);
@@ -3355,9 +3316,8 @@ impl QSearch<'_> {
             self.stack[s].tt_pv = self.stack[s].tt_pv || self.stack[s - 1].tt_pv;
         }
 
-        // At the root, PV lines beyond the first must **not** overwrite the TT
-        // (4387): their reduced windows would poison the entry the first line
-        // wrote.
+        // At the root, PV lines beyond the first must **not** overwrite the TT:
+        // their reduced windows would poison the entry the first line wrote.
         let skip_tt_write = excluded_move.is_ok() || (root_node && self.pv_idx != 0);
         if !skip_tt_write {
             let bound = if best_value >= beta {
@@ -3384,7 +3344,7 @@ impl QSearch<'_> {
             );
         }
 
-        // Correction-history update (4401-4409).
+        // Correction-history update.
         if !(in_check || (best_move.is_ok() && Self::is_capture(pos, best_move)))
             && (best_value > static_eval) == best_move.is_ok()
         {
@@ -4174,7 +4134,7 @@ mod tests {
     }
 
     // The reference folds **every** worker's `bestMoveChanges` in and zeroes
-    // each, on the main thread only (`yaneuraou-search.cpp`).
+    // each, on the main thread only.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn fold_best_move_changes_sums_and_zeroes_every_slot() {
@@ -4326,8 +4286,8 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn qsearch_forced_draw_past_max_moves_to_draw_is_exact() {
         // With the horizon below the game ply, the ply-0 node adjudicates an
-        // unconditional draw before any eval or `do_move` (4616), returning
-        // exactly `draw_value(REPETITION_DRAW, root_us) + value_draw(0)`.
+        // unconditional draw before any eval or `do_move`, returning exactly
+        // `draw_value(REPETITION_DRAW, root_us) + value_draw(0)`.
         let net = zero_net();
         let table = fresh_tt();
         let mut p = pos("lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 60");
@@ -4367,7 +4327,7 @@ mod tests {
         // A gold-drop head mate at a high game ply. Under the default horizon
         // the search finds it; with the horizon below the game ply every
         // interior node adjudicates a draw first, so the score collapses to the
-        // draw band. This drives both horizon sites, at 2460 and 4616.
+        // draw band. This drives both horizon sites.
         let net = zero_net();
         let p = pos("k8/9/G1N6/9/9/9/9/9/8K b G 100");
 

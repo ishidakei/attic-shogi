@@ -482,10 +482,9 @@ fn byoyomi_mini_game_makes_every_deadline_with_one_bestmove_each() {
     };
 
     // With the main clock exhausted every move has only the byoyomi period —
-    // the reference "final push" shape (`timeman.cpp`), where
-    // `time[us] < byoyomi * 1.2` makes the manager spend it. The per-move wall
-    // bound is loose for the same checkpoint-granularity reason as the Fischer
-    // test above.
+    // the reference "final push" shape, where `time[us] < byoyomi * 1.2` makes
+    // the manager spend it. The per-move wall bound is loose for the same
+    // checkpoint-granularity reason as the Fischer test above.
     const BYOYOMI: u64 = 1000;
     let per_move_bound = Duration::from_secs(3);
 

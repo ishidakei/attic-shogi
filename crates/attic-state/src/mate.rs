@@ -1,6 +1,5 @@
-//! One-ply mate detector, ported from `Mate::mate_1ply`
-//! (`mate/mate1ply_without_effect.cpp` — the table-driven detector the standard
-//! build selects, not `mate1ply_with_effect.cpp`).
+//! One-ply mate detector, ported from the reference's table-driven variant —
+//! the one the standard build selects, not the effect-based one.
 //!
 //! **The detector is deliberately incomplete**: it does not find every legal
 //! 1-ply mate. The reference compiles several blocks out with `#if 0` —

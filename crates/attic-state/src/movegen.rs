@@ -280,8 +280,8 @@ pub(crate) fn attackers_bb_occ(
 }
 
 /// Both colours' attackers of `sq` under occupancy `occ` in one pass
-/// (`Position::attackers_to`, position.cpp). Bit-identical to
-/// OR-ing [`attackers_bb_occ`] over the two colours.
+/// (`Position::attackers_to`). Bit-identical to OR-ing [`attackers_bb_occ`]
+/// over the two colours.
 ///
 /// The lance rays are folded into the shared rook walk rather than walked
 /// separately: a `color` lance attacks `sq` iff it lies on the `opp`-direction
@@ -426,8 +426,8 @@ pub(crate) fn drop_is_uchifuzume(pre: &Position, m: Move) -> bool {
 }
 
 impl Position {
-    /// `Position::legal_drop(to)` (`position.cpp`): `true` iff
-    /// dropping a side-to-move pawn on `to` is **legal**, i.e. *not* uchifuzume.
+    /// `Position::legal_drop(to)`: `true` iff dropping a side-to-move pawn on
+    /// `to` is **legal**, i.e. *not* uchifuzume.
     ///
     /// Precondition, asserted below as the reference asserts it: the dropped
     /// pawn on `to` checks the enemy king.
@@ -474,10 +474,9 @@ impl Position {
 }
 
 /// `c`'s pieces attacking the pawn-drop square `pawn_sq`
-/// (`Position::attackers_to_pawn`, `position.cpp`). The uchifuzume
-/// test handles the enemy king separately, and a lance can never attack
-/// `pawn_sq` because the king stands directly between, so neither contributes
-/// here.
+/// (`Position::attackers_to_pawn`). The uchifuzume test handles the enemy king
+/// separately, and a lance can never attack `pawn_sq` because the king stands
+/// directly between, so neither contributes here.
 fn attackers_to_pawn(board: &Board, c: Color, pawn_sq: Square) -> crate::bitboard::Bitboard {
     use crate::bitboard::{
         bishop_attacks, gold_attacks, knight_attacks, rook_attacks, silver_attacks,
@@ -1368,9 +1367,9 @@ mod tests {
         );
     }
 
-    // 連続王手の千日手 (perpetual check) carries no movegen term either
-    // (`movegen.cpp`): a move completing a perpetual-check 4-fold is
-    // still generated, and the consequence is scored by the search.
+    // 連続王手の千日手 (perpetual check) carries no movegen term either: a move
+    // completing a perpetual-check 4-fold is still generated, and the
+    // consequence is scored by the search.
 
     /// A White king at (4,0) in check from a Black rook at (4,1). The 4-move
     /// cycle below returns to this state with Black checking on every move.

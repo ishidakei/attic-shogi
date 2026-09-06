@@ -194,10 +194,9 @@ fn resign_value_resigns_a_lost_position_but_default_plays() {
         "ResignValue 100 must resign a lost position:\n{resign_leg}"
     );
 
-    // The final PV must precede `bestmove resign` (`yaneuraou-search.cpp`)
-    // so the GUI sees the score the resignation was decided on. A run whose last
-    // iteration was already emitted would otherwise resign with no `info score`
-    // line at all.
+    // The final PV must precede `bestmove resign` so the GUI sees the score the
+    // resignation was decided on. A run whose last iteration was already emitted
+    // would otherwise resign with no `info score` line at all.
     let before_bestmove = resign_leg
         .split_once("bestmove")
         .map(|(head, _)| head)
@@ -293,7 +292,7 @@ fn go_mate_threads2_smoke_completes() {
 #[cfg_attr(miri, ignore)]
 fn time_managed_threads2_smoke_completes() {
     // A real clock engages time management, exercising the Lazy-SMP
-    // best-move-change aggregation (`yaneuraou-search.cpp`).
+    // best-move-change aggregation.
     let dir = TempDir::new("time-t2");
     write_synthetic_nn_bin(dir.path());
     let e = dir.path().to_str().unwrap();

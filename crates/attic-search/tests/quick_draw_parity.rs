@@ -10,13 +10,13 @@
 //! ```
 //!
 //! Along `S*5c K5bx5c G*5b K5cx5b` the position at ply 4 repeats the root board
-//! with Black's hand strictly poorer. Under `ENABLE_QUICK_DRAW`
-//! (`position.cpp`, which the reference's `FOR_TOURNAMENT` build
-//! compiles) that adjudicates `REPETITION_INFERIOR` immediately: there is no
-//! `st->repetition < ply` root gate, so a recurrence landing exactly *on* the
-//! search root still counts. The non-QUICK_DRAW gate evaluates `4 < 4` and
-//! searches on, which is worth 11 extra nodes at depth 3 (3,924 vs the
-//! reference's 3,913) and cascades through the transposition table from there.
+//! with Black's hand strictly poorer. Under `ENABLE_QUICK_DRAW` (which the
+//! reference's `FOR_TOURNAMENT` build compiles) that adjudicates
+//! `REPETITION_INFERIOR` immediately: there is no `st->repetition < ply` root
+//! gate, so a recurrence landing exactly *on* the search root still counts. The
+//! non-QUICK_DRAW gate evaluates `4 < 4` and searches on, which is worth 11
+//! extra nodes at depth 3 (3,924 vs the reference's 3,913) and cascades through
+//! the transposition table from there.
 //!
 //! Both fixtures were captured from the **tournament** reference build
 //! (`cargo xtask build-reference`) with Threads=1, no book, `usinewgame` before
@@ -41,11 +41,11 @@ use attic_state::{Move, Position, format_usi_move, parse_sfen, parse_usi_move};
 use attic_storage::TranspositionTable;
 use serde::Deserialize;
 
-/// `VALUE_MATE` (`types.h`).
+/// `VALUE_MATE`.
 const VALUE_MATE: i32 = 32000;
-/// The `is_decisive` threshold (`types.h`).
+/// The `is_decisive` threshold.
 const VALUE_TB_WIN_IN_MAX_PLY: i32 = VALUE_MATE - 246;
-/// `Eval::PawnValue` (`usi.cpp`).
+/// `Eval::PawnValue`.
 const PAWN_VALUE: i32 = 90;
 
 /// Both fixtures pin `bestmove` / `score` / `nodes` hard.
@@ -118,13 +118,13 @@ fn bestmove_usi(best_move: Move, kind: RootKind) -> String {
     }
 }
 
-/// `is_decisive` (`types.h`).
+/// `is_decisive`.
 fn is_decisive(v: i32) -> bool {
     v.abs() >= VALUE_TB_WIN_IN_MAX_PLY
 }
 
-/// Format a search value as the reference USI layer does (`format_score`,
-/// `usi.cpp`): a mate distance for a decisive score, else centipawns.
+/// Format a search value as the reference USI layer does (`format_score`): a
+/// mate distance for a decisive score, else centipawns.
 fn format_score(v: i32) -> ScoreJson {
     if is_decisive(v) {
         let distance = VALUE_MATE - v.abs();

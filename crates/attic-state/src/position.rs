@@ -19,12 +19,12 @@ const HAND_KINDS: [PieceKind; 7] = [
 ];
 
 /// Maximum look-back, in plies, for repetition detection
-/// (`Position::max_repetition_ply`, `position.cpp`). The walk is capped here
-/// regardless of `plies_from_null`, because looking further back is rarely
-/// productive and measurably slows the engine.
+/// (`Position::max_repetition_ply`). The walk is capped here regardless of
+/// `plies_from_null`, because looking further back is rarely productive and
+/// measurably slows the engine.
 const MAX_REPETITION_PLY: i32 = 16;
 
-/// Classification of a repeated position (`RepetitionState`, `types.h`).
+/// Classification of a repeated position (`RepetitionState`).
 ///
 /// `Win` and `Lose` are stated from the viewpoint of the **side to move** in
 /// the position asked about, *not* of whoever delivered the checks: `Lose`
@@ -48,7 +48,7 @@ pub enum RepetitionState {
 }
 
 /// `true` iff `superior` holds an equal-or-greater count of **every** hand
-/// piece kind than `inferior` (`hand_is_equal_or_superior`, `types.h`).
+/// piece kind than `inferior` (`hand_is_equal_or_superior`).
 fn hand_is_equal_or_superior(superior: &Hand, inferior: &Hand) -> bool {
     HAND_KINDS
         .iter()
@@ -66,10 +66,9 @@ fn piece_before_move(m: Move, piece_after: Piece) -> Piece {
 }
 
 /// Is `side_to_move`'s king attacked on the just-updated board? The debug-only
-/// equivalence oracle for the flag passed into
-/// [`Position::do_move_with_check`] (the reference `ASSERT_LV3`,
-/// `position.cpp`). An absent king — a pseudo-legal probe move captured
-/// it — gives `false`, matching the predicate.
+/// equivalence oracle for the flag passed into [`Position::do_move_with_check`]
+/// (the reference `ASSERT_LV3`). An absent king — a pseudo-legal probe move
+/// captured it — gives `false`, matching the predicate.
 #[cfg(debug_assertions)]
 fn post_move_gives_check(board: &Board, side_to_move: Color) -> bool {
     match try_find_king(board, side_to_move) {
@@ -302,10 +301,10 @@ impl Position {
     }
 
     /// XOR `piece`'s `psq` term into the partial keys it belongs to
-    /// (`xor_piece_for_partial_key`, `position.cpp`). Every board piece is
-    /// in exactly one of `pawn_key` / `non_pawn_key[color]`, and a minor piece
-    /// additionally toggles `minor_piece_key`. XOR is self-inverse, so the same
-    /// call both places and removes.
+    /// (`xor_piece_for_partial_key`). Every board piece is in exactly one of
+    /// `pawn_key` / `non_pawn_key[color]`, and a minor piece additionally
+    /// toggles `minor_piece_key`. XOR is self-inverse, so the same call both
+    /// places and removes.
     fn xor_piece_partial(&mut self, piece: Piece, sq: Square) {
         let term = crate::key::psq(piece, sq);
         if piece.kind == PieceKind::Pawn && !piece.promoted {
@@ -343,7 +342,7 @@ impl Position {
     }
 
     /// Recompute the three partial keys from scratch, mirroring the per-piece
-    /// walk in `Position::set()` (`position.cpp`).
+    /// walk in `Position::set()`.
     fn recomputed_partial_keys(&self) -> (u64, u64, [u64; Color::COUNT]) {
         let mut scratch = Position::empty();
         for index in 0..Square::COUNT as u8 {
@@ -375,16 +374,15 @@ impl Position {
 
     /// Play `m`, deciding check status from the parent's cached check info
     /// before touching the board — the reference convenience overload
-    /// `do_move(m, newSt)` (`position.h`). The hot search sites call
+    /// `do_move(m, newSt)`. The hot search sites call
     /// [`Self::do_move_with_check`] instead, with a flag they already have.
     pub fn do_move(&mut self, m: Move) -> Undo {
         let gc = self.gives_check(m);
         self.do_move_with_check(m, gc)
     }
 
-    /// Play `m` given the pre-computed `gives_check` predicate
-    /// (`do_move(m, newSt, givesCheck)`, `position.h`). `gives_check` must
-    /// equal `self.gives_check(m)` evaluated from the pre-move position.
+    /// Play `m` given the pre-computed `gives_check` predicate. `gives_check`
+    /// must equal `self.gives_check(m)` evaluated from the pre-move position.
     pub fn do_move_with_check(&mut self, m: Move, gives_check: bool) -> Undo {
         // Re-captured on every fresh start, so the lookback root always reflects
         // the actual head of the current line.
@@ -453,11 +451,11 @@ impl Position {
         self.ply = self.ply.wrapping_add(1);
         self.board_key ^= crate::key::side();
 
-        // Asserted in one direction only, matching the reference `ASSERT_LV3`
-        // (`position.cpp`), which sits inside its `if (givesCheck)` branch.
-        // The converse would fire wrongly where the side not to move was already
-        // in check before the move: the predicate correctly reports no *new*
-        // check while the full probe still sees the pre-existing checker.
+        // Asserted in one direction only, matching the reference `ASSERT_LV3`,
+        // which sits inside its `if (givesCheck)` branch. The converse would
+        // fire wrongly where the side not to move was already in check before
+        // the move: the predicate correctly reports no *new* check while the
+        // full probe still sees the pre-existing checker.
         #[cfg(debug_assertions)]
         if gives_check {
             debug_assert!(
@@ -467,8 +465,7 @@ impl Position {
             );
         }
 
-        // The non-mover's run is inherited unchanged
-        // (`position.cpp`).
+        // The non-mover's run is inherited unchanged.
         let mut continuous_check = prev.continuous_check;
         continuous_check[mover.index()] = if gives_check {
             prev.continuous_check[mover.index()] + 2
@@ -477,9 +474,9 @@ impl Position {
         };
 
         // The child `checkersBB`, built differentially from the parent info and
-        // the move (`do_move_impl`, `position.cpp`) rather than
-        // by a full reverse-attack probe. `self.check_info` is still the parent
-        // value here; the board and side are already final.
+        // the move (`do_move_impl`) rather than by a full reverse-attack probe.
+        // `self.check_info` is still the parent value here; the board and side
+        // are already final.
         let child_checkers = if gives_check {
             self.differential_child_checkers(m, mover, &self.check_info)
         } else {
@@ -527,8 +524,8 @@ impl Position {
             repetition_type: RepetitionState::None,
         });
 
-        // The `quick-draw` build compiles this precompute out
-        // (`position.cpp`) and walks the chain at query time instead.
+        // The `quick-draw` build compiles this precompute out and walks the
+        // chain at query time instead.
         #[cfg(not(feature = "quick-draw"))]
         self.store_current_repetition();
 
@@ -614,8 +611,8 @@ impl Position {
     /// Play a null move: pass the turn without touching the board or hands
     /// (`Position::do_null_move`). Undo with [`Self::undo_null_move`].
     ///
-    /// `pliesFromNull` resets to 0 here (`position.cpp`), so that
-    /// repetition detection never looks back across the null move.
+    /// `pliesFromNull` resets to 0 here, so that repetition detection never
+    /// looks back across the null move.
     pub fn do_null_move(&mut self) {
         if self.history.is_empty() {
             self.root = Some(self.root_state());
@@ -632,9 +629,9 @@ impl Position {
         self.ply = self.ply.wrapping_add(1);
         self.board_key ^= crate::key::side();
 
-        // A null move is never a check, so it breaks the passing side's streak
-        // (`position.cpp`). The new side to move's run is already 0 by the
-        // reference invariant that one cannot null out of check.
+        // A null move is never a check, so it breaks the passing side's streak.
+        // The new side to move's run is already 0 by the reference invariant
+        // that one cannot null out of check.
         let mut continuous_check = prev.continuous_check;
         continuous_check[null_mover.index()] = 0;
 
@@ -652,7 +649,7 @@ impl Position {
             plies_from_null: 0,
             continuous_check,
             // A state reached directly by a null move is never itself a
-            // repetition (`position.cpp`).
+            // repetition.
             #[cfg(not(feature = "quick-draw"))]
             repetition: 0,
             #[cfg(not(feature = "quick-draw"))]
@@ -741,8 +738,8 @@ impl Position {
     }
 
     /// The incremental repetition triple for the **current** position, walking
-    /// the `StateInfo` chain back in steps of two (`position.cpp`)
-    /// and classifying the nearest matching prior occurrence.
+    /// the `StateInfo` chain back in steps of two and classifying the nearest
+    /// matching prior occurrence.
     ///
     /// It reads the *stored* `repetition_times` / `repetition_type` of that
     /// occurrence, so the chain it builds on must already carry them; every
@@ -774,7 +771,7 @@ impl Position {
                             RepetitionState::Draw
                         };
                         // A cycle that was perpetual check only part of the way
-                        // is an ordinary draw (`position.cpp`).
+                        // is an ordinary draw.
                         if prev.repetition_times != 0 && typ != prev.repetition_type {
                             typ = RepetitionState::Draw;
                         }
@@ -782,7 +779,7 @@ impl Position {
                     }
                     // Piece conservation moves the opponent's hand oppositely,
                     // so the side to move's hand alone decides. Note
-                    // `repetition_times` stays 0 (`position.cpp`).
+                    // `repetition_times` stays 0.
                     let cur_hand = &self.hands[stm.index()];
                     let prev_hand = &prev.hands[stm.index()];
                     if hand_is_equal_or_superior(cur_hand, prev_hand) {
@@ -801,7 +798,7 @@ impl Position {
     }
 
     /// Classify the current position as a repetition, from the search's
-    /// viewpoint at distance `ply` from the root (`position.cpp`).
+    /// viewpoint at distance `ply` from the root.
     ///
     /// The `repetition < ply` gate means a **positive** `repetition` (a 2nd or
     /// 3rd occurrence) is reported only when the earlier occurrence lies
@@ -820,21 +817,20 @@ impl Position {
     }
 
     /// Classify the current position as a repetition — the `ENABLE_QUICK_DRAW`
-    /// variant (`position.cpp`), which the reference's
-    /// `FOR_TOURNAMENT` build compiles and this crate selects by default.
+    /// variant, which the reference's `FOR_TOURNAMENT` build compiles and this
+    /// crate selects by default.
     ///
     /// It differs from the variant above in three ways, each of them upstream's:
     ///
     /// - **`ply` is ignored.** A repetition whose earlier occurrence lies at or
     ///   before the search root adjudicates just like one inside the search
-    ///   window; upstream measures that as worth roughly +R5
-    ///   (`position.cpp`). The parameter stays in the signature so both
-    ///   configurations present one API.
+    ///   window; upstream measures that as worth roughly +R5. The parameter
+    ///   stays in the signature so both configurations present one API.
     /// - **The 2nd occurrence already adjudicates.** The first `board_key` hit
     ///   on the backward walk decides, so there is no fourfold requirement and
     ///   no downgrade to `Draw` for a partly-perpetual cycle.
     /// - **The walk runs at query time**, over the same window, whose cap is a
-    ///   literal 16 rather than the search ply (`position.cpp`).
+    ///   literal 16 rather than the search ply.
     #[cfg(feature = "quick-draw")]
     pub fn is_repetition(&self, _ply: u16) -> RepetitionState {
         let end = MAX_REPETITION_PLY.min(self.current_plies_from_null());

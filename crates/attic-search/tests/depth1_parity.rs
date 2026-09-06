@@ -17,11 +17,11 @@ use attic_state::{Move, Position, format_usi_move, parse_sfen, parse_usi_move};
 use attic_storage::TranspositionTable;
 use serde::Deserialize;
 
-/// `VALUE_MATE` (`types.h`).
+/// `VALUE_MATE`.
 const VALUE_MATE: i32 = 32000;
-/// The `is_decisive` threshold (`types.h`).
+/// The `is_decisive` threshold.
 const VALUE_TB_WIN_IN_MAX_PLY: i32 = VALUE_MATE - 246;
-/// `Eval::PawnValue` (`usi.cpp`).
+/// `Eval::PawnValue`.
 const PAWN_VALUE: i32 = 90;
 /// Engine default `USI_Hash` in MiB (`tests/fixtures/search-depth1/README.md`).
 const HASH_MB: usize = 1024;
@@ -91,13 +91,13 @@ fn bestmove_usi(best_move: Move, kind: RootKind) -> String {
     }
 }
 
-/// `is_decisive` (`types.h`).
+/// `is_decisive`.
 fn is_decisive(v: i32) -> bool {
     v.abs() >= VALUE_TB_WIN_IN_MAX_PLY
 }
 
-/// Format a search value as the reference USI layer does (`format_score`,
-/// `usi.cpp`): a mate distance for a decisive score, else centipawns.
+/// Format a search value as the reference USI layer does (`format_score`): a
+/// mate distance for a decisive score, else centipawns.
 fn format_score(v: i32) -> ScoreJson {
     if is_decisive(v) {
         let distance = VALUE_MATE - v.abs();

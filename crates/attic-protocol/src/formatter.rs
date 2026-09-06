@@ -74,8 +74,7 @@ impl<'w, W: Write + ?Sized> Formatter<'w, W> {
     }
 
     /// Emit a verbatim line with no USI keyword prefix — only the
-    /// option-override diagnostics the reference prints to raw `std::cout`
-    /// (`usioption.cpp`).
+    /// option-override diagnostics the reference prints to raw `std::cout`.
     pub fn raw_line(&mut self, text: &str) -> io::Result<()> {
         self.line(format_args!("{text}"))
     }

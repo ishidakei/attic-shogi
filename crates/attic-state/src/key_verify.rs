@@ -1,6 +1,5 @@
 //! Independent verification that the port's Zobrist tables and composed
-//! position keys are bit-identical to the reference `Position::init`
-//! (`position.cpp`).
+//! position keys are bit-identical to the reference `Position::init`.
 //!
 //! Nothing here may call, read, or copy [`crate::key`]'s generation internals:
 //! the reference algorithm is re-derived from scratch, and the only things
@@ -15,9 +14,9 @@ use crate::piece::{Piece, PieceKind};
 use crate::position::Position;
 use crate::square::Square;
 
-/// The reference PRNG seed (`position.cpp`).
+/// The reference PRNG seed.
 const SEED: u64 = 20151225;
-/// The `xorshift64*` output multiplier (`misc.h`).
+/// The `xorshift64*` output multiplier.
 const MULT: u64 = 2685821657736338717;
 
 /// Every [`PieceKind`] in the port's own index order, which is what
@@ -43,7 +42,7 @@ impl Prng {
         Self { state: seed }
     }
 
-    /// One `PRNG::rand64()` step (`misc.h`).
+    /// One `PRNG::rand64()` step.
     fn rand64(&mut self) -> u64 {
         let mut x = self.state;
         x ^= x >> 12;
@@ -53,8 +52,8 @@ impl Prng {
         x.wrapping_mul(MULT)
     }
 
-    /// The reference `set_rand` (`position.cpp`, `SET_HASH` at
-    /// `key128.h`): draw four words, keep the first.
+    /// The reference `set_rand` (`SET_HASH` at): draw four words, keep the
+    /// first.
     fn set_rand(&mut self) -> u64 {
         let r1 = self.rand64();
         let _r2 = self.rand64();
@@ -77,11 +76,11 @@ struct RefTables {
     hand: [[u64; 8]; Color::COUNT],
 }
 
-/// Decode a reference `Piece` code (`types.h`) into `(promoted, color,
-/// kind)`, or `None` for a code that never lands on a board — `NO_PIECE` (`0`),
-/// the unnamed gap at `16`, and the `B_GOLDS` / `W_GOLDS` meta pieces
-/// (`15` / `31`). `None` codes are still *drawn*, to keep the PRNG stream
-/// aligned, but carry no port entry to compare against.
+/// Decode a reference `Piece` code into `(promoted, color, kind)`, or `None`
+/// for a code that never lands on a board — `NO_PIECE`, the unnamed gap at
+/// `16`, and the `B_GOLDS` / `W_GOLDS` meta pieces. `None` codes are still
+/// *drawn*, to keep the PRNG stream aligned, but carry no port entry to compare
+/// against.
 fn decode_ref_piece(pc: usize) -> Option<(bool, Color, PieceKind)> {
     if pc == 0 || pc == 16 {
         return None; // NO_PIECE and the 16 gap between B_GOLDS and W_PAWN.
@@ -106,8 +105,7 @@ fn decode_ref_piece(pc: usize) -> Option<(bool, Color, PieceKind)> {
 }
 
 /// Map a reference `PieceType` (`1..=8`) to this port's [`PieceKind`]. The
-/// reference order (`types.h`) puts `GOLD` after `ROOK`, so the remap is
-/// not the identity.
+/// reference order puts `GOLD` after `ROOK`, so the remap is not the identity.
 fn ref_piece_type_to_kind(pt: usize) -> Option<PieceKind> {
     Some(match pt {
         1 => PieceKind::Pawn,
@@ -128,7 +126,7 @@ fn derive_reference_tables() -> RefTables {
     let mut rng = Prng::new(SEED);
 
     // `Zobrist::zero` is literal zeros and draws nothing, so `side` and
-    // `noPawns` are the first two live draws (`position.cpp`).
+    // `noPawns` are the first two live draws.
     let side = rng.set_rand();
     let no_pawns = rng.set_rand();
 
@@ -245,8 +243,8 @@ fn compose_key(pos: &Position, refs: &RefTables) -> u64 {
     board_key ^ hand_key
 }
 
-/// Encode a port [`Piece`] into its reference `Piece` code (`types.h`,
-/// `PIECE_WHITE == 16`).
+/// Encode a port [`Piece`] into its reference `Piece` code
+/// (`PIECE_WHITE == 16`).
 fn ref_code_for_port_piece(piece: Piece) -> usize {
     let ref_pt = match piece.kind {
         PieceKind::Pawn => 1,

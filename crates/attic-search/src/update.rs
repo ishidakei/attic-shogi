@@ -1,8 +1,7 @@
 //! History-table **update** machinery, ported from the reference's
 //! `update_all_stats`, `update_quiet_histories`,
-//! `update_continuation_histories` and `update_correction_history`
-//! (`yaneuraou-search.cpp`), which the line numbers in the
-//! comments below point into.
+//! `update_continuation_histories` and `update_correction_history`, which the
+//! line numbers in the comments below point into.
 //!
 //! These functions are decoupled from the search body: they take a
 //! [`WorkerHistories`] bundle and a slice of [`SearchStackCell`]s, with the
@@ -18,7 +17,7 @@ use crate::history::{
     CorrChannel, LOW_PLY_HISTORY_SIZE, LowPlyHistory, SharedHistories, TtMoveHistory,
 };
 
-/// Reference `clear()` init constants (`yaneuraou-search.cpp`).
+/// Reference `clear()` init constants.
 const MAIN_HISTORY_INIT: i16 = 0;
 const CAPTURE_HISTORY_INIT: i16 = -678;
 const CONTINUATION_INIT: i16 = -523;
@@ -27,13 +26,12 @@ const CONTINUATION_CORRECTION_INIT: i16 = 6;
 #[cfg(test)]
 const PAWN_HISTORY_INIT: i16 = -1238;
 
-/// Capacity of a searched-move list (`SEARCHEDLIST_CAPACITY`,
-/// `yaneuraou-search.cpp`).
+/// Capacity of a searched-move list (`SEARCHEDLIST_CAPACITY`).
 pub const SEARCHED_LIST_CAPACITY: usize = 32;
 
-/// A fixed-capacity list of the moves tried at a node (`SearchedList`,
-/// `movepick.h`). Inline, so that it costs no per-node heap allocation; the
-/// search only pushes while the move count is under capacity.
+/// A fixed-capacity list of the moves tried at a node (`SearchedList`). Inline,
+/// so that it costs no per-node heap allocation; the search only pushes while
+/// the move count is under capacity.
 #[derive(Clone)]
 pub struct SearchedList {
     moves: [Move; SEARCHED_LIST_CAPACITY],
@@ -200,22 +198,21 @@ impl Default for SearchStackCell {
     }
 }
 
-/// Plies-and-weights for [`update_continuation_histories`]
-/// (`yaneuraou-search.cpp`): `{1:1157, 2:648, 3:288, 4:576, 5:140,
-/// 6:441}`.
+/// Plies-and-weights for [`update_continuation_histories`]:
+/// `{1:1157, 2:648, 3:288, 4:576, 5:140, 6:441}`.
 const CONTHIST_BONUSES: [(usize, i32); 6] =
     [(1, 1157), (2, 648), (3, 288), (4, 576), (5, 140), (6, 441)];
 
-/// A *plain* capture test (`Position::capture`, `position.h`): a non-drop
-/// landing on an occupied square. In this engine `capture_stage == capture`
-/// (`position.h`), so this is the exact predicate `update_all_stats` uses.
+/// A *plain* capture test (`Position::capture`): a non-drop landing on an
+/// occupied square. In this engine `capture_stage == capture`, so this is the
+/// exact predicate `update_all_stats` uses.
 fn is_capture(pos: &Position, m: Move) -> bool {
     !m.is_drop() && pos.board().get(m.to_sq()).is_some()
 }
 
-/// `update_continuation_histories(ss, pc, to, bonus)`
-/// (`yaneuraou-search.cpp`): fold `bonus` into the continuation
-/// planes of the previous plies formed with the current `(pc, to)`.
+/// `update_continuation_histories(ss, pc, to, bonus)`: fold `bonus` into the
+/// continuation planes of the previous plies formed with the current
+/// `(pc, to)`.
 ///
 /// `ss` is the index of the *current* cell in `stack`; `(ss - i)` cells are
 /// earlier plies. Each write is guarded by `(ss - i)->currentMove` being an ok
@@ -244,9 +241,8 @@ pub fn update_continuation_histories(
     }
 }
 
-/// `update_quiet_histories(pos, ss, w, move, bonus)`
-/// (`yaneuraou-search.cpp`): the reference's quiet-move heuristic
-/// bump. `ss` is the current cell index in `stack`.
+/// `update_quiet_histories(pos, ss, w, move, bonus)`: the reference's
+/// quiet-move heuristic bump. `ss` is the current cell index in `stack`.
 pub fn update_quiet_histories(
     hist: &mut WorkerHistories,
     pos: &Position,
@@ -274,8 +270,8 @@ pub fn update_quiet_histories(
         .pawn_update(pos.pawn_key(), moved, m.to_sq(), pawn_bonus);
 }
 
-/// `update_all_stats(...)` (`yaneuraou-search.cpp`): the post-search
-/// history-statistics update run when a best move is found.
+/// `update_all_stats(...)`: the post-search history-statistics update run when
+/// a best move is found.
 ///
 /// `ss` is the current cell index in `stack` (`ss >= 7`, so the refutation
 /// penalty's `update_continuation_histories(ss - 1, …)` stays in range).
@@ -352,9 +348,8 @@ pub fn update_all_stats(
     }
 }
 
-/// `update_correction_history(pos, ss, w, bonus)`
-/// (`yaneuraou-search.cpp`): fold `bonus` into the correction channels.
-/// `ss` is the current cell index in `stack` (`ss >= 4`).
+/// `update_correction_history(pos, ss, w, bonus)`: fold `bonus` into the
+/// correction channels. `ss` is the current cell index in `stack` (`ss >= 4`).
 pub fn update_correction_history(
     hist: &mut WorkerHistories,
     pos: &Position,

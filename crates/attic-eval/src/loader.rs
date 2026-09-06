@@ -1,5 +1,5 @@
-//! SFNN-1536 network-file (`nn.bin`) parsing and validation, ported from
-//! `evaluate_nnue.cpp`'s `ReadHeader` / `ReadParameters`.
+//! SFNN-1536 network-file (`nn.bin`) parsing and validation, ported from the
+//! reference engine.
 //!
 //! Which failures are fatal follows the reference exactly:
 //!
@@ -27,8 +27,7 @@ const ARCH_STRING: &str = "ModelType=SFNNWithoutPsqt;Features=HalfKA_hm(Friend)[
 const LEB128_MAGIC: &[u8; 17] = b"COMPRESSED_LEB128";
 
 /// Warning body for a feature-transformer or layer-stack hash mismatch,
-/// mirroring `Detail::ReadParameters` (`evaluate_nnue.cpp`) down to the
-/// spacing.
+/// mirroring the reference's wording down to the spacing.
 const SECTION_HASH_WARNING: &str = "Warning : nn.bin hash mismatch.";
 
 /// Reads and validates the SFNN-1536 network file at `path`, discarding any
@@ -81,7 +80,7 @@ fn read_header(
 ) -> Result<NetHeader, NnueError> {
     let version = reader.read_u32_le()?;
     if version != NNUE_VERSION {
-        // The message shape is the reference's (`evaluate_nnue.cpp`).
+        // The message shape is the reference's.
         return Err(NnueError::InvalidFormat {
             reason: format!(
                 "NNUE header version mismatch: expected {} got {}",
@@ -95,8 +94,8 @@ fn read_header(
     // fails structurally here rather than later.
     let arch_bytes = reader.read_slice(arch_size as usize)?;
     let arch_id = String::from_utf8_lossy(arch_bytes).into_owned();
-    // The message names the in-file and expected architecture strings
-    // (`LoadAndShare`, `evaluate_nnue.cpp`).
+    // The message names the in-file and expected architecture strings, as the
+    // reference's does.
     if hash != NNUE_HASH_VALUE {
         warnings.push(format!(
             "Warning: NNUE hash mismatch: expected {} got {} arch_in_file={} arch_expected={}",

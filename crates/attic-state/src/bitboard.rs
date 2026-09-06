@@ -3,13 +3,13 @@
 //!
 //! # Bit convention
 //!
-//! Internally a [`Bitboard`] is the reference's two-lane layout
-//! (`bitboard.h`): a 16-byte-aligned pair of `u64` lanes `p[0]`/`p[1]`.
-//! Contiguous square index `k` maps to lane `p[0]` bit `k` for `k = 0..=62` and
-//! lane `p[1]` bit `k - 63` for `k = 63..=80`. **Bit 63 of `p[0]` is unused**:
-//! the reference reserves it so that the lance / pawn-drop borrow tricks cannot
-//! carry across the lane boundary. `p[1]` bits `18..` are likewise unused.
-//! Every value a constructor or operator returns keeps those spare bits clear.
+//! Internally a [`Bitboard`] is the reference's two-lane layout: a
+//! 16-byte-aligned pair of `u64` lanes `p[0]`/`p[1]`. Contiguous square index
+//! `k` maps to lane `p[0]` bit `k` for `k = 0..=62` and lane `p[1]` bit
+//! `k - 63` for `k = 63..=80`. **Bit 63 of `p[0]` is unused**: the reference
+//! reserves it so that the lance / pawn-drop borrow tricks cannot carry across
+//! the lane boundary. `p[1]` bits `18..` are likewise unused. Every value a
+//! constructor or operator returns keeps those spare bits clear.
 //!
 //! [`Bitboard::raw`] / [`Bitboard::from_raw`] present a *logical* contiguous
 //! 81-bit `u128` view (bit `i` = square `i`, closing the `p[0]` bit-63 gap).
@@ -30,14 +30,14 @@ const FILES: usize = Square::FILES as usize; // 9
 const BOARD_MASK: u128 = (1u128 << N) - 1;
 
 /// Contiguous square indices `0..=62` occupy lane `p[0]`; `63..=80` occupy
-/// `p[1]`. `part(sq) = 62 < sq` selects the lane (bitboard.h).
+/// `p[1]`. `part(sq) = 62 < sq` selects the lane.
 const LANE_SPLIT: usize = 62;
 /// Width of lane 0 in the contiguous domain (`p[0]` bit 63 is the unused gap).
 const LANE0_SPAN: u32 = 63;
 /// Contiguous-`u128` mask of `p[0]`'s live bits (`(1 << 63) - 1`).
 const LOW63: u128 = (1u128 << LANE0_SPAN) - 1;
 /// Canonical live-bit mask of lane 0 (`p[0]` bits 0..=62) — the reference's
-/// `0x7FFFFFFFFFFFFFFF` half of the all-squares constant (bitboard.h).
+/// `0x7FFFFFFFFFFFFFFF` half of the all-squares constant.
 const P0_MASK: u64 = 0x7FFF_FFFF_FFFF_FFFF;
 /// Canonical live-bit mask of lane 1 (`p[1]` bits 0..=17) — the reference's
 /// `0x000000000003FFFF` half.
@@ -52,8 +52,8 @@ pub struct Bitboard {
     p: [u64; 2],
 }
 
-/// Per-square single-bit table (`SquareBB`, bitboard.cpp), so that
-/// [`Bitboard::from_square`] is a table load rather than a `part()` lane branch.
+/// Per-square single-bit table (`SquareBB`), so that [`Bitboard::from_square`]
+/// is a table load rather than a `part()` lane branch.
 const SQUARE_BB: [Bitboard; N] = {
     let mut t = [Bitboard::EMPTY; N];
     let mut idx = 0;
@@ -277,8 +277,7 @@ fn lane_xor(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
     }
 }
 
-/// SSE4.1 zero-overlap test: `(a & b) == 0` (`_mm_testz_si128`,
-/// bitboard.cpp).
+/// SSE4.1 zero-overlap test: `(a & b) == 0` (`_mm_testz_si128`).
 ///
 /// SAFETY: SSE4.1 is part of the target's assumed base (this repo builds with
 /// `-C target-cpu`/`target-feature` covering it, as the rest of the SSE helpers
@@ -293,8 +292,7 @@ fn lane_testz(a: [u64; 2], b: [u64; 2]) -> bool {
     }
 }
 
-/// SSE equality: `pxor` then `ptest` (pin bitboard.cpp). SAFETY: as
-/// [`lane_testz`].
+/// SSE equality: `pxor` then `ptest` (pin). SAFETY: as [`lane_testz`].
 #[cfg(target_arch = "x86_64")]
 fn lane_eq(a: [u64; 2], b: [u64; 2]) -> bool {
     use core::arch::x86_64::{__m128i, _mm_test_all_zeros, _mm_xor_si128};
@@ -306,8 +304,8 @@ fn lane_eq(a: [u64; 2], b: [u64; 2]) -> bool {
     }
 }
 
-/// Byte-reverse the 128-bit value (bitboard.cpp).
-/// SAFETY: as [`lane_testz`]; the shuffle mask reverses all 16 bytes.
+/// Byte-reverse the 128-bit value. SAFETY: as [`lane_testz`]; the shuffle mask
+/// reverses all 16 bytes.
 #[cfg(target_arch = "x86_64")]
 fn lane_byte_reverse(a: [u64; 2]) -> [u64; 2] {
     use core::arch::x86_64::{__m128i, _mm_set_epi8, _mm_shuffle_epi8};
@@ -318,7 +316,7 @@ fn lane_byte_reverse(a: [u64; 2]) -> [u64; 2] {
     }
 }
 
-/// SSE unpack (bitboard.cpp): returns `(hi_out, lo_out)` where
+/// SSE unpack: returns `(hi_out, lo_out)` where
 /// `hi_out = unpackhi(lo_in, hi_in)`, `lo_out = unpacklo(lo_in, hi_in)`.
 /// SAFETY: as [`lane_testz`].
 #[cfg(target_arch = "x86_64")]
@@ -333,8 +331,8 @@ fn lane_unpack(hi_in: [u64; 2], lo_in: [u64; 2]) -> ([u64; 2], [u64; 2]) {
     }
 }
 
-/// SSE 128-bit decrement of the whole register (`Bitboard::decrement`,
-/// bitboard.cpp). SAFETY: as [`lane_testz`].
+/// SSE 128-bit decrement of the whole register (`Bitboard::decrement`). SAFETY:
+/// as [`lane_testz`].
 #[cfg(all(test, target_arch = "x86_64"))]
 fn lane_decrement(a: [u64; 2]) -> [u64; 2] {
     use core::arch::x86_64::{
@@ -349,9 +347,9 @@ fn lane_decrement(a: [u64; 2]) -> [u64; 2] {
     }
 }
 
-/// SSE pairwise 128-bit decrement (`Bitboard::decrement(hi,lo,...)`,
-/// bitboard.cpp): each lane index `i` decrements the 128-bit pair
-/// `[lo_in[i], hi_in[i]]`. Returns `(hi_out, lo_out)`. SAFETY: as [`lane_testz`].
+/// SSE pairwise 128-bit decrement: each lane index `i` decrements the 128-bit
+/// pair `[lo_in[i], hi_in[i]]`. Returns `(hi_out, lo_out)`. SAFETY: as
+/// [`lane_testz`].
 #[cfg(target_arch = "x86_64")]
 fn lane_pair_decrement(hi_in: [u64; 2], lo_in: [u64; 2]) -> ([u64; 2], [u64; 2]) {
     use core::arch::x86_64::{
@@ -965,17 +963,16 @@ pub fn promotion_zone(color: Color) -> Bitboard {
 // shapes:
 //
 // * **File rays (lance, rook file)** never straddle the `part()` split, so they
-//   are computed inside one lane with plain `u64` borrow arithmetic
-//   (bitboard.h).
+//   are computed inside one lane with plain `u64` borrow arithmetic.
 // * **Rank / diagonal rays** cross the lane boundary, so they use the
-//   `byte_reverse` + `unpack` + 128-bit `decrement` scheme (bitboard.cpp,
-//   bitboard.h): reversing the byte order makes the decreasing
-//   direction's nearest blocker the lowest bit, subtracting 1 propagates the
-//   borrow up to it, xor isolates the changed bits, and a second reverse undoes
-//   the first. Masks for rays running toward *decreasing* square index are baked
-//   already byte-reversed, as `Bitboards::init` does.
+//   `byte_reverse` + `unpack` + 128-bit `decrement` scheme: reversing the byte
+//   order makes the decreasing direction's nearest blocker the lowest bit,
+//   subtracting 1 propagates the borrow up to it, xor isolates the changed
+//   bits, and a second reverse undoes the first. Masks for rays running toward
+//   *decreasing* square index are baked already byte-reversed, as
+//   `Bitboards::init` does.
 
-/// `part(sq)`: which lane a square belongs to (bitboard.h).
+/// `part(sq)`: which lane a square belongs to.
 const fn part(idx: usize) -> usize {
     (idx > LANE_SPLIT) as usize
 }
@@ -998,7 +995,7 @@ const fn cunpack(hi_in: [u64; 2], lo_in: [u64; 2]) -> ([u64; 2], [u64; 2]) {
 
 /// `QUGIY_ROOK_MASK[sq][0]` = the rank ray toward file 0 packed as the `lo`
 /// unpack lane; `[sq][1]` = the byte-reversed ray toward file 8 as the `hi`
-/// lane (bitboard.cpp).
+/// lane.
 const fn build_qugiy_rook_mask() -> [[Bitboard; 2]; N] {
     let mut t = [[Bitboard::EMPTY; 2]; N];
     let mut s = 0;
@@ -1020,14 +1017,14 @@ static QUGIY_ROOK_MASK: [[Bitboard; 2]; N] = build_qugiy_rook_mask();
 /// The four bishop diagonals in [`DIRECTIONS`] order, and whether each runs
 /// toward *decreasing* square index — those get a byte-reversed mask and the
 /// byte-reversed occupancy. The reference calls the increasing pair LU/LD and
-/// the decreasing pair RU/RD (`bishopEffect`, bitboard.cpp).
+/// the decreasing pair RU/RD (`bishopEffect`).
 const BISHOP_DIAG_DIRS: [usize; 4] = [4, 5, 6, 7];
 const BISHOP_DIAG_REV: [bool; 4] = [false, true, false, true];
 
-/// Two [`Bitboard`]s packed into one 256-bit value (`Bitboard256`,
-/// bitboard.h): the low pair `p[0..2]` and the high pair `p[2..4]`. On
-/// the AVX2 build every op below is one `__m256i` instruction; elsewhere the
-/// identical scalar `u64[4]` form runs.
+/// Two [`Bitboard`]s packed into one 256-bit value (`Bitboard256`): the low
+/// pair `p[0..2]` and the high pair `p[2..4]`. On the AVX2 build every op below
+/// is one `__m256i` instruction; elsewhere the identical scalar `u64[4]` form
+/// runs.
 #[derive(Clone, Copy)]
 #[repr(C, align(32))]
 struct Bitboard256 {
@@ -1035,7 +1032,7 @@ struct Bitboard256 {
 }
 
 impl Bitboard256 {
-    /// Low pair = `b1`, high pair = `b2` (bitboard.h, the scalar form).
+    /// Low pair = `b1`, high pair = `b2` (the scalar form).
     const fn from_pair(b1: Bitboard, b2: Bitboard) -> Bitboard256 {
         Bitboard256 {
             p: [b1.p[0], b1.p[1], b2.p[0], b2.p[1]],
@@ -1043,7 +1040,7 @@ impl Bitboard256 {
     }
 }
 
-/// Broadcast one [`Bitboard`]'s lanes into both halves (bitboard.h).
+/// Broadcast one [`Bitboard`]'s lanes into both halves.
 ///
 /// SAFETY: gated on `target_feature = "avx2"` (statically enabled by the
 /// release `target-cpu=native`); the `transmute`s only bit-cast between
@@ -1090,8 +1087,8 @@ fn bb256_xor(a: [u64; 4], b: [u64; 4]) -> [u64; 4] {
     }
 }
 
-/// Byte-reverse each 128-bit half (bitboard.cpp). SAFETY: as
-/// [`bb256_broadcast`]; the shuffle mask reverses all 16 bytes within a half.
+/// Byte-reverse each 128-bit half. SAFETY: as [`bb256_broadcast`]; the shuffle
+/// mask reverses all 16 bytes within a half.
 #[cfg(target_feature = "avx2")]
 fn bb256_byte_reverse(a: [u64; 4]) -> [u64; 4] {
     use core::arch::x86_64::{__m256i, _mm256_set_epi8, _mm256_shuffle_epi8};
@@ -1105,9 +1102,10 @@ fn bb256_byte_reverse(a: [u64; 4]) -> [u64; 4] {
     }
 }
 
-/// Bitboard256 `unpack` (bitboard.cpp): returns `(hi_out, lo_out)`
-/// with `hi_out = unpackhi_epi64(lo_in, hi_in)`, `lo_out = unpacklo_epi64(lo_in,
-/// hi_in)` per 128-bit lane. SAFETY: as [`bb256_broadcast`].
+/// Bitboard256 `unpack`: returns `(hi_out, lo_out)` with
+/// `hi_out = unpackhi_epi64(lo_in, hi_in)`,
+/// `lo_out = unpacklo_epi64(lo_in, hi_in)` per 128-bit lane. SAFETY: as
+/// [`bb256_broadcast`].
 #[cfg(target_feature = "avx2")]
 fn bb256_unpack(hi_in: [u64; 4], lo_in: [u64; 4]) -> ([u64; 4], [u64; 4]) {
     use core::arch::x86_64::{__m256i, _mm256_unpackhi_epi64, _mm256_unpacklo_epi64};
@@ -1120,9 +1118,9 @@ fn bb256_unpack(hi_in: [u64; 4], lo_in: [u64; 4]) -> ([u64; 4], [u64; 4]) {
     }
 }
 
-/// Bitboard256 pairwise 128-bit decrement (bitboard.cpp): each lane
-/// index `i` decrements the 128-bit pair `[lo_in[i], hi_in[i]]`. Returns
-/// `(hi_out, lo_out)`. SAFETY: as [`bb256_broadcast`].
+/// Bitboard256 pairwise 128-bit decrement: each lane index `i` decrements the
+/// 128-bit pair `[lo_in[i], hi_in[i]]`. Returns `(hi_out, lo_out)`. SAFETY: as
+/// [`bb256_broadcast`].
 #[cfg(target_feature = "avx2")]
 fn bb256_pair_decrement(hi_in: [u64; 4], lo_in: [u64; 4]) -> ([u64; 4], [u64; 4]) {
     use core::arch::x86_64::{
@@ -1141,8 +1139,8 @@ fn bb256_pair_decrement(hi_in: [u64; 4], lo_in: [u64; 4]) -> ([u64; 4], [u64; 4]
     }
 }
 
-/// Merge the two halves into one [`Bitboard`] by OR (bitboard.cpp).
-/// SAFETY: as [`bb256_broadcast`].
+/// Merge the two halves into one [`Bitboard`] by OR. SAFETY: as
+/// [`bb256_broadcast`].
 #[cfg(target_feature = "avx2")]
 fn bb256_merge(a: [u64; 4]) -> [u64; 2] {
     use core::arch::x86_64::{
@@ -1156,9 +1154,9 @@ fn bb256_merge(a: [u64; 4]) -> [u64; 2] {
     }
 }
 
-// Scalar `u64[4]` twins — the reference's no-AVX2 path (bitboard.h).
-// They *are* the `bb256_*` ops on a non-AVX2 build; test builds compile them
-// too, so that an AVX2 host still exercises them against the same oracles.
+// Scalar `u64[4]` twins — the reference's no-AVX2 path. They *are* the
+// `bb256_*` ops on a non-AVX2 build; test builds compile them too, so that an
+// AVX2 host still exercises them against the same oracles.
 
 #[cfg(any(test, not(target_feature = "avx2")))]
 fn bb256_broadcast_scalar(a: [u64; 2]) -> [u64; 4] {
@@ -1235,9 +1233,8 @@ use bb256_unpack_scalar as bb256_unpack;
 use bb256_xor_scalar as bb256_xor;
 
 /// `QUGIY_BISHOP_MASK[sq][i]` = the four diagonal step effects packed as the
-/// `Bitboard256` pair `[LU, RU, LD, RD]` in 64-bit lane `i`
-/// (bitboard.cpp), with the decreasing-index diagonals RU/RD stored
-/// byte-reversed.
+/// `Bitboard256` pair `[LU, RU, LD, RD]` in 64-bit lane `i`, with the
+/// decreasing-index diagonals RU/RD stored byte-reversed.
 const fn build_qugiy_bishop_mask() -> [[Bitboard256; 2]; N] {
     let mut t = [[Bitboard256 { p: [0; 4] }; 2]; N];
     let mut s = 0;
@@ -1272,16 +1269,15 @@ const fn build_qugiy_bishop_mask() -> [[Bitboard256; 2]; N] {
 
 static QUGIY_BISHOP_MASK: [[Bitboard256; 2]; N] = build_qugiy_bishop_mask();
 
-/// The increasing-index (White) file ray cut at the first blocker, per lane
-/// (bitboard.h).
+/// The increasing-index (White) file ray cut at the first blocker, per lane.
 fn file_up(occ_lane: u64, mask: u64) -> u64 {
     let em = occ_lane & mask;
     let t = em.wrapping_sub(1);
     (em ^ t) & mask
 }
 
-/// The decreasing-index (Black) file ray cut at the first blocker, per lane:
-/// an MSB shift clears every bit above the nearest blocker (bitboard.h).
+/// The decreasing-index (Black) file ray cut at the first blocker, per lane: an
+/// MSB shift clears every bit above the nearest blocker.
 fn file_down(occ_lane: u64, se: u64) -> u64 {
     let mocc = se & occ_lane;
     let filled = (!0u64) << msb64(mocc | 1);
@@ -1289,7 +1285,7 @@ fn file_down(occ_lane: u64, se: u64) -> u64 {
 }
 
 /// Squares a lance of `color` on `sq` attacks under occupancy `occ` — the
-/// single forward ray, cut at the first blocker (bitboard.h).
+/// single forward ray, cut at the first blocker.
 pub fn lance_attacks(color: Color, sq: Square, occ: Bitboard) -> Bitboard {
     let s = sq.index() as usize;
     let pt = part(s);
@@ -1303,7 +1299,7 @@ pub fn lance_attacks(color: Color, sq: Square, occ: Bitboard) -> Bitboard {
 }
 
 /// The rook's vertical (file) effect — the two lance forms fused on the shared
-/// lane (bitboard.h).
+/// lane.
 fn rook_file(s: usize, occ: Bitboard) -> Bitboard {
     let pt = part(s);
     let occ_lane = occ.p[pt];
@@ -1315,7 +1311,7 @@ fn rook_file(s: usize, occ: Bitboard) -> Bitboard {
 }
 
 /// The rook's horizontal (rank) effect — crosses the lane boundary, so it uses
-/// the `byte_reverse` scheme (bitboard.cpp).
+/// the `byte_reverse` scheme.
 fn rook_rank(s: usize, occ: Bitboard) -> Bitboard {
     let mask_lo = QUGIY_ROOK_MASK[s][0].p;
     let mask_hi = QUGIY_ROOK_MASK[s][1].p;
@@ -1336,7 +1332,7 @@ fn rook_rank(s: usize, occ: Bitboard) -> Bitboard {
 }
 
 /// Squares a bishop on `sq` attacks under occupancy `occ` — all four diagonals
-/// in one `Bitboard256` two-board pass (`bishopEffect`, bitboard.cpp).
+/// in one `Bitboard256` two-board pass (`bishopEffect`).
 pub fn bishop_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     let s = sq.index() as usize;
     let mask_lo = QUGIY_BISHOP_MASK[s][0].p;
@@ -1359,7 +1355,7 @@ pub fn bishop_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     }
 }
 
-/// Squares a rook on `sq` attacks under occupancy `occ` (bitboard.h).
+/// Squares a rook on `sq` attacks under occupancy `occ`.
 pub fn rook_attacks(sq: Square, occ: Bitboard) -> Bitboard {
     let s = sq.index() as usize;
     rook_rank(s, occ) | rook_file(s, occ)
@@ -1628,8 +1624,8 @@ mod tests {
     }
 
     /// A third bishop oracle: one diagonal's occupancy-limited ray via the
-    /// Bitboard-level `rayEffect` (bitboard.h). Its per-diagonal masks
-    /// are rebuilt in-test, the production table being the packed pair form.
+    /// Bitboard-level `rayEffect`. Its per-diagonal masks are rebuilt in-test,
+    /// the production table being the packed pair form.
     fn diag_ray_oracle(mask: [u64; 2], occ: [u64; 2], reverse: bool) -> [u64; 2] {
         let mut bb = if reverse { lane_byte_reverse(occ) } else { occ };
         bb = lane_and(bb, mask);

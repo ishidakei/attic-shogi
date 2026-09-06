@@ -1,7 +1,7 @@
-//! Transposition table, a port of the reference `tt.h` / `tt.cpp` specialised
-//! to the engine's default build configuration: a 64-bit position key whose low
-//! 16 bits are the in-cluster fragment, and three 10-byte entries per 32-byte
-//! cluster (`TT_CLUSTER_SIZE == 3`).
+//! Transposition table, a port of the reference's, specialised to the engine's
+//! default build configuration: a 64-bit position key whose low 16 bits are the
+//! in-cluster fragment, and three 10-byte entries per 32-byte cluster
+//! (`TT_CLUSTER_SIZE == 3`).
 //!
 //! Those choices are load-bearing for search-node parity. The cluster size and
 //! the `clusterCount = mb·2²⁰ / sizeof(Cluster)` arithmetic together decide
@@ -53,11 +53,11 @@ pub type Value = i32;
 /// entry offset by [`DEPTH_NONE`] and truncated to `u8`.
 pub type Depth = i32;
 
-/// `DEPTH_NONE` (`types.h`). Entries store `depth8 = depth − DEPTH_NONE`, so an
-/// all-zero entry reads back as `DEPTH_NONE` and counts as unoccupied.
+/// `DEPTH_NONE`. Entries store `depth8 = depth − DEPTH_NONE`, so an all-zero
+/// entry reads back as `DEPTH_NONE` and counts as unoccupied.
 pub const DEPTH_NONE: Depth = -3;
 
-/// `VALUE_NONE` (`types.h`), the sentinel returned for a miss.
+/// `VALUE_NONE`, the sentinel returned for a miss.
 pub const VALUE_NONE: Value = 32002;
 
 /// The reference's default `USI_Hash` in MiB. Only the default the driver
@@ -65,8 +65,7 @@ pub const VALUE_NONE: Value = 32002;
 /// default-constructed one.
 pub const DEFAULT_HASH_MB: usize = 1024;
 
-// The `genBound8` bit layout (`tt.cpp`):
-// `generation (5) | bound (2) << 5 | pv (1) << 7`.
+// The `genBound8` bit layout: `generation (5) | bound (2) << 5 | pv (1) << 7`.
 const GENERATION_BITS: u8 = 5;
 const GENERATION_MASK: u8 = (1 << GENERATION_BITS) - 1;
 const BOUND_SHIFT: u8 = GENERATION_BITS;
@@ -77,7 +76,7 @@ const PV_MASK: u8 = 1 << PV_SHIFT;
 /// Number of entries per cluster (`TT_CLUSTER_SIZE == 3`).
 const CLUSTER_SIZE: usize = 3;
 
-/// Bound type of a stored value (`types.h`). The discriminants matter:
+/// Bound type of a stored value. The discriminants matter:
 /// `Exact == Upper | Lower`, and the value is packed into `genBound8`.
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -372,8 +371,8 @@ impl DerefMut for ClusterArray {
     }
 }
 
-/// High 64 bits of the 128-bit product `a · b` (`mul_hi64`, `misc.h`), which
-/// maps a key onto `0..clusterCount` without a power-of-two table size.
+/// High 64 bits of the 128-bit product `a · b` (`mul_hi64`), which maps a key
+/// onto `0..clusterCount` without a power-of-two table size.
 #[inline]
 fn mul_hi64(a: u64, b: u64) -> u64 {
     ((a as u128 * b as u128) >> 64) as u64
@@ -503,11 +502,11 @@ impl TranspositionTable {
     /// Software-prefetch the cluster [`Self::probe`] would select for
     /// `(key, side_to_move)`. A no-op on an unsized table and off x86-64.
     ///
-    /// The reference issues this mid-`do_move` (`position.cpp`), the
-    /// instant the post-move key is known, because its `Position` holds a TT
-    /// pointer. The layering rules forbid that here, so the hint comes from the
-    /// Search layer just after `do_move` returns — a few nanoseconds later, and
-    /// output-preserving, a prefetch having no architectural semantics.
+    /// The reference issues this mid-`do_move`, the instant the post-move key
+    /// is known, because its `Position` holds a TT pointer. The layering rules
+    /// forbid that here, so the hint comes from the Search layer just after
+    /// `do_move` returns — a few nanoseconds later, and output-preserving, a
+    /// prefetch having no architectural semantics.
     #[inline]
     pub fn prefetch(&self, key: u64, side_to_move: u8) {
         #[cfg(target_arch = "x86_64")]

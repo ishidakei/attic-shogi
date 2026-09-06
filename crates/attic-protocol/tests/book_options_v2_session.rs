@@ -1,6 +1,5 @@
 //! Session tests for the `BOOK_OPTIONS=V2` engine-option profile: the V2
-//! handshake surface (`book.cpp`) and the probe-side differences
-//! (`book.cpp`), of which the two
+//! handshake surface and the probe-side differences, of which the two
 //! side-to-move-dependent option names are observable from a session.
 //!
 //! The profile file is written into an isolated temp directory and injected, so

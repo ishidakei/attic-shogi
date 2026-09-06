@@ -1,6 +1,5 @@
 //! Layer-stack forward pass, bucket selection, and the public `evaluate` entry
-//! point, ported from `sfnn-1536.h::Propagate` and `evaluate_nnue.cpp`'s
-//! `ComputeScore` / `stack_index_for_nnue`. The accumulator lives in
+//! point, ported from the reference engine. The accumulator lives in
 //! [`crate::transformer`], the kernels in [`crate::simd`].
 //!
 //! ## Layer naming
@@ -31,12 +30,11 @@ use crate::types::{
     HIDDEN1_DIMS, LAYER_STACKS, NetworkStack, NnueNetwork,
 };
 
-/// The reference default fixed-point scale (`evaluate_nnue.cpp`), and the USI
-/// option's default.
+/// The reference default fixed-point scale, and the USI option's default.
 pub const FV_SCALE_DEFAULT: i32 = 16;
 
 /// The live fixed-point scale applied to the network output, mirroring the
-/// reference's mutable global `NNUE::FV_SCALE` (`evaluate_nnue.cpp`).
+/// reference's mutable global `NNUE::FV_SCALE`.
 static FV_SCALE: AtomicI32 = AtomicI32::new(FV_SCALE_DEFAULT);
 
 /// The current fixed-point scale (the reference live global `NNUE::FV_SCALE`).
@@ -44,8 +42,7 @@ pub fn fv_scale() -> i32 {
     FV_SCALE.load(Ordering::Relaxed)
 }
 
-/// Set the live fixed-point scale (`evaluate_nnue.cpp`). The next
-/// [`evaluate`] divides by it.
+/// Set the live fixed-point scale. The next [`evaluate`] divides by it.
 pub fn set_fv_scale(scale: i32) {
     FV_SCALE.store(scale, Ordering::Relaxed);
 }
@@ -113,7 +110,7 @@ pub fn evaluate_with(net: &NnueNetwork, acc: &Accumulator, pos: &Position) -> i3
     acc.output_transform(pos.side_to_move(), &mut transformed);
 
     let score = per_layer_flow(&transformed, &net.stacks[bucket]);
-    // The single FV_SCALE consumption site (`evaluate_nnue.cpp`).
+    // The single FV_SCALE consumption site.
     score / fv_scale()
 }
 

@@ -1,15 +1,14 @@
 //! PackedSfen — the 256-bit (32-byte) Huffman position encoding, ported
-//! bit-for-bit from `SfenPacker::pack` (`extra/sfen_packer.cpp`).
+//! bit-for-bit from `SfenPacker::pack`.
 //!
 //! The `.ybb` opening-book index keys positions by this exact encoding, so any
 //! single-bit divergence from the reference writer makes the index binary
 //! search miss.
 //!
 //! Bits are packed least-significant-first within each byte, bytes ascending:
-//! stream bit 0 is bit 0 (LSB) of `data[0]` (`sfen_packer.cpp`). The
-//! trailing "piece box" pass — every piece neither on the board nor in a hand —
-//! pads the stream so that any position within the standard piece complement
-//! lands on exactly 256 bits.
+//! stream bit 0 is bit 0 (LSB) of `data[0]`. The trailing "piece box" pass —
+//! every piece neither on the board nor in a hand — pads the stream so that any
+//! position within the standard piece complement lands on exactly 256 bits.
 
 use crate::color::Color;
 use crate::piece::{Piece, PieceKind};
@@ -27,7 +26,7 @@ pub const PACKED_SFEN_LEN: usize = 32;
 pub type PackedSfen = [u8; PACKED_SFEN_LEN];
 
 /// Piece kinds in the reference's "Apery" enumeration order, used for both the
-/// hand and the piece-box passes (`to_apery_pieces[]`, `sfen_packer.cpp`).
+/// hand and the piece-box passes (`to_apery_pieces[]`).
 const HAND_ORDER: [PieceKind; 7] = [
     PieceKind::Pawn,
     PieceKind::Lance,
@@ -38,8 +37,8 @@ const HAND_ORDER: [PieceKind; 7] = [
     PieceKind::Rook,
 ];
 
-/// Starting piece-box counts, indexed by `PieceKind::index()` for `Pawn..=Rook`
-/// (`sfen_packer.cpp`). King is never boxed.
+/// Starting piece-box counts, indexed by `PieceKind::index()` for
+/// `Pawn..=Rook`. King is never boxed.
 const PIECE_BOX_START: [i32; 7] = [18, 4, 4, 4, 4, 2, 2];
 
 /// LSB-first bit writer over the fixed 32-byte buffer.
@@ -77,7 +76,7 @@ impl BitWriter {
 }
 
 /// `(code, bits)` for the on-board / hand Huffman code of a raw piece kind
-/// (`huffman_table[]`, `sfen_packer.cpp`).
+/// (`huffman_table[]`).
 fn huffman_board(kind: PieceKind) -> (u32, u32) {
     match kind {
         PieceKind::Pawn => (0x01, 2),
@@ -92,7 +91,7 @@ fn huffman_board(kind: PieceKind) -> (u32, u32) {
 }
 
 /// `(code, bits)` for the piece-box Huffman code of a raw piece kind
-/// (`huffman_table_piecebox[]`, `sfen_packer.cpp`).
+/// (`huffman_table_piecebox[]`).
 fn huffman_piece_box(kind: PieceKind) -> (u32, u32) {
     match kind {
         PieceKind::Pawn => (0x02, 2),
@@ -106,9 +105,8 @@ fn huffman_piece_box(kind: PieceKind) -> (u32, u32) {
     }
 }
 
-/// A board piece, Huffman-coded (`write_board_piece_to_stream`,
-/// `sfen_packer.cpp`): code, then a promote bit (except Gold), then a
-/// color bit.
+/// A board piece, Huffman-coded (`write_board_piece_to_stream`): code, then a
+/// promote bit (except Gold), then a color bit.
 fn write_board_piece(w: &mut BitWriter, piece: Piece) {
     let (code, bits) = huffman_board(piece.kind);
     w.write_n_bit(code, bits);
@@ -118,9 +116,9 @@ fn write_board_piece(w: &mut BitWriter, piece: Piece) {
     w.write_one_bit(piece.color == Color::White);
 }
 
-/// A hand piece, Huffman-coded (`write_hand_piece_to_stream`,
-/// `sfen_packer.cpp`): the board code with its low bit dropped, then a
-/// forced-unpromoted bit (except Gold), then a color bit.
+/// A hand piece, Huffman-coded (`write_hand_piece_to_stream`): the board code
+/// with its low bit dropped, then a forced-unpromoted bit (except Gold), then a
+/// color bit.
 fn write_hand_piece(w: &mut BitWriter, kind: PieceKind, color: Color) {
     let (code, bits) = huffman_board(kind);
     w.write_n_bit(code >> 1, bits - 1);
@@ -130,9 +128,9 @@ fn write_hand_piece(w: &mut BitWriter, kind: PieceKind, color: Color) {
     w.write_one_bit(color == Color::White);
 }
 
-/// A piece-box piece, Huffman-coded (`write_piecebox_piece_to_stream`,
-/// `sfen_packer.cpp`): the piece-box code, then a zero color bit
-/// (except Gold, which encodes its color implicitly).
+/// A piece-box piece, Huffman-coded (`write_piecebox_piece_to_stream`): the
+/// piece-box code, then a zero color bit (except Gold, which encodes its color
+/// implicitly).
 fn write_piece_box_piece(w: &mut BitWriter, kind: PieceKind) {
     let (code, bits) = huffman_piece_box(kind);
     w.write_n_bit(code, bits);
@@ -220,9 +218,9 @@ mod tests {
         parse_sfen(&with_ply).expect("valid sfen")
     }
 
-    /// Vectors transcribed from the reference's PackedSfen unit test
-    /// (`position.cpp`), whose bytes were produced by cshogi
-    /// (`board.to_psfen`) — an implementation independent of both.
+    /// Vectors transcribed from the reference's PackedSfen unit test, whose
+    /// bytes were produced by cshogi (`board.to_psfen`) — an implementation
+    /// independent of both.
     #[test]
     fn matches_reference_cshogi_vectors() {
         let cases: [(&str, [u8; 32]); 4] = [

@@ -1,4 +1,4 @@
-//! Session tests for the `bench` command (`benchmark.cpp`, `usi.cpp`).
+//! Session tests for the `bench` command.
 //!
 //! The syntax tests run without a network: each position resigns instantly, so
 //! they exercise the argument parse and summary plumbing without a real search.

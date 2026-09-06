@@ -1,5 +1,5 @@
-//! Session tests for the `NumaPolicy` option and the two NUMA information lines
-//! (`engine.cpp`, `usi.cpp`).
+//! Session tests for the `NumaPolicy` option and the two NUMA information
+//! lines.
 //!
 //! `NumaPolicy none` is used throughout so the allocation line never carries a
 //! binding suffix and the assertions stay deterministic on any machine.

@@ -1,7 +1,6 @@
 //! Shared huge-page-backed allocator, a port of `aligned_large_pages_alloc` /
-//! `make_unique_large_page` (`memory.cpp`). The transposition table, the
-//! search-layer history tables and the eval-layer network parameters all
-//! allocate through it.
+//! `make_unique_large_page`. The transposition table, the search-layer history
+//! tables and the eval-layer network parameters all allocate through it.
 //!
 //! The policy: base alignment [`LARGE_PAGE_ALIGN`], the byte size rounded **up**
 //! to a whole multiple of it, zero-initialised storage, and on Linux a

@@ -1,15 +1,15 @@
-//! Port of the reference `MovePicker` (`movepick.cpp`), covering both the
-//! quiescence-search and the main-search stages.
+//! Port of the reference `MovePicker`, covering both the quiescence-search and
+//! the main-search stages.
 //!
 //! # Single-buffer stage machine
 //!
 //! The whole stage machine runs on **one** fixed [`ExtMove`] buffer with index
-//! boundaries mirroring the reference's pointers (`movepick.h`).
-//! `GOOD_CAPTURE` walks the sorted captures and swaps each SEE-loser into the
-//! buffer's **front** region (`movepick.cpp`), so that the good ones are
-//! yielded and the bad ones accumulate for `BAD_CAPTURE` to replay; the quiets
-//! are generated after the captures and split the same way at a score
-//! threshold. The qsearch, evasion and ProbCut stages have no good/bad split.
+//! boundaries mirroring the reference's pointers. `GOOD_CAPTURE` walks the
+//! sorted captures and swaps each SEE-loser into the buffer's **front** region,
+//! so that the good ones are yielded and the bad ones accumulate for
+//! `BAD_CAPTURE` to replay; the quiets are generated after the captures and
+//! split the same way at a score threshold. The qsearch, evasion and ProbCut
+//! stages have no good/bad split.
 //!
 //! Generation writes the buffer directly, as the reference's generators write
 //! their `ExtMove*`, and scoring fills each `value` **in place** at the `*_INIT`
@@ -33,9 +33,8 @@
 //!
 //! # Lazy SEE at yield
 //!
-//! SEE is evaluated **at yield time**, as the reference does
-//! (`movepick.cpp`), so an early beta cutoff never computes the
-//! remaining captures' SEE.
+//! SEE is evaluated **at yield time**, as the reference does, so an early beta
+//! cutoff never computes the remaining captures' SEE.
 //!
 //! # TT move
 //!
@@ -66,12 +65,12 @@ use attic_state::{CheckSquares, ExtMove, Move, Position, piece_value};
 use crate::history::LOW_PLY_HISTORY_SIZE;
 use crate::update::WorkerHistories;
 
-/// `goodQuietThreshold` (`movepick.cpp`): quiets scoring above this go to
-/// `GOOD_QUIET`, the rest to `BAD_QUIET`.
+/// `goodQuietThreshold`: quiets scoring above this go to `GOOD_QUIET`, the rest
+/// to `BAD_QUIET`.
 const GOOD_QUIET_THRESHOLD: i32 = -14000;
 
-/// The reference `MovePicker`'s fixed buffer capacity (`movepick.h`). The
-/// maximum number of legal moves in a shogi position is 593.
+/// The reference `MovePicker`'s fixed buffer capacity. The maximum number of
+/// legal moves in a shogi position is 593.
 const MAX_MOVES: usize = 600;
 
 /// The reusable per-node move buffers a [`MovePicker`] draws from — this port's
@@ -115,10 +114,10 @@ fn take_scratch() -> PickerScratch {
     scratch
 }
 
-/// The reference `partial_insertion_sort` (`movepick.cpp`): a stable
-/// descending insertion sort over the elements scoring at or above `limit`,
-/// leaving the rest toward the tail in unspecified order. Equal-scored elements
-/// keep their input order, so a full sort tie-breaks on generation order.
+/// The reference `partial_insertion_sort`: a stable descending insertion sort
+/// over the elements scoring at or above `limit`, leaving the rest toward the
+/// tail in unspecified order. Equal-scored elements keep their input order, so
+/// a full sort tie-breaks on generation order.
 fn partial_insertion_sort(a: &mut [ExtMove], limit: i32) {
     if a.is_empty() {
         return;
@@ -139,7 +138,7 @@ fn partial_insertion_sort(a: &mut [ExtMove], limit: i32) {
     }
 }
 
-/// `score<CAPTURES>` for a single capture (`movepick.cpp`).
+/// `score<CAPTURES>` for a single capture.
 ///
 /// The moving-piece index is the reference's `moved_piece(m)`, which aliases
 /// `moved_piece_after()` — the **after-promotion** piece. The pre-move piece
@@ -155,8 +154,8 @@ fn score_capture(pos: &Position, m: Move, hist: &WorkerHistories) -> i32 {
     hist.capture.get(moved, to, victim) + 7 * piece_value(victim)
 }
 
-/// `score<EVASIONS>` for a single evasion (`movepick.cpp`). A capturing
-/// evasion is offset by `1 << 28`, so that it outranks every quiet one.
+/// `score<EVASIONS>` for a single evasion. A capturing evasion is offset by
+/// `1 << 28`, so that it outranks every quiet one.
 fn score_evasion(pos: &Position, m: Move, hist: &WorkerHistories, cont_plane0: usize) -> i32 {
     let to = m.to_sq();
     let victim = if m.is_drop() {
@@ -175,10 +174,9 @@ fn score_evasion(pos: &Position, m: Move, hist: &WorkerHistories, cont_plane0: u
     }
 }
 
-/// `score<QUIETS>` for a single quiet move (`movepick.cpp`). It reads
-/// continuation planes `[0][1][2][3][5]`, index `4` being deliberately absent.
-/// The Stockfish "threat by a lesser piece" term is `#if STOCKFISH`-only, so it
-/// is omitted.
+/// `score<QUIETS>` for a single quiet move. It reads continuation planes
+/// `[0][1][2][3][5]`, index `4` being deliberately absent. The Stockfish
+/// "threat by a lesser piece" term is `#if STOCKFISH`-only, so it is omitted.
 fn score_quiet(
     pos: &Position,
     m: Move,
@@ -199,14 +197,13 @@ fn score_quiet(
     value += hist.continuation.get_at(cont_planes[3], pc, to);
     value += hist.continuation.get_at(cont_planes[5], pc, to);
 
-    // A bonus for a direct check that is not a losing sacrifice
-    // (`movepick.cpp`), read off the `checkSquares` snapshot taken once at
-    // `QUIET_INIT` entry.
+    // A bonus for a direct check that is not a losing sacrifice, read off the
+    // `checkSquares` snapshot taken once at `QUIET_INIT` entry.
     if check_squares.gives_direct_check(m) && pos.see_ge(m, -75) {
         value += 16384;
     }
 
-    // `lowPlyHistory` near the root (`movepick.cpp`).
+    // `lowPlyHistory` near the root.
     if (ply as usize) < LOW_PLY_HISTORY_SIZE {
         value += 8 * hist.low_ply.get(ply as usize, m) / (1 + ply);
     }
@@ -229,9 +226,8 @@ enum Kind {
     ProbCut,
 }
 
-/// The current emission stage, one arm per reference `Stages` constant
-/// (`movepick.cpp`). The `*_INIT` ones score and sort; the rest drain a
-/// buffer segment.
+/// The current emission stage, one arm per reference `Stages` constant. The
+/// `*_INIT` ones score and sort; the rest drain a buffer segment.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
     /// The shared `*_TT` phase: yield the TT move (if any), then dispatch to the
@@ -267,8 +263,7 @@ pub struct MovePicker {
     ply: i32,
     /// ProbCut SEE threshold (unused by the other kinds).
     threshold: i32,
-    /// Flat plane indices of `(ss-1-i)->continuationHistory`
-    /// (`yaneuraou-search.cpp`).
+    /// Flat plane indices of `(ss-1-i)->continuationHistory`.
     cont_planes: [usize; 6],
 
     /// The reusable per-node move buffers; see [`PickerScratch`].
@@ -281,8 +276,7 @@ pub struct MovePicker {
     /// each `*_INIT`.
     all: bool,
 
-    // The reference's pointers, as indices into `scratch.buf`
-    // (`movepick.h`).
+    // The reference's pointers, as indices into `scratch.buf`.
     /// The next move to return.
     cur: usize,
     /// The end of the segment `select` currently walks.
@@ -360,16 +354,15 @@ impl MovePicker {
         Self::from_parts(kind, tt, depth, ply, 0, cont_planes, scratch, all)
     }
 
-    /// Build a ProbCut picker for `pos` (`movepick.cpp`): **captures
-    /// only**, fully sorted, yielding those clearing `threshold`. The TT move
-    /// leads iff it is a legal capture, and is exempt from the SEE filter as the
-    /// reference's `PROBCUT_TT` stage leaves it. ProbCut is only entered out of
-    /// check, so there is no evasion path.
+    /// Build a ProbCut picker for `pos`: **captures only**, fully sorted,
+    /// yielding those clearing `threshold`. The TT move leads iff it is a legal
+    /// capture, and is exempt from the SEE filter as the reference's
+    /// `PROBCUT_TT` stage leaves it. ProbCut is only entered out of check, so
+    /// there is no evasion path.
     ///
-    /// The reference's asymmetry note (`yaneuraou-search.cpp`) — that
-    /// ProbCut must never return a pawn non-promotion the generator would not
-    /// produce — holds by construction here, `generate_captures` targeting enemy
-    /// squares only.
+    /// The reference's asymmetry note — that ProbCut must never return a pawn
+    /// non-promotion the generator would not produce — holds by construction
+    /// here, `generate_captures` targeting enemy squares only.
     pub fn new_probcut(pos: &Position, tt_move: Option<Move>, threshold: i32, all: bool) -> Self {
         let is_capture = |m: Move| !m.is_drop() && pos.board().get(m.to_sq()).is_some();
         let tt = tt_move
@@ -380,9 +373,9 @@ impl MovePicker {
     }
 
     /// Generate the legal, TT-deduped capture or evasion list at `*_INIT` stage
-    /// entry (`movepick.cpp`). The board there is identical to the
-    /// board at construction, the search restoring it around each `next_move`,
-    /// so deferring changes only *when* the list is materialized.
+    /// entry. The board there is identical to the board at construction, the
+    /// search restoring it around each `next_move`, so deferring changes only
+    /// *when* the list is materialized.
     fn generate_capture_list(&mut self, pos: &Position) {
         let in_check = self.kind == Kind::Evasion;
         let tt = self.tt;
@@ -436,10 +429,10 @@ impl MovePicker {
         }
     }
 
-    /// The reference `select` (`movepick.cpp`): advance `cur` over
-    /// `[cur, end_cur)`, returning the first move that is neither the TT move
-    /// nor rejected by `filter`. `filter` takes `&mut self`, so that
-    /// `GOOD_CAPTURE` can compact SEE-losers to the front.
+    /// The reference `select`: advance `cur` over `[cur, end_cur)`, returning
+    /// the first move that is neither the TT move nor rejected by `filter`.
+    /// `filter` takes `&mut self`, so that `GOOD_CAPTURE` can compact
+    /// SEE-losers to the front.
     fn select<F>(&mut self, pos: &Position, mut filter: F) -> Option<Move>
     where
         F: FnMut(&mut Self, &Position) -> bool,
@@ -489,7 +482,7 @@ impl MovePicker {
     pub fn next_move(&mut self, pos: &Position, hist: &WorkerHistories) -> Option<Move> {
         loop {
             match self.stage {
-                // The `*_TT` stages (`movepick.cpp`).
+                // The `*_TT` stages.
                 Stage::Tt => {
                     self.stage = match self.kind {
                         Kind::Main => Stage::CaptureInit,
@@ -502,10 +495,10 @@ impl MovePicker {
                     }
                 }
 
-                // CAPTURE_INIT (`movepick.cpp`). The `i32::MIN` limit
-                // promotes every element, making the sort a pure descending
-                // permutation — which is why legality could be pre-filtered at
-                // generation without perturbing order.
+                // CAPTURE_INIT. The `i32::MIN` limit promotes every element,
+                // making the sort a pure descending permutation — which is why
+                // legality could be pre-filtered at generation without
+                // perturbing order.
                 Stage::CaptureInit => {
                     self.generate_capture_list(pos);
                     self.score_captures_in_place(pos, hist);
@@ -516,9 +509,9 @@ impl MovePicker {
                     self.stage = Stage::GoodCapture;
                 }
 
-                // GOOD_CAPTURE (`movepick.cpp`): yield the captures
-                // clearing their own SEE threshold, compacting the losers to the
-                // front for `BAD_CAPTURE`.
+                // GOOD_CAPTURE: yield the captures clearing their own SEE
+                // threshold, compacting the losers to the front for
+                // `BAD_CAPTURE`.
                 Stage::GoodCapture => {
                     if let Some(m) = self.select(pos, |s, p| {
                         let e = s.scratch.buf[s.cur];
@@ -535,26 +528,24 @@ impl MovePicker {
                     self.stage = Stage::QuietInit;
                 }
 
-                // QUIET_INIT (`movepick.cpp`), all inside
-                // `if (!skipQuiets)`. The pointer setup below still runs either
-                // way, over a quiets region that is empty when nothing was
-                // generated.
+                // QUIET_INIT, all inside `if (!skipQuiets)`. The pointer setup
+                // below still runs either way, over a quiets region that is
+                // empty when nothing was generated.
                 Stage::QuietInit => {
                     if !self.skip_quiets {
                         // The **raw** generated buffer is scored and sorted, with
                         // the TT move and the pseudo-legal-but-illegal quiets
-                        // still in it, as the reference does
-                        // (`movepick.cpp`); both are dropped at yield
-                        // time instead.
+                        // still in it, as the reference does; both are dropped at
+                        // yield time instead.
                         //
                         // Their presence is load-bearing. Each promotion in
-                        // `partial_insertion_sort` swaps a tail element into the
-                        // promoted slot's old place (`movepick.cpp`), so
-                        // *which* elements sit in the buffer changes the unsorted
-                        // tail's final order — a high-scoring TT move or illegal
-                        // quiet reshapes the emitted order of the legal ones even
-                        // though it is never yielded. Dropping either here would
-                        // silently reorder the survivors.
+                        // `partial_insertion_sort` swaps a tail element into
+                        // the promoted slot's old place, so *which* elements
+                        // sit in the buffer changes the unsorted tail's final
+                        // order — a high-scoring TT move or illegal quiet
+                        // reshapes the emitted order of the legal ones even
+                        // though it is never yielded. Dropping either here
+                        // would silently reorder the survivors.
                         pos.generate_quiets(self.all, &mut self.scratch.buf);
                         debug_assert!(
                             self.scratch.buf.len() <= MAX_MOVES,
@@ -574,9 +565,9 @@ impl MovePicker {
                     self.stage = Stage::GoodQuiet;
                 }
 
-                // GOOD_QUIET (`movepick.cpp`): yield the quiets above the
-                // threshold, skipping the TT move and the illegal ones, then
-                // point at the bad-capture front region.
+                // GOOD_QUIET: yield the quiets above the threshold, skipping the
+                // TT move and the illegal ones, then point at the bad-capture
+                // front region.
                 Stage::GoodQuiet => {
                     if !self.skip_quiets
                         && let Some(m) = self.select(pos, |s, p| {
@@ -591,8 +582,8 @@ impl MovePicker {
                     self.stage = Stage::BadCapture;
                 }
 
-                // BAD_CAPTURE (`movepick.cpp`): replay the compacted
-                // SEE-losing captures, then point at the quiets region.
+                // BAD_CAPTURE: replay the compacted SEE-losing captures, then
+                // point at the quiets region.
                 Stage::BadCapture => {
                     if let Some(m) = self.select(pos, |_, _| true) {
                         return Some(m);
@@ -602,8 +593,7 @@ impl MovePicker {
                     self.stage = Stage::BadQuiet;
                 }
 
-                // BAD_QUIET (`movepick.cpp`): the quiets at or below the
-                // threshold.
+                // BAD_QUIET: the quiets at or below the threshold.
                 Stage::BadQuiet => {
                     if self.skip_quiets {
                         self.stage = Stage::Done;
@@ -615,8 +605,7 @@ impl MovePicker {
                     });
                 }
 
-                // The single-list `*_INIT` stages
-                // (`movepick.cpp`): generate, score, full sort.
+                // The single-list `*_INIT` stages: generate, score, full sort.
                 Stage::QcaptureInit => {
                     self.generate_capture_list(pos);
                     self.score_captures_in_place(pos, hist);
@@ -642,13 +631,13 @@ impl MovePicker {
                     self.stage = Stage::Probcut;
                 }
 
-                // QCAPTURE / EVASION (`movepick.cpp`): best-first, with
-                // no filter, both lists being pre-filtered and TT-deduped.
+                // QCAPTURE / EVASION: best-first, with no filter, both lists
+                // being pre-filtered and TT-deduped.
                 Stage::Qcapture | Stage::Evasion => {
                     return self.select(pos, |_, _| true);
                 }
 
-                // PROBCUT (`movepick.cpp`).
+                // PROBCUT.
                 Stage::Probcut => {
                     return self.select(pos, |s, p| {
                         let e = s.scratch.buf[s.cur];
@@ -661,8 +650,8 @@ impl MovePicker {
         }
     }
 
-    /// Skip the remaining quiet stages (`skip_quiet_moves()`,
-    /// `movepick.cpp`). Deferred bad captures are still replayed.
+    /// Skip the remaining quiet stages. Deferred bad captures are still
+    /// replayed.
     pub fn skip_quiet_moves(&mut self) {
         self.skip_quiets = true;
     }

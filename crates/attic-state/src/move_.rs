@@ -1,7 +1,7 @@
 //! Packed 32-bit move encoding.
 //!
-//! The bit layout matches the reference engine (`types.h`, `916-928`)
-//! exactly, so that move encodings round-trip through TT entries unchanged.
+//! The bit layout matches the reference engine exactly, so that move encodings
+//! round-trip through TT entries unchanged.
 //!
 //! ```text
 //! bit:  31         21 20    16 15 14 13         7 6          0
@@ -31,9 +31,9 @@ use crate::piece::{Piece, PieceKind};
 use crate::position::Position;
 use crate::square::Square;
 
-/// Reference flag: drop (`MOVE_DROP` in `types.h`).
+/// Reference flag: drop (`MOVE_DROP`).
 const FLAG_DROP: u32 = 1 << 14;
-/// Reference flag: promote (`MOVE_PROMOTE` in `types.h`).
+/// Reference flag: promote (`MOVE_PROMOTE`).
 const FLAG_PROMOTE: u32 = 1 << 15;
 /// Reference offset: PIECE_PROMOTE (added to a `PieceType` code to mark it promoted).
 const PIECE_PROMOTE: u32 = 8;
@@ -249,8 +249,7 @@ impl Move {
 }
 
 /// Flip a 16-bit move fragment to the one that plays the identical move on the
-/// board rotated 180° (`flip_move`, `types.h`), where
-/// `Flip(sq) = 80 - sq`.
+/// board rotated 180° (`flip_move`), where `Flip(sq) = 80 - sq`.
 ///
 /// A `.ybb` entry for the color-flipped position stores moves for the rotated
 /// board, and this maps each back onto the real position. The result is a raw
@@ -438,7 +437,7 @@ impl std::error::Error for UsiMoveParseError {}
 mod tests {
     use super::*;
 
-    /// Each row's `bits` is derived by hand from `types.h`.
+    /// Each row's `bits` is derived by hand from the reference's bit layout.
     struct Fixture {
         bits: u32,
         from: Option<(u8, u8)>,

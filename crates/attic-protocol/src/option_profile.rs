@@ -1,11 +1,10 @@
 //! Parser for `engine_option_profile.txt`, the pre-handshake selector that
 //! decides which engine-option group the engine grows.
 //!
-//! Ported from the reference `OptionsMap::read_engine_option_profile`
-//! (`usioption.cpp`), which reads the file before `add_options` builds
-//! the option map and therefore before the `usi` reply (`usi.cpp`) — so
-//! the read must print nothing at all, unlike `engine_options.txt`, which is
-//! read at `isready` and does announce itself.
+//! Ported from the reference `OptionsMap::read_engine_option_profile`, which
+//! reads the file before `add_options` builds the option map and therefore
+//! before the `usi` reply — so the read must print nothing at all, unlike
+//! `engine_options.txt`, which is read at `isready` and does announce itself.
 //!
 //! Only one knob exists: the book-option profile version
 //! ([`BookOptionsVersion`]).
@@ -13,12 +12,12 @@
 use std::path::Path;
 
 /// The profile filename the production call site reads, resolved against the
-/// process's current directory (`usi.cpp`).
+/// process's current directory.
 pub const ENGINE_OPTION_PROFILE_FILE: &str = "engine_option_profile.txt";
 
 /// Which book-option group to register, mirroring
-/// `OptionsMap::book_options_version` (`usioption.h`). A missing or
-/// unreadable profile file leaves it at V1.
+/// `OptionsMap::book_options_version`. A missing or unreadable profile file
+/// leaves it at V1.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BookOptionsVersion {
     /// `NarrowBook`, `BookEvalDiff`, `BookDepthLimit`, `ConsiderBookMoveCount`.
@@ -36,14 +35,13 @@ impl BookOptionsVersion {
 }
 
 /// The characters the reference `StringExtension::trim` strips, and it strips
-/// them from the end only (`misc.cpp`).
+/// them from the end only.
 const TRAILING_SPACE: [char; 4] = ['\r', '\n', ' ', '\t'];
 
-/// Parse the contents of a profile file, mirroring the reference scan loop
-/// (`usioption.cpp`). `BOOK_OPTIONS_V2` in any case sets V2;
-/// `BOOK_OPTIONS` reads the next token, where anything but `V2` / `2` / `V1` /
-/// `1` leaves the version untouched. Unknown keys are ignored and the last
-/// recognised line wins.
+/// Parse the contents of a profile file, mirroring the reference scan loop.
+/// `BOOK_OPTIONS_V2` in any case sets V2; `BOOK_OPTIONS` reads the next token,
+/// where anything but `V2` / `2` / `V1` / `1` leaves the version untouched.
+/// Unknown keys are ignored and the last recognised line wins.
 pub fn parse_engine_option_profile(contents: &str) -> BookOptionsVersion {
     let mut version = BookOptionsVersion::V1;
 
@@ -79,8 +77,8 @@ pub fn parse_engine_option_profile(contents: &str) -> BookOptionsVersion {
 }
 
 /// Read `path` and parse it as a profile file. A missing, unreadable, or
-/// non-UTF-8 file silently yields the V1 default (`usioption.cpp`).
-/// Nothing is printed on any path.
+/// non-UTF-8 file silently yields the V1 default. Nothing is printed on any
+/// path.
 pub fn read_engine_option_profile(path: &Path) -> BookOptionsVersion {
     match std::fs::read_to_string(path) {
         Ok(text) => parse_engine_option_profile(&text),

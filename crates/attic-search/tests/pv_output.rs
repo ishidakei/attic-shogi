@@ -1,5 +1,5 @@
 //! Unit tests for the fail-high/low PV-output gate, the pure predicate behind
-//! the reference's fail-LH `pv()` call site (`yaneuraou-search.cpp`).
+//! the reference's fail-LH `pv()` call site.
 
 use attic_search::fail_lh_pv_gate;
 

@@ -6,8 +6,8 @@ publish = false
 
 [dependencies]
 
-# `quick-draw` mirrors upstream's `ENABLE_QUICK_DRAW` (`config.h`), which
-# the reference's `FOR_TOURNAMENT` build defines: the query-time repetition walk
+# `quick-draw` mirrors upstream's `ENABLE_QUICK_DRAW`, which the reference's
+# `FOR_TOURNAMENT` build defines: the query-time repetition walk
 # in `Position::is_repetition` — second occurrence adjudicates, no
 # `repetition < ply` root gate — rather than the incremental `do_move`
 # precompute. `--no-default-features` restores the other variant.

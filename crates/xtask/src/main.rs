@@ -690,8 +690,7 @@ fn drive_search(
 
     // stdin must stay open until bestmove is read: `go depth N` searches
     // asynchronously, and an EOF reaches the engine's command loop as a
-    // synthetic "quit" (misc.cpp) that aborts the search after the
-    // first completed depth.
+    // synthetic "quit" that aborts the search after the first completed depth.
     write_search_script(&mut stdin, sfen, moves, depth, threads, hash)
         .map_err(|e| format!("failed to drive engine stdin: {e}"))?;
 
@@ -732,8 +731,8 @@ fn write_search_script<W: Write>(
 ) -> std::io::Result<()> {
     writeln!(out, "usi")?;
     writeln!(out, "setoption name Threads value {threads}")?;
-    // `no_book` is the sentinel recognised by book.cpp; without it a book
-    // hit would replace the search.
+    // `no_book` is the sentinel the reference recognises; without it a book hit
+    // would replace the search.
     writeln!(out, "setoption name BookFile value no_book")?;
     if let Some(mb) = hash {
         writeln!(out, "setoption name USI_Hash value {mb}")?;
@@ -917,7 +916,7 @@ fn render_search_fixture(
     out
 }
 
-/// `.ybb` magic (`YbbMagic`, `book.cpp`).
+/// `.ybb` magic (`YbbMagic`).
 const YBB_MAGIC: &[u8; 16] = b"YANE-BINBOOK-V1\0";
 /// `.ybb` flags bit 0 — per-move depth present (`YbbFlagMoveDepth`).
 const YBB_FLAG_MOVE_DEPTH: u64 = 1;
@@ -1318,7 +1317,7 @@ bestmove 2g2f\n\
     #[test]
     fn write_search_script_no_moves() {
         // The script omits `quit`: the caller closes stdin after reading
-        // bestmove, which the engine reads as one (misc.cpp).
+        // bestmove, which the engine reads as one.
         let mut buf = Vec::new();
         write_search_script(&mut buf, STARTPOS_SFEN, "", 3, 1, None).unwrap();
         let expected = format!(

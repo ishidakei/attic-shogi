@@ -26,22 +26,21 @@ pub struct GoLimits {
     /// `go ponder` — think on the predicted position; hold the reply until
     /// `ponderhit` or `stop`.
     pub ponder: bool,
-    /// `go mate [ms|infinite]` — mate-search mode (`usi.cpp`). In USI
-    /// (unlike UCI) the token after `mate` is a TIME BUDGET in milliseconds, not
-    /// a move count; `infinite` or a bare `mate` means unlimited. `None` means
-    /// this is not a mate search; `Some(ms)` carries the budget, with the
-    /// sentinel [`MATE_UNLIMITED_MS`] standing for unlimited (the reference's
+    /// `go mate [ms|infinite]` — mate-search mode. In USI (unlike UCI) the token
+    /// after `mate` is a TIME BUDGET in milliseconds, not a move count;
+    /// `infinite` or a bare `mate` means unlimited. `None` means this is not a
+    /// mate search; `Some(ms)` carries the budget, with the sentinel
+    /// [`MATE_UNLIMITED_MS`] standing for unlimited (the reference's
     /// `INT32_MAX`).
     pub mate: Option<u64>,
     /// `go rtime <ms>` — a randomised minimum-thinking-time budget used for
-    /// self-play variety (`timeman.cpp`). `init_` seeds all three time
-    /// bounds to `rtime` (plus a decaying random bump) and returns early. `None`
-    /// means no `rtime`.
+    /// self-play variety. `init_` seeds all three time bounds to `rtime` (plus a
+    /// decaying random bump) and returns early. `None` means no `rtime`.
     pub rtime: Option<u64>,
 }
 
-/// The `go mate` unlimited-budget sentinel (`limits.mate = INT32_MAX`,
-/// `usi.cpp`): `go mate infinite` and a bare `go mate` both map here.
+/// The `go mate` unlimited-budget sentinel (`limits.mate = INT32_MAX`):
+/// `go mate infinite` and a bare `go mate` both map here.
 pub const MATE_UNLIMITED_MS: u64 = i32::MAX as u64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,16 +59,16 @@ pub enum Command {
     Go(GoLimits),
     Stop,
     /// `gameover [win|lose|draw]` — the game ended. The optional result token is
-    /// ignored; the command is treated exactly like `stop` (`usi.cpp`):
-    /// over a shogi GUI, an opponent resign during `go ponder` arrives as
-    /// `gameover` without a preceding `stop`, so it must release a held reply.
+    /// ignored; the command is treated exactly like `stop`: over a shogi GUI, an
+    /// opponent resign during `go ponder` arrives as `gameover` without a
+    /// preceding `stop`, so it must release a held reply.
     GameOver,
     /// `ponderhit` — the opponent played the pondered move; commit the search.
     PonderHit,
     /// `bench [ttSizeMB] [threads] [limit] [default|current|<fenFile>] [limitType]`
-    /// — the reproducible NPS benchmark (`benchmark.cpp` / `usi.cpp`). The raw
-    /// trailing tokens are carried verbatim; [`crate::bench::parse_bench`] gives
-    /// them meaning (defaults, limit type, position source).
+    /// — the reproducible NPS benchmark. The raw trailing tokens are carried
+    /// verbatim; [`crate::bench::parse_bench`] gives them meaning (defaults, limit
+    /// type, position source).
     Bench(Vec<String>),
     Quit,
     Unknown(String),
@@ -148,10 +147,10 @@ fn parse_go<'a>(line: &str, parts: impl Iterator<Item = &'a str>) -> Command {
                 limits.ponder = true;
                 i += 1;
             }
-            // `go mate [ms|infinite]` (`usi.cpp`): the token after `mate`
-            // is a millisecond time budget; `infinite`, or nothing following,
-            // means unlimited. Anything else that is not a valid `u64` is an
-            // error (the reference's `stoi` would throw).
+            // `go mate [ms|infinite]`: the token after `mate` is a millisecond
+            // time budget; `infinite`, or nothing following, means unlimited.
+            // Anything else that is not a valid `u64` is an error (the
+            // reference's `stoi` would throw).
             "mate" => match tokens.get(i + 1) {
                 None => {
                     limits.mate = Some(MATE_UNLIMITED_MS);

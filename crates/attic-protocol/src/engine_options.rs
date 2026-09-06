@@ -1,5 +1,5 @@
 //! Parser for `engine_options.txt` / `eval_options.txt` override lines, ported
-//! from the reference `OptionsMap::build_option` (`usioption.cpp`).
+//! from the reference `OptionsMap::build_option`.
 //!
 //! Only the pure line → [`OverrideLine`] parse lives here; applying the result
 //! against the live option store is the driver's, which owns the output sink.
@@ -28,7 +28,7 @@ pub enum OverrideLine {
 }
 
 /// Parse one raw line into an [`OverrideLine`], mirroring the reference
-/// `build_option` scan (`usioption.cpp`).
+/// `build_option` scan.
 pub fn parse_override_line(line: &str) -> OverrideLine {
     let replaced: String = line.replace('=', " ");
     let mut tokens = replaced.split_whitespace();

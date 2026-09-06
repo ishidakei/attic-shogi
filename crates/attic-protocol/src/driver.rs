@@ -35,29 +35,29 @@ pub const ENGINE_AUTHOR: &str = "Kei Ishida <ishida.kei@gmail.com>";
 /// has to truncate it. Also the clamp for an out-of-range `go depth N`.
 const SEARCH_MAX_DEPTH: i32 = 245;
 
-// isready keep-alive: reference `Engine::run_heavy_job`, engine.cpp.
-/// Stop-flag poll interval of the keep-alive helper (engine.cpp).
+// isready keep-alive.
+/// Stop-flag poll interval of the keep-alive helper.
 const KEEP_ALIVE_POLL_INTERVAL: Duration = Duration::from_millis(100);
-/// Polls between bare keep-alive newlines: `50 * 100ms = 5s` (engine.cpp).
-/// A GUI reads the periodic empty line as a sign the engine is alive and does
-/// not time out while the `USI_Hash` allocation and the ~215 MiB `nn.bin` load
-/// run between `isready` and `readyok`.
+/// Polls between bare keep-alive newlines: `50 * 100ms = 5s`. A GUI reads the
+/// periodic empty line as a sign the engine is alive and does not time out
+/// while the `USI_Hash` allocation and the ~215 MiB `nn.bin` load run between
+/// `isready` and `readyok`.
 const KEEP_ALIVE_TICKS_PER_NEWLINE: u32 = 50;
 
-// --- Reference USI score conversion (score.cpp / usi.cpp `format_score`). ---
-/// `VALUE_MATE` (`types.h`).
+// --- Reference USI score conversion (`format_score`). ---
+/// `VALUE_MATE`.
 const VALUE_MATE: Value = 32000;
-/// `VALUE_TB_WIN_IN_MAX_PLY` (`types.h`): the `is_decisive` threshold.
+/// `VALUE_TB_WIN_IN_MAX_PLY`: the `is_decisive` threshold.
 const VALUE_TB_WIN_IN_MAX_PLY: Value = VALUE_MATE - 246;
-/// `Eval::PawnValue` / `NormalizeToPawnValue` (`usi.cpp`).
+/// `Eval::PawnValue` / `NormalizeToPawnValue`.
 const PAWN_VALUE: Value = 90;
-/// `VALUE_INFINITE` (`types.h`): the pre-search `rootMoves[0].score`
-/// sentinel the `ResignValue` guard excludes (`yaneuraou-search.cpp`).
+/// `VALUE_INFINITE`: the pre-search `rootMoves[0].score` sentinel the
+/// `ResignValue` guard excludes.
 const VALUE_INFINITE: Value = 32001;
 
-/// The reference `USIEngine::to_cp` (`usi.cpp`). Unlike [`format_score`]
-/// it does not special-case mate scores — the reference applies the same linear
-/// map to all values.
+/// The reference `USIEngine::to_cp`. Unlike [`format_score`] it does not
+/// special-case mate scores — the reference applies the same linear map to all
+/// values.
 fn to_cp(v: Value) -> Value {
     100 * v / PAWN_VALUE
 }
@@ -89,7 +89,7 @@ fn format_score(v: Value) -> String {
 /// `LazyNumaReplicatedSystemWide<Networks>`, minus its POSIX shared-memory
 /// layer). Replica granularity is the system node, not the possibly L3-bundled
 /// logical node, so logical nodes sharing a system node share one copy
-/// (`get_discriminator`, `numa.h`).
+/// (`get_discriminator`).
 struct LoadedEval {
     path: PathBuf,
     /// The instance the file was loaded into (the reference's replication
@@ -108,15 +108,14 @@ enum IsreadyOutcome {
 }
 
 /// The opened opening books plus the `IgnoreBookPly` value captured at load
-/// time — the reference captures it at `read_book` time (`book.cpp`), so
-/// changing it requires a reload.
+/// time — the reference captures it at `read_book` time, so changing it
+/// requires a reload.
 ///
-/// `books` is the Multiple Book priority list (`memory_books`, `book.h`):
-/// the numbered `stem-000…` series in ascending order then the plain base name,
-/// restricted to the names that opened; a probe takes the first hit
-/// (`book.cpp`). Only the coordinator probes, once per `go` before
-/// helpers start: the on-the-fly read path is not thread-safe by design
-/// (`book.h`).
+/// `books` is the Multiple Book priority list (`memory_books`): the numbered
+/// `stem-000…` series in ascending order then the plain base name, restricted
+/// to the names that opened; a probe takes the first hit. Only the coordinator
+/// probes, once per `go` before helpers start: the on-the-fly read path is not
+/// thread-safe by design.
 struct LoadedBook {
     books: Vec<Book>,
     ignore_book_ply: bool,
@@ -135,10 +134,10 @@ struct ActiveSearch {
     ponder: Option<Arc<PonderSignal>>,
     /// Suppresses the coordinator's `bestmove` (and final PV) for the
     /// Stochastic_Ponder ponderhit teardown, which stops the rewound search
-    /// without emitting anything (`usi.cpp`).
+    /// without emitting anything.
     suppress: Arc<AtomicBool>,
     /// The root game ply this search ran at, carried so a completed real search
-    /// updates the driver's `last_game_ply` (`yaneuraou-search.cpp`).
+    /// updates the driver's `last_game_ply`.
     game_ply: i32,
 }
 
@@ -148,8 +147,7 @@ struct ActiveSearch {
 struct SearchState {
     histories: WorkerHistories,
     /// The chosen worker's score / average score and the main worker's final
-    /// `timeReduction`, seeding the next `go`'s time management
-    /// (`yaneuraou-search.cpp`).
+    /// `timeReduction`, seeding the next `go`'s time management.
     ///
     /// Always `Some`: the reference runs that bookkeeping on every path, so the
     /// SKIP_SEARCH short-circuits (book / declaration / resign / no legal move)
@@ -185,7 +183,7 @@ pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
     book: Option<Arc<LoadedBook>>,
     /// The `(resolved-name-list, on-the-fly, ignore-book-ply)` signature of the
     /// last book load; `isready` reloads only when it changes, the reference's
-    /// reload-skip (`book.cpp`).
+    /// reload-skip.
     book_signature: Option<(Vec<PathBuf>, bool, bool)>,
     /// A session-scoped seed advanced per `go`, driving both the book-selection
     /// and `rtime` PRNGs. Seeded from process entropy by default, so the
@@ -194,24 +192,23 @@ pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
     /// The in-flight search worker, if any.
     search: Option<ActiveSearch>,
     /// Time-management state persisting across `go`s within a game, reset by
-    /// `usinewgame` (`yaneuraou-search.cpp`): the previous move's score
-    /// and average score (`VALUE_INFINITE` for the first move) and its final
-    /// `timeReduction` (`0.85` initially).
+    /// `usinewgame`: the previous move's score and average score
+    /// (`VALUE_INFINITE` for the first move) and its final `timeReduction`
+    /// (`0.85` initially).
     best_previous_score: Value,
     best_previous_average_score: Value,
     previous_time_reduction: f64,
-    /// The root game ply of the last completed real search
-    /// (`yaneuraou-search.cpp`). At the next search start an odd
-    /// `last_game_ply - game_ply` means the side to move alternated — e.g. a
-    /// Stochastic_Ponder rewind — and flips the sign of the persisted previous
-    /// scores before they seed that search (`:1470-1483`).
+    /// The root game ply of the last completed real search. At the next search
+    /// start an odd `last_game_ply - game_ply` means the side to move
+    /// alternated — e.g. a Stochastic_Ponder rewind — and flips the sign of the
+    /// persisted previous scores before they seed that search.
     last_game_ply: i32,
-    /// The last `position` command in parsed form (`usi.h`), retained so a
+    /// The last `position` command in parsed form, retained so a
     /// Stochastic_Ponder `go ponder` can rewind it by one move and a
     /// `ponderhit` can re-apply the real position.
     last_position: (PositionSfen, Vec<String>),
-    /// The last `go` command's limits (`usi.h`), retained so a
-    /// Stochastic_Ponder `ponderhit` can re-issue it with `ponder` stripped.
+    /// The last `go` command's limits, retained so a Stochastic_Ponder
+    /// `ponderhit` can re-issue it with `ponder` stripped.
     last_go: Option<GoLimits>,
     /// The worker thread pool: a main-worker slot plus `Threads − 1` persistent
     /// helper threads following the reference `idle_loop` (park → receive job →
@@ -242,8 +239,8 @@ pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
 
 impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     /// A driver whose book / `rtime` PRNG stream is seeded from process entropy,
-    /// like the reference's default-constructed `AsyncPRNG` / `PRNG`
-    /// (`book.h`, `timeman.cpp`) — every process run differs.
+    /// like the reference's default-constructed `AsyncPRNG` / `PRNG` — every
+    /// process run differs.
     pub fn new(reader: R, writer: Arc<Mutex<W>>) -> Self {
         Self::with_book_seed(reader, writer, Prng::random_seed())
     }
@@ -251,8 +248,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     /// A driver with an explicit book-PRNG session seed.
     ///
     /// The engine-option profile is read from [`ENGINE_OPTION_PROFILE_FILE`] in
-    /// the process's current directory, matching the reference call site
-    /// (`usi.cpp`).
+    /// the process's current directory, matching the reference call site.
     pub fn with_book_seed(reader: R, writer: Arc<Mutex<W>>, book_seed: u64) -> Self {
         Self::with_option_profile(
             reader,
@@ -273,7 +269,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     ) -> Self {
         let options = OptionStore::with_book_options(read_engine_option_profile(profile_path));
         let threads = options.threads();
-        // The engine default policy (`engine.cpp`).
+        // The engine default policy.
         let numa_config = numa_config_from_policy("auto", &real_sysfs_options())
             .expect("default NumaPolicy `auto` always resolves to a valid config");
         let numa_bound = compute_numa_binding(&numa_config, "auto", threads);
@@ -358,8 +354,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     }
 
     /// Emit one verbatim line with no USI keyword prefix — the option-override
-    /// `Error : ...` diagnostics the reference writes to raw `std::cout`
-    /// (`usioption.cpp`).
+    /// `Error : ...` diagnostics the reference writes to raw `std::cout`.
     fn emit_raw_line(&self, text: &str) -> io::Result<()> {
         Formatter::new(&mut *self.lock_writer()).raw_line(text)
     }
@@ -389,8 +384,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                 .join()
                 .expect("search worker thread must not panic");
             self.histories = Some(state.histories);
-            // Carry the finished search's time-management outputs forward
-            // (`yaneuraou-search.cpp`).
+            // Carry the finished search's time-management outputs forward.
             if let Some((score, avg, tr)) = state.time_state {
                 self.best_previous_score = score;
                 self.best_previous_average_score = avg;
@@ -403,8 +397,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     }
 
     /// Resize the shared transposition table to the current `USI_Hash` value in
-    /// MiB (`yaneuraou-search.cpp`). The caller must have run
-    /// [`Self::finish_search_join`] first so [`Arc::get_mut`] succeeds.
+    /// MiB. The caller must have run [`Self::finish_search_join`] first so
+    /// [`Arc::get_mut`] succeeds.
     fn resize_tt_to_hash_option(&mut self) {
         let mb = self.options.spin("USI_Hash").max(1) as usize;
         Arc::get_mut(&mut self.tt)
@@ -415,8 +409,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     /// Recompute the worker → NUMA-node binding for the current `Threads` /
     /// `NumaPolicy` options and rebuild the worker pool with it. Every pool
     /// (re)build routes through here so [`Self::numa_bound`] stays consistent
-    /// with the live pool (`thread.cpp`). Helpers bind once at spawn;
-    /// the per-`go` coordinator binds at each `go`.
+    /// with the live pool. Helpers bind once at spawn; the per-`go` coordinator
+    /// binds at each `go`.
     ///
     /// Callers must have joined any running search first — a resize destroys and
     /// recreates the helper threads.
@@ -424,25 +418,24 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         let requested = self.options.threads();
         let policy = self.options.text("NumaPolicy").to_string();
         self.numa_bound = compute_numa_binding(&self.numa_config, &policy, requested);
-        // Every pool rebuild resets the shared tables, matching the reference
-        // (`thread.cpp`). The coordinator's own game-scoped per-worker
-        // tables persist, so only its shared handle is swapped.
+        // Every pool rebuild resets the shared tables, matching the reference.
+        // The coordinator's own game-scoped per-worker tables persist, so only
+        // its shared handle is swapped.
         self.worker_shared = build_worker_shared(&self.numa_config, &self.numa_bound, requested);
         if let Some(h) = self.histories.as_mut() {
             h.set_shared(Arc::clone(&self.worker_shared[0]));
         }
         let plan = bind_plan(&self.numa_config, &self.numa_bound);
         self.pool.set_with_binding(requested, plan);
-        // The reference forces replication right after `resize_threads`
-        // (`engine.cpp`).
+        // The reference forces replication right after `resize_threads`.
         self.rebuild_networks();
     }
 
     /// Ensure a network replica exists for every *system* NUMA node the current
     /// binding assignment touches, and resolve the per-worker
     /// [`Self::worker_networks`] handles — the analog of the reference
-    /// `ensure_network_replicated` (`thread.cpp`), forced at
-    /// configuration time so no replication ever runs on the search path.
+    /// `ensure_network_replicated`, forced at configuration time so no
+    /// replication ever runs on the search path.
     ///
     /// With no network loaded or replication not required, every worker shares
     /// the one loaded instance. Otherwise one copy per distinct system node is
@@ -495,7 +488,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     }
 
     /// Emit each non-blank line of `text` as `info string <line>`, mirroring the
-    /// reference `print_info_string` (`usi.cpp`).
+    /// reference `print_info_string`.
     fn emit_info_string_lines(&self, text: &str) -> io::Result<()> {
         for line in text.split('\n') {
             if !line.trim().is_empty() {
@@ -505,13 +498,12 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         Ok(())
     }
 
-    /// Emit the `Available processors: ...` line (`engine.cpp`).
+    /// Emit the `Available processors: ...` line.
     fn emit_numa_config_information(&self) -> io::Result<()> {
         self.emit_info_string_lines(&numa_config_information_as_string(&self.numa_config))
     }
 
-    /// Emit the `Using N thread[s][ with NUMA node thread binding: ...]` line
-    /// (`engine.cpp`).
+    /// Emit the `Using N thread[s][ with NUMA node thread binding: ...]` line.
     fn emit_thread_allocation_information(&self) -> io::Result<()> {
         self.emit_info_string_lines(&thread_allocation_information_as_string(
             self.pool.size(),
@@ -542,9 +534,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     }
 
     /// The absolute path a `<BookDir>/<BookFile>` pair resolves to, mirroring
-    /// the reference `get_book_name` (`book.cpp`): `BookDir` joined
-    /// onto the binary's folder, then `BookFile`. An absolute `BookDir` wins
-    /// over the binary folder.
+    /// the reference `get_book_name`: `BookDir` joined onto the binary's
+    /// folder, then `BookFile`. An absolute `BookDir` wins over the binary
+    /// folder.
     fn book_path(&self, book_dir: &str, book_file: &str) -> PathBuf {
         let base = std::env::current_exe()
             .ok()
@@ -554,9 +546,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     }
 
     /// (Re)load the opening books from the current options, mirroring the
-    /// reference `BookMoveSelector::read_book` (`yaneuraou-search.cpp`).
-    /// Reloads only when the `(name list, on-the-fly, IgnoreBookPly)` capture
-    /// changed (`book.cpp`).
+    /// reference `BookMoveSelector::read_book`. Reloads only when the
+    /// `(name list, on-the-fly, IgnoreBookPly)` capture changed.
     ///
     /// `no_book`, an unsupported (non-`.ybb`) format, or an open failure all
     /// leave that name out of the priority list without panicking; a `.db` whose
@@ -585,15 +576,14 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             return Ok(());
         }
 
-        // Verbatim from the reference (`book.cpp`).
+        // Verbatim from the reference.
         for notice in &notices {
             self.info_string(notice)?;
         }
 
         let mut books: Vec<Book> = Vec::new();
         for name in &names {
-            // Per name, as the reference does inside `MemoryBook::read_book`
-            // (`book.cpp`).
+            // Per name, as the reference does inside `MemoryBook::read_book`.
             let resolved = resolve_book_filename_with_ybb_fallback(name);
             if &resolved != name {
                 self.info_string(&format!(
@@ -638,8 +628,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     }
 
     /// Read an option-override file and apply each line, mirroring the reference
-    /// `OptionsMap::read_engine_options` (`usioption.cpp`). A missing or
-    /// unreadable file is a silent no-op.
+    /// `OptionsMap::read_engine_options`. A missing or unreadable file is a
+    /// silent no-op.
     fn read_engine_options(&mut self, path: &Path) -> io::Result<()> {
         let contents = match std::fs::read_to_string(path) {
             Ok(c) => c,
@@ -652,10 +642,10 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         Ok(())
     }
 
-    /// Apply one override line, mirroring the reference `build_option`
-    /// (`usioption.cpp`). An out-of-range or ill-typed value is silently
-    /// not stored, as the reference `operator=` range guard is, and the option is
-    /// locked FIXED either way so later `setoption`s cannot change it.
+    /// Apply one override line, mirroring the reference `build_option`. An
+    /// out-of-range or ill-typed value is silently not stored, as the reference
+    /// `operator=` range guard is, and the option is locked FIXED either way so
+    /// later `setoption`s cannot change it.
     fn apply_override_line(&mut self, line: &str) -> io::Result<()> {
         let (name, value, invalid) = match parse_override_line(line) {
             OverrideLine::Empty => return Ok(()),
@@ -667,8 +657,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             } => (name, value, invalid_tokens),
         };
 
-        // Reported first, but do not abort the override
-        // (`usioption.cpp`).
+        // Reported first, but do not abort the override.
         for tok in &invalid {
             self.emit_raw_line(&format!("Error : invalid command: {tok}"))?;
         }
@@ -709,15 +698,14 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 
     fn handle_isready(&mut self) -> io::Result<()> {
         self.finish_search_join();
-        // Before the engine's own isready work, as the reference does
-        // (`usi.cpp`).
+        // Before the engine's own isready work, as the reference does.
         self.read_engine_options(Path::new("engine_options.txt"))?;
         let eval_options = Path::new(self.options.text("EvalDir")).join("eval_options.txt");
         self.read_engine_options(&eval_options)?;
 
-        // The reference wraps only `Eval::load_eval` in its keep-alive scope
-        // (yaneuraou-search.cpp); here the heavy work is the whole block, so
-        // the keep-alive brackets all of it.
+        // The reference wraps only `Eval::load_eval` in its keep-alive scope;
+        // here the heavy work is the whole block, so the keep-alive brackets all
+        // of it.
         let outcome = {
             let _keep_alive = KeepAlive::spawn(Arc::clone(&self.writer), self.keep_alive_poll);
             self.isready_heavy_job()?
@@ -761,8 +749,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                     // A reload starts with no replicas, dropping the stale set.
                     replicas: BTreeMap::new(),
                 });
-                // As the reference does after a reload (`engine.cpp`), so no
-                // replica is ever built on the search path.
+                // As the reference does after a reload, so no replica is ever
+                // built on the search path.
                 self.rebuild_networks();
                 Ok(IsreadyOutcome::Ready)
             }
@@ -784,11 +772,11 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                     self.finish_search_join();
                     self.rebuild_pool();
                     // The reference prints the allocation line from the
-                    // `Threads` on_change callback (`engine.cpp`).
+                    // `Threads` on_change callback.
                     self.emit_thread_allocation_information()?;
                 }
                 // The reference's callback waits for any running search before
-                // resizing (`yaneuraou-search.cpp`).
+                // resizing.
                 if name.eq_ignore_ascii_case("USI_Hash") {
                     self.finish_search_join();
                     self.resize_tt_to_hash_option();
@@ -799,7 +787,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         }
     }
 
-    /// Apply `setoption name NumaPolicy value <v>` (`engine.cpp`).
+    /// Apply `setoption name NumaPolicy value <v>`.
     ///
     /// `auto` / `system` detect from the system respecting affinity; `hardware`
     /// detects ignoring affinity; `none` is a single all-threads node; anything
@@ -823,8 +811,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             }
         }
 
-        // The reference's callback returns both lines joined by a newline
-        // (`engine.cpp`).
+        // The reference's callback returns both lines joined by a newline.
         self.rebuild_pool();
         self.emit_numa_config_information()?;
         self.emit_thread_allocation_information()
@@ -872,12 +859,11 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         self.histories = Some(WorkerHistories::with_shared(Arc::clone(
             &self.worker_shared[0],
         )));
-        // The first-move-of-a-game sentinels (`yaneuraou-search.cpp`).
+        // The first-move-of-a-game sentinels.
         self.best_previous_score = VALUE_INFINITE;
         self.best_previous_average_score = VALUE_INFINITE;
         self.previous_time_reduction = 0.85;
-        // `yaneuraou-search.cpp`; the `last_position` default is the
-        // reference's `"position startpos"` (`usi.h`).
+        // The `last_position` default is the reference's `"position startpos"`.
         self.last_game_ply = 0;
         self.last_position = (PositionSfen::StartPos, Vec::new());
         self.last_go = None;
@@ -919,8 +905,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 
         self.last_go = Some(limits.clone());
 
-        // Stochastic_Ponder ponders one move earlier than the retained position
-        // (`usi.cpp`); `ponderMode` stays set.
+        // Stochastic_Ponder ponders one move earlier than the retained
+        // position; `ponderMode` stays set.
         if limits.ponder && self.options.check("Stochastic_Ponder") {
             self.apply_stochastic_ponder_rewind();
         }
@@ -955,9 +941,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         Ok(())
     }
 
-    /// Stochastic_Ponder `go ponder` rewind (`usi.cpp`): the retained
-    /// position with its last move dropped, installed as the search root. Best
-    /// effort — nothing to rewind, or a rebuild failure, leaves it untouched.
+    /// Stochastic_Ponder `go ponder` rewind: the retained position with its
+    /// last move dropped, installed as the search root. Best effort — nothing
+    /// to rewind, or a rebuild failure, leaves it untouched.
     fn apply_stochastic_ponder_rewind(&mut self) {
         let (sfen, moves) = &self.last_position;
         if moves.is_empty() {
@@ -974,9 +960,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     ///
     /// Returns `None` when no network is loaded; the caller emits the resign or
     /// notice appropriate to its context. `disable_pv_interval` mirrors the
-    /// reference `limits.disablePvInterval` (`usi.cpp`): it forces the
-    /// per-iteration PV interval to zero so every iteration prints, and is set
-    /// only by `bench`.
+    /// reference `limits.disablePvInterval`: it forces the per-iteration PV
+    /// interval to zero so every iteration prints, and is set only by `bench`.
     fn prepare_coordinator_job(
         &mut self,
         mut limits: GoLimits,
@@ -987,10 +972,10 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // search — which read the scale at its own start — unperturbed.
         set_fv_scale(self.options.spin("FV_SCALE") as i32);
 
-        // An explicit `go` token wins over the option (`usi.cpp`). A
-        // seeded depth disables the parallel-search vote below just as an
-        // explicit one does: the reference's `!limits.depth` guard
-        // (`yaneuraou-search.cpp`) keys off the final value, not its source.
+        // An explicit `go` token wins over the option. A seeded depth disables
+        // the parallel-search vote below just as an explicit one does: the
+        // reference's `!limits.depth` guard keys off the final value, not its
+        // source.
         if limits.depth.is_none() {
             let dl = self.options.spin("DepthLimit");
             if dl != 0 {
@@ -1008,9 +993,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // `eval` always has a network for every worker.
         self.eval.as_ref()?;
 
-        // The reference `use_time_management()` (`search.h`) is true only
-        // for a real clock or `go rtime`; a `TimeControl` is installed for those
-        // and for `go movetime`, and is `None` otherwise.
+        // The reference `use_time_management()` is true only for a real clock or
+        // `go rtime`; a `TimeControl` is installed for those and for
+        // `go movetime`, and is `None` otherwise.
         let us = self.pos.side_to_move();
         let now = Instant::now();
         let use_time_management = limits.mate.is_none()
@@ -1028,10 +1013,10 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         };
         let movetime = limits.movetime.map(|m| m as i64).or(mate_budget);
 
-        // Side-flip continuity (`yaneuraou-search.cpp`): when the side
-        // to move alternated between the last completed search and this one, the
-        // persisted previous scores are negated before they seed `iterValue` /
-        // `fallingEval`. The first-move sentinel is exempt.
+        // Side-flip continuity: when the side to move alternated between the
+        // last completed search and this one, the persisted previous scores are
+        // negated before they seed `iterValue` / `fallingEval`. The first-move
+        // sentinel is exempt.
         let flip_previous = (self.last_game_ply - self.pos.ply() as i32) & 1 != 0;
         let best_prev_score = match self.best_previous_score {
             VALUE_INFINITE => VALUE_INFINITE,
@@ -1106,15 +1091,13 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         let multi_pv = (self.options.spin("MultiPV").max(1)) as usize;
 
         // The reference consults `get_best_thread` only for
-        // `MultiPV == 1 && !limits.depth && !limits.mate`
-        // (`yaneuraou-search.cpp`), so a fixed-depth result stays
-        // reproducible, MultiPV shows every line, and a mate proof stays on the
-        // main worker's own line.
+        // `MultiPV == 1 && !limits.depth && !limits.mate`, so a fixed-depth
+        // result stays reproducible, MultiPV shows every line, and a mate proof
+        // stays on the main worker's own line.
         let mate_mode = limits.mate.is_some();
         let use_voting = limits.depth.is_none() && multi_pv == 1 && !mate_mode;
 
-        // `yaneuraou-search.cpp`. A zero interval never suppresses, so
-        // every iteration prints.
+        // A zero interval never suppresses, so every iteration prints.
         let consideration_mode = self.options.check("ConsiderationMode");
         let computed_pv_interval = if disable_pv_interval || limits.infinite || consideration_mode {
             Duration::ZERO
@@ -1164,44 +1147,44 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             .wrapping_add(1);
         let book_seed = self.book_seed;
         // `go infinite` holds the reply until `stop` / `ponderhit`, the
-        // SKIP_SEARCH wait loop (`yaneuraou-search.cpp`).
+        // SKIP_SEARCH wait loop.
         let infinite = limits.infinite;
         // When set, the coordinator emits no `bestmove` and no final PV for this
-        // search (`usi.cpp`).
+        // search.
         let suppress_bestmove = Arc::new(AtomicBool::new(false));
 
         // The per-side thresholds are precomputed from the root position, as the
-        // reference `set_ekr` does (`yaneuraou-search.cpp`); the material
-        // total is invariant across the search, so every worker shares them.
+        // reference `set_ekr` does; the material total is invariant across the
+        // search, so every worker shares them.
         let entering_king = EnteringKingConfig::new(
             EnteringKingRule::from_option(self.options.text("EnteringKingRule")),
             &pos,
         );
 
         // A set value of 0 means unlimited, remapped to `100000` as the reference
-        // does (`yaneuraou-search.cpp`).
+        // does.
         let max_moves_to_draw = remap_max_moves_to_draw(self.options.spin("MaxMovesToDraw"));
 
-        // `drawValueTable[REPETITION_DRAW][us]` for the root side to move
-        // (`yaneuraou-search.cpp`); the search negates it for the
-        // opponent, the reference's symmetric `±draw_value`.
+        // `drawValueTable[REPETITION_DRAW][us]` for the root side to move; the
+        // search negates it for the opponent, the reference's symmetric
+        // `±draw_value`.
         let draw_option = match self.pos.side_to_move() {
             attic_state::Color::Black => self.options.spin("DrawValueBlack"),
             attic_state::Color::White => self.options.spin("DrawValueWhite"),
         };
         let draw_contempt: Value = (draw_option as Value) * PAWN_VALUE / 100;
 
-        // The post-search resign threshold in centipawns
-        // (`yaneuraou-search.cpp`), consumed at emit time.
+        // The post-search resign threshold in centipawns, consumed at emit
+        // time.
         let resign_value = self.options.spin("ResignValue") as Value;
 
         // When true the search also considers the non-promoting moves the default
-        // generator suppresses (`yaneuraou-search.cpp`).
+        // generator suppresses.
         let generate_all_legal_moves = self.options.check("GenerateAllLegalMoves");
 
-        // The reference binds pool thread 0 once at creation
-        // (`thread.cpp`); this coordinator is spawned per `go`, so it
-        // re-binds each time to the same node, which is idempotent.
+        // The reference binds pool thread 0 once at creation; this coordinator
+        // is spawned per `go`, so it re-binds each time to the same node, which
+        // is idempotent.
         let numa_bind = if self.numa_bound.is_empty() {
             None
         } else {
@@ -1259,7 +1242,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 
     /// `bench [ttSizeMB] [threads] [limit] [default|current|<fenFile>] [limitType]`
     /// — a reproducible NPS benchmark ported from the reference `USIEngine::bench`
-    /// (`usi.cpp`) + `setup_bench` (`benchmark.cpp`).
+    /// + `setup_bench`.
     ///
     /// Mirrors the reference command replay: apply `setoption name Threads` /
     /// `setoption name USI_Hash`, run the `usinewgame` equivalent once, reset the
@@ -1275,9 +1258,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             Err(e) => return self.info_string(&format!("bench: {e}")),
         };
 
-        // The two option lines the reference emits (`benchmark.cpp`),
-        // routed through the ordinary `setoption` path so the pool and TT resize
-        // exactly as a host `setoption` would.
+        // The two option lines the reference emits, routed through the ordinary
+        // `setoption` path so the pool and TT resize exactly as a host
+        // `setoption` would.
         self.handle_setoption("Threads", &config.threads.to_string())?;
         self.handle_setoption("USI_Hash", &config.tt_mb.to_string())?;
 
@@ -1301,7 +1284,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             total_nodes += self.bench_run_one(config.limits.clone())?;
         }
 
-        // `+1` mirrors the reference's divide-by-zero guard (`usi.cpp`).
+        // `+1` mirrors the reference's divide-by-zero guard.
         let time_ms = start.elapsed().as_millis() as u64 + 1;
         let nps = 1000 * total_nodes / time_ms;
         self.info_string(&format!(
@@ -1317,15 +1300,14 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         }
     }
 
-    /// `gameover [win|lose|draw]`, treated exactly like `stop`
-    /// (`usi.cpp`). An opponent resign during `go ponder` arrives from a
-    /// GUI as `gameover` with no preceding `stop`; unhandled, pondering would
-    /// never stop.
+    /// `gameover [win|lose|draw]`, treated exactly like `stop`. An opponent
+    /// resign during `go ponder` arrives from a GUI as `gameover` with no
+    /// preceding `stop`; unhandled, pondering would never stop.
     fn handle_gameover(&mut self) {
         self.handle_stop();
     }
 
-    /// `ponderhit`: the opponent played the predicted move (`usi.cpp`).
+    /// `ponderhit`: the opponent played the predicted move.
     ///
     /// Clearing the ponder flag both lets the pondering search continue under
     /// time management and releases a held book reply, whose coordinator wait
@@ -1348,9 +1330,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         Ok(())
     }
 
-    /// Stochastic_Ponder `ponderhit` (`usi.cpp`). The rewound search's
-    /// output is suppressed before it is stopped, so exactly one `bestmove`
-    /// reaches the GUI.
+    /// Stochastic_Ponder `ponderhit`. The rewound search's output is suppressed
+    /// before it is stopped, so exactly one `bestmove` reaches the GUI.
     fn stochastic_ponderhit(&mut self) -> io::Result<()> {
         if let Some(active) = &self.search {
             active.suppress.store(true, Ordering::Relaxed);
@@ -1378,11 +1359,10 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     }
 }
 
-/// Write one PV `info` line — the reference `on_update_full`
-/// (`usi.cpp`), carrying every field the reference prints, in its
-/// order. A zero `seldepth` is left off the line, as the reference does — it
-/// only ever holds zero on a search that never ran a node, whose line reads
-/// better without the field.
+/// Write one PV `info` line — the reference `on_update_full`, carrying every
+/// field the reference prints, in its order. A zero `seldepth` is left off the
+/// line, as the reference does — it only ever holds zero on a search that never
+/// ran a node, whose line reads better without the field.
 ///
 /// `nps` and `time` are wall-clock derived, so two searches over the identical
 /// node sequence print different values for them.
@@ -1429,9 +1409,9 @@ impl<W: Write + Send> PvSink for WriterPvSink<W> {
     }
 }
 
-/// Apply the reference's `MaxMovesToDraw` remap (`yaneuraou-search.cpp`):
-/// a set value of `0` means unlimited and becomes `100000`. The option itself
-/// still reports `0` — only the search-side horizon uses the remapped value.
+/// Apply the reference's `MaxMovesToDraw` remap: a set value of `0` means
+/// unlimited and becomes `100000`. The option itself still reports `0` — only
+/// the search-side horizon uses the remapped value.
 fn remap_max_moves_to_draw(option_value: i64) -> i32 {
     if option_value == 0 {
         100_000
@@ -1446,16 +1426,15 @@ const BOOK_EXT_DB: &str = "db";
 
 /// True when `path` carries extension `ext`.
 ///
-/// The reference compares the raw suffix and is therefore case-sensitive
-/// (`book.cpp`); this test is case-insensitive, one convention for every
-/// book path in the module.
+/// The reference compares the raw suffix and is therefore case-sensitive; this
+/// test is case-insensitive, one convention for every book path in the module.
 fn has_book_ext(path: &Path, ext: &str) -> bool {
     path.extension()
         .is_some_and(|e| e.eq_ignore_ascii_case(ext))
 }
 
 /// Strip a trailing `.db` / `.ybb` from a book name, returning the stem
-/// (`book_name_without_extension`, `book.cpp`).
+/// (`book_name_without_extension`).
 ///
 /// Any other name — notably the `no_book` sentinel — yields `None`, the
 /// reference's empty stem: this name has no numbered priority series.
@@ -1467,16 +1446,15 @@ fn book_name_without_extension(name: &Path) -> Option<PathBuf> {
     }
 }
 
-/// `<stem>-<index zero-padded to 3><extension>` (`book.cpp`). An index
-/// past 999 grows past three digits, as the reference's padding loop does.
+/// `<stem>-<index zero-padded to 3><extension>`. An index past 999 grows past
+/// three digits, as the reference's padding loop does.
 fn priority_book_filename(stem: &Path, index: usize, extension: &str) -> PathBuf {
     let mut name = stem.as_os_str().to_os_string();
     name.push(format!("-{index:03}.{extension}"));
     PathBuf::from(name)
 }
 
-/// Resolve priority book `index` for `base` (`resolve_priority_book_filename`,
-/// `book.cpp`).
+/// Resolve priority book `index` for `base` (`resolve_priority_book_filename`).
 ///
 /// The primary extension is the base name's own; the secondary is the other one,
 /// and the primary wins when both files exist, producing the reference's
@@ -1509,10 +1487,10 @@ fn resolve_priority_book_filename(base: &Path, index: usize) -> Option<(PathBuf,
     None
 }
 
-/// The Multiple Book priority list for `base` (`book.cpp`):
-/// `<stem>-000`, `<stem>-001`, … stopping at the first index where neither
-/// extension exists — a gap ends the series, so a `-003` after a missing `-002`
-/// is never reached — then the plain `base` last.
+/// The Multiple Book priority list for `base`: `<stem>-000`, `<stem>-001`, …
+/// stopping at the first index where neither extension exists — a gap ends the
+/// series, so a `-003` after a missing `-002` is never reached — then the plain
+/// `base` last.
 ///
 /// The second tuple element carries the notices the enumeration produced, in
 /// list order, for the caller to emit.
@@ -1531,8 +1509,8 @@ fn book_names(base: &Path) -> (Vec<PathBuf>, Vec<String>) {
 }
 
 /// Resolve `<name>.db` whose file is absent to its `<name>.ybb` sibling
-/// (`resolve_book_filename_with_ybb_fallback`, `book.cpp`). Returns the
-/// original path when it exists, or when no `.ybb` sibling is present.
+/// (`resolve_book_filename_with_ybb_fallback`). Returns the original path when
+/// it exists, or when no `.ybb` sibling is present.
 fn resolve_book_filename_with_ybb_fallback(requested: &Path) -> PathBuf {
     if requested.exists() {
         return requested.to_path_buf();
@@ -1548,8 +1526,8 @@ fn resolve_book_filename_with_ybb_fallback(requested: &Path) -> PathBuf {
 
 /// Rebuild a [`Position`] from a parsed `position` command, returning `None` on
 /// any parse or legality failure — the Stochastic_Ponder rewind / re-issue paths
-/// (`usi.cpp`) need the reconstruction without the diagnostic
-/// side effects of [`UsiDriver::handle_position`].
+/// need the reconstruction without the diagnostic side effects of
+/// [`UsiDriver::handle_position`].
 fn build_position_from(sfen: &PositionSfen, moves: &[String]) -> Option<Position> {
     let mut pos = match sfen {
         PositionSfen::StartPos => Position::startpos(),
@@ -1586,11 +1564,11 @@ fn emit_info_string<W: Write>(writer: &Arc<Mutex<W>>, msg: &str) {
 /// [`KEEP_ALIVE_TICKS_PER_NEWLINE`] polls so a GUI does not time out while the
 /// heavy `isready` initialisation runs. Dropping the guard stops and joins the
 /// thread, so the join runs whether the wrapped work returns normally or bails
-/// out early via `?` — the reference's `SCOPE_EXIT` (engine.cpp).
+/// out early via `?` — the reference's `SCOPE_EXIT`.
 ///
-/// Reference: `Engine::run_heavy_job` (engine.cpp).
+/// Reference: `Engine::run_heavy_job`.
 struct KeepAlive {
-    /// Set on drop to stop the helper (`thread_end`, engine.cpp).
+    /// Set on drop to stop the helper (`thread_end`).
     stop: Arc<AtomicBool>,
     /// `Some` until the guard is dropped; taken to join exactly once.
     handle: Option<JoinHandle<()>>,
@@ -1600,7 +1578,7 @@ impl KeepAlive {
     /// Spawn the helper thread and block until it has actually started. The
     /// heavy work must run *after* this returns so a CPU-bound job cannot delay
     /// the helper's first tick; the reference spins on a `thread_started` flag
-    /// for the same reason (engine.cpp).
+    /// for the same reason.
     fn spawn<W: Write + Send + 'static>(writer: Arc<Mutex<W>>, poll: Duration) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let started = Arc::new(AtomicBool::new(false));
@@ -1624,8 +1602,8 @@ impl KeepAlive {
                 }
             }
         });
-        // Finer than the reference's 100 ms spin (engine.cpp), so
-        // wrapping a fast `isready` adds no perceptible latency.
+        // Finer than the reference's 100 ms spin, so wrapping a fast `isready`
+        // adds no perceptible latency.
         while !started.load(Ordering::Acquire) {
             thread::sleep(Duration::from_millis(1));
         }
@@ -1663,12 +1641,12 @@ struct SkipStamp {
     time_ms: u64,
 }
 
-/// Emit a book hit's output the way the reference does on `search_skipped`
-/// (`yaneuraou-search.cpp`): one `info` line per surviving candidate,
-/// then a final depth-0 `info` line and the `bestmove [ponder]`.
+/// Emit a book hit's output the way the reference does on `search_skipped`: one
+/// `info` line per surviving candidate, then a final depth-0 `info` line and
+/// the `bestmove [ponder]`.
 ///
 /// Under `go ponder` / `go infinite` the final line and `bestmove` are held
-/// until `stop` or a `ponderhit` — the SKIP_SEARCH wait loop (`1162-1199`).
+/// until `stop` or a `ponderhit` — the SKIP_SEARCH wait loop.
 fn emit_book_hit<W: Write>(
     writer: &Arc<Mutex<W>>,
     hit: &BookHit,
@@ -1735,7 +1713,7 @@ struct HelperJob {
     /// Per-worker node counters; this helper publishes to `node_slots[index]`.
     node_slots: Arc<Vec<AtomicU64>>,
     /// Per-worker best-move-change counters. The main worker folds every slot
-    /// each iteration (`yaneuraou-search.cpp`).
+    /// each iteration.
     bmc_slots: Arc<Vec<AtomicU64>>,
     /// This helper's index into `node_slots` / `bmc_slots`; `>= 1`, since index
     /// 0 is the main worker.
@@ -1839,7 +1817,7 @@ fn helper_loop(slot: Arc<HelperSlot>) {
         };
 
         // A helper's control is stop-only — no deadlines, no node ceiling. The
-        // reference runs `check_time` on the main worker alone (2403-2404).
+        // reference runs `check_time` on the main worker alone.
         let histories_in =
             histories.unwrap_or_else(|| WorkerHistories::with_shared(Arc::clone(&job.shared)));
         let (result, reclaimed) = {
@@ -1903,7 +1881,7 @@ impl ThreadPool {
 
     /// Build a pool of `size` slots with an optional NUMA binding plan. Each
     /// helper binds itself to its assigned node once at spawn, as the reference
-    /// does at thread creation (`thread.cpp`).
+    /// does at thread creation.
     fn with_binding(size: usize, plan: Option<Arc<NumaBindPlan>>) -> Self {
         let mut pool = ThreadPool {
             slots: Vec::new(),
@@ -1990,7 +1968,7 @@ fn real_sysfs_options() -> SysfsOptions {
     }
 }
 
-/// Map a `NumaPolicy` option value to a [`NumaConfig`] (`engine.cpp`).
+/// Map a `NumaPolicy` option value to a [`NumaConfig`].
 ///
 /// * `auto` / `system` → detect from the system respecting process affinity;
 /// * `hardware` → detect ignoring process affinity;
@@ -2015,8 +1993,7 @@ fn numa_config_from_policy(policy: &str, opts: &SysfsOptions) -> Result<NumaConf
     Ok(cfg)
 }
 
-/// The worker → NUMA-node assignment for `requested` threads under `policy`
-/// (`thread.cpp`).
+/// The worker → NUMA-node assignment for `requested` threads under `policy`.
 ///
 /// `do_bind` is `false` for `none`, `suggests_binding_threads(requested)` for
 /// `auto`, and `true` otherwise (`system` / `hardware` / a custom string). When
@@ -2049,12 +2026,12 @@ fn bind_plan(config: &NumaConfig, bound: &[NumaIndex]) -> Option<Arc<NumaBindPla
 }
 
 /// Build the per-worker handles to the node-shared correction / pawn tables,
-/// mirroring the reference per-node construction (`thread.cpp`). One
-/// [`SharedHistories`] per distinct node, sized `next_power_of_two(count)`, and
-/// one [`Arc`] returned per worker.
+/// mirroring the reference per-node construction. One [`SharedHistories`] per
+/// distinct node, sized `next_power_of_two(count)`, and one [`Arc`] returned
+/// per worker.
 ///
-/// Rust's `usize::next_power_of_two` and the reference's own helper
-/// (`thread.cpp`) agree on every `count >= 1`.
+/// Rust's `usize::next_power_of_two` and the reference's own helper agree on
+/// every `count >= 1`.
 fn build_worker_shared(
     config: &NumaConfig,
     bound: &[NumaIndex],
@@ -2063,7 +2040,7 @@ fn build_worker_shared(
     let requested = requested.max(1);
     let counts = shared_node_counts(bound, requested);
     // With binding active each node's set is allocated and filled on that node,
-    // so its pages first-touch there (`thread.cpp`).
+    // so its pages first-touch there.
     let binding_active = !bound.is_empty();
 
     let mut node_shared: std::collections::BTreeMap<NumaIndex, Arc<SharedHistories>> =
@@ -2088,9 +2065,8 @@ fn build_worker_shared(
         .collect()
 }
 
-/// The node → thread-count map for the shared-history construction
-/// (`thread.cpp`). An empty `bound` puts every thread on node 0, as the
-/// reference does.
+/// The node → thread-count map for the shared-history construction. An empty
+/// `bound` puts every thread on node 0, as the reference does.
 fn shared_node_counts(
     bound: &[NumaIndex],
     requested: usize,
@@ -2107,8 +2083,8 @@ fn shared_node_counts(
     counts
 }
 
-/// The node each worker's shared table set belongs to (`search.h`):
-/// `bound[i]` when binding is active, else node 0 for every worker.
+/// The node each worker's shared table set belongs to: `bound[i]` when binding
+/// is active, else node 0 for every worker.
 fn worker_nodes(bound: &[NumaIndex], requested: usize) -> Vec<NumaIndex> {
     if bound.is_empty() {
         vec![0; requested.max(1)]
@@ -2153,14 +2129,14 @@ fn resolve_worker_networks<T>(
         .collect()
 }
 
-/// `"Available processors: " + cfg.to_string()` (`engine.cpp`).
+/// `"Available processors: " + cfg.to_string()`.
 fn numa_config_information_as_string(cfg: &NumaConfig) -> String {
     format!("Available processors: {cfg}")
 }
 
-/// The `(bound_count, cpus_in_node)` pairs per node (`thread.cpp`,
-/// `engine.cpp`). Empty when nothing is bound; otherwise the pairs cover
-/// every node up to `num_numa_nodes`, at zero past the highest bound one.
+/// The `(bound_count, cpus_in_node)` pairs per node. Empty when nothing is
+/// bound; otherwise the pairs cover every node up to `num_numa_nodes`, at zero
+/// past the highest bound one.
 fn bound_thread_counts(cfg: &NumaConfig, bound: &[NumaIndex]) -> Vec<(usize, usize)> {
     if bound.is_empty() {
         return Vec::new();
@@ -2180,8 +2156,7 @@ fn bound_thread_counts(cfg: &NumaConfig, bound: &[NumaIndex]) -> Vec<(usize, usi
     ratios
 }
 
-/// The `a/x:b/y:...` per-node `bound/total` string (`engine.cpp`); empty
-/// when nothing is bound.
+/// The `a/x:b/y:...` per-node `bound/total` string; empty when nothing is bound.
 fn thread_binding_information_as_string(cfg: &NumaConfig, bound: &[NumaIndex]) -> String {
     bound_thread_counts(cfg, bound)
         .iter()
@@ -2191,7 +2166,7 @@ fn thread_binding_information_as_string(cfg: &NumaConfig, bound: &[NumaIndex]) -
 }
 
 /// `"Using N thread[s]"`, plus `" with NUMA node thread binding: a/x:b/y..."`
-/// when any thread is bound (`engine.cpp`).
+/// when any thread is bound.
 fn thread_allocation_information_as_string(
     threads_size: usize,
     cfg: &NumaConfig,
@@ -2244,11 +2219,10 @@ struct CoordinatorJob<W: Write + Send + 'static> {
     /// is active, withholding `bestmove` until a `ponderhit` clears it or `stop`
     /// fires.
     ponder: Option<Arc<PonderSignal>>,
-    /// `limits.infinite`: hold the reply until `stop` regardless of the clock
-    /// (`yaneuraou-search.cpp`).
+    /// `limits.infinite`: hold the reply until `stop` regardless of the clock.
     infinite: bool,
     /// When set the coordinator emits no `bestmove` and no final PV for this
-    /// search (`usi.cpp`).
+    /// search.
     suppress_bestmove: Arc<AtomicBool>,
     entering_king: EnteringKingConfig,
     /// The `MaxMovesToDraw` horizon, already `0 → 100000` remapped.
@@ -2279,10 +2253,9 @@ struct CoordinatedOutcome {
 /// The time-management carry-forward for a SKIP_SEARCH short-circuit — a book
 /// hit, declaration win, resign, or no legal move.
 ///
-/// The reference falls straight through to the same `1249-1253` bookkeeping on
-/// these paths (`yaneuraou-search.cpp`), where `rootMoves[0]` is the
-/// unsearched default scoring `-VALUE_INFINITE` (`search.h`); a book
-/// probe never writes `rootMoves`. Only `previousTimeReduction` is left
+/// The reference falls straight through to the same bookkeeping on these paths,
+/// where `rootMoves[0]` is the unsearched default scoring `-VALUE_INFINITE`; a
+/// book probe never writes `rootMoves`. Only `previousTimeReduction` is left
 /// untouched, since its sole writer `iterative_deepening` did not run.
 fn skip_search_carry() -> Option<(Value, Value, Option<f64>)> {
     Some((-VALUE_INFINITE, -VALUE_INFINITE, None))
@@ -2327,9 +2300,8 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
         cfg.bind_current_thread_to_numa_node(*node);
     }
 
-    // One bump per `go`, before any helper starts
-    // (`yaneuraou-search.cpp`), so the observable single-thread sequence is
-    // the reference's: bump, then search.
+    // One bump per `go`, before any helper starts, so the observable
+    // single-thread sequence is the reference's: bump, then search.
     tt.new_search();
 
     // The reference `start_thinking`. The short-circuits below return before any
@@ -2361,8 +2333,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     }
 
     // Once, on the coordinator, before any helper starts: the on-the-fly read
-    // path is not thread-safe by design (`book.h`,
-    // `yaneuraou-search.cpp`).
+    // path is not thread-safe by design.
     if own_book && let Some(loaded) = &book {
         let mut prng = Prng::new(book_seed);
         let probed = probe_book(
@@ -2400,7 +2371,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     let node_slots: Arc<Vec<AtomicU64>> =
         Arc::new((0..n_threads).map(|_| AtomicU64::new(0)).collect());
     // Each worker bumps its own slot at the root; the main worker folds them all
-    // each iteration (`yaneuraou-search.cpp`).
+    // each iteration.
     let bmc_slots: Arc<Vec<AtomicU64>> =
         Arc::new((0..n_threads).map(|_| AtomicU64::new(0)).collect());
 
@@ -2447,9 +2418,8 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     let main_result = qs.run_worker(&pos, root_moves, depth);
 
     // No `bestmove` while still pondering or under `go infinite` (the SKIP_SEARCH
-    // wait loop, `yaneuraou-search.cpp`). A `ponderhit` clears the flag
-    // mid-search, so this catches only the case where the search finished before
-    // one arrived.
+    // wait loop). A `ponderhit` clears the flag mid-search, so this catches only
+    // the case where the search finished before one arrived.
     while !stop.load(Ordering::Relaxed)
         && (ponder.as_ref().is_some_and(|p| p.is_active()) || infinite)
     {
@@ -2488,8 +2458,8 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     // `uciPvSent` is the main worker's flag, whatever worker is chosen.
     let mut uci_pv_sent = results[0].uci_pv_sent;
 
-    // `yaneuraou-search.cpp`. The `timeReduction` comes from the
-    // main worker even when the vote chose another.
+    // The `timeReduction` comes from the main worker even when the vote chose
+    // another.
     let out_best_previous_score = chosen_result.best.score;
     let out_best_previous_average_score = chosen_result.best.average_score;
     let out_previous_time_reduction = results[0].time_reduction;
@@ -2504,18 +2474,17 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
         *line0 = best.clone();
     }
 
-    // A ponder-extended PV differs from what was emitted during the search
-    // (1277-1280), and a non-main worker's PV was never emitted at all.
+    // A ponder-extended PV differs from what was emitted during the search, and
+    // a non-main worker's PV was never emitted at all.
     if ponder_extended || chosen != 0 {
         uci_pv_sent = false;
     }
 
-    // `ResignValue` (`yaneuraou-search.cpp`), decided before the final
-    // PV output because a resign forces that PV out so the GUI sees the score the
-    // decision was made on. The reference judges the printed `uciScore` in
-    // centipawns, not the raw internal score, and maps an unset one — an
-    // iteration aborted before any PV line was scored — to zero rather than
-    // resigning outright.
+    // `ResignValue`, decided before the final PV output because a resign forces
+    // that PV out so the GUI sees the score the decision was made on. The
+    // reference judges the printed `uciScore` in centipawns, not the raw internal
+    // score, and maps an unset one — an iteration aborted before any PV line was
+    // scored — to zero rather than resigning outright.
     let resign_by_value = best.score != -VALUE_INFINITE && {
         let resign_score = if best.uci_score == -VALUE_INFINITE {
             0
@@ -2525,9 +2494,9 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
         to_cp(resign_score) <= -resign_value
     };
 
-    // Final PV output before `bestmove` (1300-1312). `pv_idx == lines.len()`
-    // makes every line exact, matching the reference `pv()` after the MultiPV
-    // loop (`worker.pvIdx == multiPV`).
+    // Final PV output before `bestmove`. `pv_idx == lines.len()` makes every
+    // line exact, matching the reference `pv()` after the MultiPV loop
+    // (`worker.pvIdx == multiPV`).
     if !uci_pv_sent || resign_by_value {
         let n = pv_lines.len();
         let infos = qs.build_pv_infos(&pos, &pv_lines, n, completed_depth, n, total_nodes);
@@ -2543,15 +2512,14 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
         bm.push_str(&format_usi_move(best.pv[1]));
     }
 
-    // Resigning replaces the whole reply (`1337-1342`), so it carries no ponder
-    // move.
+    // Resigning replaces the whole reply, so it carries no ponder move.
     if resign_by_value {
         bm = "resign".to_string();
     }
 
-    // A Stochastic_Ponder teardown emits nothing (`usi.cpp`); the
-    // re-issued `go` produces the single reply the GUI sees. The `time_state`
-    // below is still returned, seeding the re-issue's side-flip continuity.
+    // A Stochastic_Ponder teardown emits nothing; the re-issued `go` produces
+    // the single reply the GUI sees. The `time_state` below is still returned,
+    // seeding the re-issue's side-flip continuity.
     if !suppress_bestmove.load(Ordering::Relaxed) {
         emit_bestmove(&writer, &bm);
     }
@@ -2562,8 +2530,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
         time_state: Some((
             out_best_previous_score,
             out_best_previous_average_score,
-            // A real search produced a fresh `timeReduction`
-            // (`yaneuraou-search.cpp`).
+            // A real search produced a fresh `timeReduction`.
             Some(out_previous_time_reduction),
         )),
     }
@@ -3009,7 +2976,7 @@ mod tests {
             "Using 2 threads with NUMA node thread binding: 1/2:1/2"
         );
 
-        // Trailing nodes are extended with `0/total` (`engine.cpp`).
+        // Trailing nodes are extended with `0/total`.
         let three = NumaConfig::from_string("0-1:2-3:4-5").unwrap();
         assert_eq!(
             thread_allocation_information_as_string(2, &three, &[0, 0]),
@@ -3048,7 +3015,7 @@ mod tests {
 
     #[test]
     fn shared_node_counts_unbound_and_bound() {
-        // Unbound, every thread counts on node 0 (`thread.cpp`).
+        // Unbound, every thread counts on node 0.
         let c = shared_node_counts(&[], 5);
         assert_eq!(c.len(), 1);
         assert_eq!(c[&0], 5);
@@ -3091,8 +3058,7 @@ mod tests {
         assert_eq!(ws1[0].thread_count(), 1);
     }
 
-    // The reference's SKIP_SEARCH bookkeeping
-    // (`yaneuraou-search.cpp`), driven through the real
+    // The reference's SKIP_SEARCH bookkeeping, driven through the real
     // `finish_search_join` with the carry every short-circuit returns.
     #[test]
     #[cfg_attr(miri, ignore)]

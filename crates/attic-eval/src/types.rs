@@ -147,9 +147,9 @@ impl NetworkStack {
 ///
 /// Every parameter array — `ft_biases`, the ~215 MiB `ft_weights`, and all nine
 /// stacks' FC weights and biases — lives in **one** large-page allocation, as
-/// the reference's `make_unique_large_page<NnueNetworks>` does
-/// (`evaluate_nnue.cpp`). The public parameter fields are 64-byte-aligned
-/// views into it, meeting what the AVX-512 kernels require.
+/// the reference's `make_unique_large_page<NnueNetworks>` does. The public
+/// parameter fields are 64-byte-aligned views into it, meeting what the AVX-512
+/// kernels require.
 #[derive(Debug)]
 pub struct NnueNetwork {
     pub header: NetHeader,
@@ -196,8 +196,8 @@ impl NnueNetwork {
     /// The copy runs on the calling thread, so performing it inside a
     /// NUMA-node-bound one first-touches every page on that node — the
     /// in-process analogue of the reference's
-    /// `LazyNumaReplicatedSystemWide<Networks>` (`numa.h`), minus its
-    /// POSIX shared-memory layer.
+    /// `LazyNumaReplicatedSystemWide<Networks>`, minus its POSIX shared-memory
+    /// layer.
     pub fn replicate(&self) -> Self {
         let arena = self.arena.clone_backing();
         Self::from_arena(self.header.clone(), arena, self.layout.clone(), self.sha256)

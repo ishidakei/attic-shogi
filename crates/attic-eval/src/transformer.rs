@@ -1,6 +1,6 @@
-//! Feature-transformer accumulator and its output transform, ported from
-//! `nnue_feature_transformer.h`. The layer-stack forward pass lives in
-//! [`crate::network`], the per-lane kernels in [`crate::simd`].
+//! Feature-transformer accumulator and its output transform, ported from the
+//! reference engine. The layer-stack forward pass lives in [`crate::network`],
+//! the per-lane kernels in [`crate::simd`].
 //!
 //! ## Incremental update
 //!
