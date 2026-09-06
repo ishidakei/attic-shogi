@@ -1379,9 +1379,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 }
 
 /// Write one PV `info` line — the reference `on_update_full`
-/// (`usi.cpp`). The reference's nondeterministic `nps` / `time` /
-/// `hashfull` decorations are omitted so a fixed-depth `info` line is
-/// reproducible, and `seldepth` / `multipv` are always emitted.
+/// (`usi.cpp`). The reference's nondeterministic `nps` / `time`
+/// decorations are omitted so a fixed-depth `info` line is reproducible, and
+/// `seldepth` / `multipv` are always emitted.
 fn write_pv_info<W: Write + ?Sized>(w: &mut W, info: &PvInfo) -> io::Result<()> {
     let mut body = format!(
         "depth {} seldepth {} multipv {} score {}",
@@ -1395,7 +1395,7 @@ fn write_pv_info<W: Write + ?Sized>(w: &mut W, info: &PvInfo) -> io::Result<()> 
         PvBound::Upper => body.push_str(" upperbound"),
         PvBound::Exact => {}
     }
-    body.push_str(&format!(" nodes {}", info.nodes));
+    body.push_str(&format!(" nodes {} hashfull {}", info.nodes, info.hashfull));
     if !info.pv.is_empty() {
         body.push_str(" pv");
         for m in &info.pv {
@@ -1653,6 +1653,7 @@ fn pv_string(pv: &[Move]) -> String {
 fn emit_book_hit<W: Write>(
     writer: &Arc<Mutex<W>>,
     hit: &BookHit,
+    hashfull: u32,
     ponder: Option<&Arc<PonderSignal>>,
     infinite: bool,
     stop: &AtomicBool,
@@ -1664,7 +1665,7 @@ fn emit_book_hit<W: Write>(
         let mut f = Formatter::new(&mut *guard);
         for line in &hit.info_lines {
             let body = format!(
-                "depth {} seldepth 0 multipv {} score {} nodes 0 pv {}",
+                "depth {} seldepth 0 multipv {} score {} nodes 0 hashfull {hashfull} pv {}",
                 line.depth,
                 line.multipv,
                 format_score(Value::from(line.score)),
@@ -1695,7 +1696,7 @@ fn emit_book_hit<W: Write>(
     let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
     let mut f = Formatter::new(&mut *guard);
     let _ = f.info(&format!(
-        "depth 0 seldepth 0 multipv 1 score {} nodes 0 pv {pv}",
+        "depth 0 seldepth 0 multipv 1 score {} nodes 0 hashfull {hashfull} pv {pv}",
         format_score(Value::from(hit.value)),
     ));
     let _ = f.bestmove(&bm);
@@ -2358,6 +2359,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
             emit_book_hit(
                 &writer,
                 &hit,
+                tt.hashfull(0),
                 ponder.as_ref(),
                 infinite,
                 &stop,

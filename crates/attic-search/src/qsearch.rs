@@ -582,6 +582,8 @@ pub struct PvInfo {
     pub bound: PvBound,
     /// `info.nodes`.
     pub nodes: u64,
+    /// `info.hashfull` — transposition-table occupancy in permille.
+    pub hashfull: u32,
     /// `info.pv` as moves.
     pub pv: Vec<Move>,
 }
@@ -2002,6 +2004,10 @@ impl QSearch<'_> {
             .pv_config
             .as_ref()
             .is_some_and(|c| c.consideration_mode);
+        // The reference reads `tt.hashfull()` once per emitted line, but no
+        // search runs between the lines of one call, so a single read gives
+        // every line the same value the reference would print.
+        let hashfull = self.tt.hashfull(0);
         let mut out = Vec::with_capacity(multi_pv);
         for (i, rm) in root_moves.iter().enumerate().take(multi_pv) {
             let updated = rm.score != -VALUE_INFINITE;
@@ -2042,6 +2048,7 @@ impl QSearch<'_> {
                 score: v,
                 bound,
                 nodes,
+                hashfull,
                 pv,
             });
         }

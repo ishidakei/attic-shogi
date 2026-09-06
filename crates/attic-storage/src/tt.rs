@@ -470,7 +470,9 @@ impl TranspositionTable {
 
     /// Approximate table occupancy in permille, counting only entries younger
     /// than `max_age` (`TranspositionTable::hashfull`). Samples the first 1000
-    /// clusters, so the table must hold at least that many.
+    /// clusters; the reference requires the table to hold at least that many,
+    /// while a shorter table here is simply sampled whole, which keeps the
+    /// unsized table answering `0` instead of reading out of bounds.
     pub fn hashfull(&self, max_age: u8) -> u32 {
         let generation = self.generation8.load(REL);
         let mut cnt = 0u32;
