@@ -13,6 +13,22 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
+  # `.cargo/config.toml` compiles for the host CPU (`-C target-cpu=native`),
+  # which is right everywhere a binary runs on the machine that produced it.
+  # These jobs are the one place that does not hold: `rust-cache` restores a
+  # `target/` directory built on an earlier runner, the hosted runners are not
+  # a single CPU model, and a native-built artifact dies with SIGILL on the
+  # first instruction its new host lacks. An environment `RUSTFLAGS` overrides
+  # the config file, and `rust-cache` folds `RUSTFLAGS` into its cache key, so
+  # pinning a baseline every current x86-64 runner provides keeps the restored
+  # artifacts runnable. Builds outside CI keep the native default.
+  #
+  # The pin also fixes which kernels these jobs cover: the AVX-512 forward pass
+  # is selected by `cfg(target_feature = "avx512…")`, which x86-64-v3 does not
+  # enable, so CI exercises the portable path. The AVX-512 kernels' own unit
+  # tests enable their features per function and probe the CPU at run time, so
+  # they still run on a runner that has the instructions.
+  RUSTFLAGS: "-C target-cpu=x86-64-v3"
 
 jobs:
   fmt:
