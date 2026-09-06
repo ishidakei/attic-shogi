@@ -582,8 +582,13 @@ pub struct PvInfo {
     pub bound: PvBound,
     /// `info.nodes`.
     pub nodes: u64,
+    /// `info.nps` — `nodes * 1000 / time_ms`.
+    pub nps: u64,
     /// `info.hashfull` — transposition-table occupancy in permille.
     pub hashfull: u32,
+    /// `info.timeMs` — milliseconds since the `go` that started this search,
+    /// floored at 1 so it can divide.
+    pub time_ms: u64,
     /// `info.pv` as moves.
     pub pv: Vec<Move>,
 }
@@ -2006,8 +2011,20 @@ impl QSearch<'_> {
             .is_some_and(|c| c.consideration_mode);
         // The reference reads `tt.hashfull()` once per emitted line, but no
         // search runs between the lines of one call, so a single read gives
-        // every line the same value the reference would print.
+        // every line the same value the reference would print. The clock is
+        // read once for the same reason; `PvOutputConfig::start_time` is the
+        // `limits.startTime` instant the time management measures from, so this
+        // is the reference's `tm.elapsed_time()`, floored at 1 as `pv()` floors
+        // it. Without a PV configuration there is no `go` to measure from, and
+        // the floor is all that is left.
         let hashfull = self.tt.hashfull(0);
+        let time_ms = self.pv_config.as_ref().map_or(1, |c| {
+            (Instant::now()
+                .saturating_duration_since(c.start_time)
+                .as_millis() as u64)
+                .max(1)
+        });
+        let nps = nodes * 1000 / time_ms;
         let mut out = Vec::with_capacity(multi_pv);
         for (i, rm) in root_moves.iter().enumerate().take(multi_pv) {
             let updated = rm.score != -VALUE_INFINITE;
@@ -2048,7 +2065,9 @@ impl QSearch<'_> {
                 score: v,
                 bound,
                 nodes,
+                nps,
                 hashfull,
+                time_ms,
                 pv,
             });
         }

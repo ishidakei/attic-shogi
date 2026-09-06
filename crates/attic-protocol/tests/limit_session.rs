@@ -51,19 +51,35 @@ const DETERMINISTIC_PV: &str = "setoption name PvInterval value 0";
 /// split the transcript here.
 ///
 /// Which `info` line ends up last is only meaningful under [`DETERMINISTIC_PV`],
-/// so every session whose summaries are compared must send it.
+/// so every session whose summaries are compared must send it. The `nps` and
+/// `time` fields are dropped, being wall-clock derived: two searches over the
+/// identical node sequence report different values for them.
 fn go_summaries(out: &str) -> Vec<String> {
     let mut res = Vec::new();
-    let mut cur_info = "";
+    let mut cur_info = String::new();
     for line in out.lines() {
         if line.starts_with("info depth") {
-            cur_info = line;
+            cur_info = without_timing(line);
         } else if line.starts_with("bestmove") {
             res.push(format!("{cur_info}\n{line}"));
-            cur_info = "";
+            cur_info = String::new();
         }
     }
     res
+}
+
+/// `line` with the ` nps <n>` and ` time <n>` fields removed.
+fn without_timing(line: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut toks = line.split(' ');
+    while let Some(tok) = toks.next() {
+        if tok == "nps" || tok == "time" {
+            toks.next();
+        } else {
+            out.push(tok);
+        }
+    }
+    out.join(" ")
 }
 
 /// Send `position` then `go`, and block until the transcript holds

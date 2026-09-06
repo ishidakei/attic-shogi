@@ -1379,9 +1379,11 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 }
 
 /// Write one PV `info` line — the reference `on_update_full`
-/// (`usi.cpp`). The reference's nondeterministic `nps` / `time`
-/// decorations are omitted so a fixed-depth `info` line is reproducible, and
-/// `seldepth` / `multipv` are always emitted.
+/// (`usi.cpp`), carrying every field the reference prints, in its
+/// order. `seldepth` / `multipv` are always emitted.
+///
+/// `nps` and `time` are wall-clock derived, so two searches over the identical
+/// node sequence print different values for them.
 fn write_pv_info<W: Write + ?Sized>(w: &mut W, info: &PvInfo) -> io::Result<()> {
     let mut body = format!(
         "depth {} seldepth {} multipv {} score {}",
@@ -1395,7 +1397,10 @@ fn write_pv_info<W: Write + ?Sized>(w: &mut W, info: &PvInfo) -> io::Result<()> 
         PvBound::Upper => body.push_str(" upperbound"),
         PvBound::Exact => {}
     }
-    body.push_str(&format!(" nodes {} hashfull {}", info.nodes, info.hashfull));
+    body.push_str(&format!(
+        " nodes {} nps {} hashfull {} time {}",
+        info.nodes, info.nps, info.hashfull, info.time_ms
+    ));
     if !info.pv.is_empty() {
         body.push_str(" pv");
         for m in &info.pv {
@@ -1644,6 +1649,16 @@ fn pv_string(pv: &[Move]) -> String {
         .join(" ")
 }
 
+/// The decorations a skipped search's `info` lines carry, sampled once for
+/// every line one emission writes — the reference's single `hashfull` /
+/// `timeMs` for the whole `search_skipped` output.
+struct SkipStamp {
+    /// Transposition-table occupancy in permille.
+    hashfull: u32,
+    /// Milliseconds since the `go`, floored at 1.
+    time_ms: u64,
+}
+
 /// Emit a book hit's output the way the reference does on `search_skipped`
 /// (`yaneuraou-search.cpp`): one `info` line per surviving candidate,
 /// then a final depth-0 `info` line and the `bestmove [ponder]`.
@@ -1653,19 +1668,20 @@ fn pv_string(pv: &[Move]) -> String {
 fn emit_book_hit<W: Write>(
     writer: &Arc<Mutex<W>>,
     hit: &BookHit,
-    hashfull: u32,
+    stamp: SkipStamp,
     ponder: Option<&Arc<PonderSignal>>,
     infinite: bool,
     stop: &AtomicBool,
     suppress_bestmove: &AtomicBool,
 ) {
+    let SkipStamp { hashfull, time_ms } = stamp;
     // Emitted immediately, like the reference's in-probe isRoot block.
     {
         let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
         let mut f = Formatter::new(&mut *guard);
         for line in &hit.info_lines {
             let body = format!(
-                "depth {} seldepth 0 multipv {} score {} nodes 0 hashfull {hashfull} pv {}",
+                "depth {} seldepth 0 multipv {} score {} nodes 0 nps 0 hashfull {hashfull} time {time_ms} pv {}",
                 line.depth,
                 line.multipv,
                 format_score(Value::from(line.score)),
@@ -1696,7 +1712,7 @@ fn emit_book_hit<W: Write>(
     let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
     let mut f = Formatter::new(&mut *guard);
     let _ = f.info(&format!(
-        "depth 0 seldepth 0 multipv 1 score {} nodes 0 hashfull {hashfull} pv {pv}",
+        "depth 0 seldepth 0 multipv 1 score {} nodes 0 nps 0 hashfull {hashfull} time {time_ms} pv {pv}",
         format_score(Value::from(hit.value)),
     ));
     let _ = f.bestmove(&bm);
@@ -2359,7 +2375,10 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
             emit_book_hit(
                 &writer,
                 &hit,
-                tt.hashfull(0),
+                SkipStamp {
+                    hashfull: tt.hashfull(0),
+                    time_ms: (pv_config.start_time.elapsed().as_millis() as u64).max(1),
+                },
                 ponder.as_ref(),
                 infinite,
                 &stop,
@@ -2558,6 +2577,50 @@ mod tests {
         driver.run().expect("driver run");
         let bytes = output.lock().expect("output lock").clone();
         String::from_utf8(bytes).expect("utf-8")
+    }
+
+    /// A fixed `PvInfo`, so the emitted line is byte-comparable.
+    fn pv_info_fixture(pv: Vec<Move>) -> PvInfo {
+        PvInfo {
+            depth: 7,
+            sel_depth: 9,
+            multipv: 1,
+            score: 90,
+            bound: PvBound::Exact,
+            nodes: 12_345,
+            nps: 617_250,
+            hashfull: 42,
+            time_ms: 20,
+            pv,
+        }
+    }
+
+    fn written_pv_info(info: &PvInfo) -> String {
+        let mut buf = Vec::<u8>::new();
+        write_pv_info(&mut buf, info).expect("write");
+        String::from_utf8(buf).expect("utf-8")
+    }
+
+    #[test]
+    fn pv_info_line_carries_the_reference_field_order() {
+        let pos = parse_sfen(attic_state::STARTPOS_SFEN).expect("startpos");
+        let mv = parse_usi_move("7g7f", &pos).expect("legal move");
+        assert_eq!(
+            written_pv_info(&pv_info_fixture(vec![mv])),
+            "info depth 7 seldepth 9 multipv 1 score cp 100 \
+             nodes 12345 nps 617250 hashfull 42 time 20 pv 7g7f\n"
+        );
+    }
+
+    #[test]
+    fn pv_info_line_without_a_pv_ends_at_time() {
+        let mut info = pv_info_fixture(Vec::new());
+        info.bound = PvBound::Lower;
+        assert_eq!(
+            written_pv_info(&info),
+            "info depth 7 seldepth 9 multipv 1 score cp 100 lowerbound \
+             nodes 12345 nps 617250 hashfull 42 time 20\n"
+        );
     }
 
     #[test]
