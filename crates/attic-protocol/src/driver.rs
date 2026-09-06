@@ -1380,18 +1380,22 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 
 /// Write one PV `info` line — the reference `on_update_full`
 /// (`usi.cpp`), carrying every field the reference prints, in its
-/// order. `seldepth` / `multipv` are always emitted.
+/// order. A zero `seldepth` is left off the line, as the reference does — it
+/// only ever holds zero on a search that never ran a node, whose line reads
+/// better without the field.
 ///
 /// `nps` and `time` are wall-clock derived, so two searches over the identical
 /// node sequence print different values for them.
 fn write_pv_info<W: Write + ?Sized>(w: &mut W, info: &PvInfo) -> io::Result<()> {
-    let mut body = format!(
-        "depth {} seldepth {} multipv {} score {}",
-        info.depth,
-        info.sel_depth,
+    let mut body = format!("depth {}", info.depth);
+    if info.sel_depth != 0 {
+        body.push_str(&format!(" seldepth {}", info.sel_depth));
+    }
+    body.push_str(&format!(
+        " multipv {} score {}",
         info.multipv,
         format_score(info.score),
-    );
+    ));
     match info.bound {
         PvBound::Lower => body.push_str(" lowerbound"),
         PvBound::Upper => body.push_str(" upperbound"),
@@ -1681,7 +1685,7 @@ fn emit_book_hit<W: Write>(
         let mut f = Formatter::new(&mut *guard);
         for line in &hit.info_lines {
             let body = format!(
-                "depth {} seldepth 0 multipv {} score {} nodes 0 nps 0 hashfull {hashfull} time {time_ms} pv {}",
+                "depth {} multipv {} score {} nodes 0 nps 0 hashfull {hashfull} time {time_ms} pv {}",
                 line.depth,
                 line.multipv,
                 format_score(Value::from(line.score)),
@@ -1712,7 +1716,7 @@ fn emit_book_hit<W: Write>(
     let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
     let mut f = Formatter::new(&mut *guard);
     let _ = f.info(&format!(
-        "depth 0 seldepth 0 multipv 1 score {} nodes 0 nps 0 hashfull {hashfull} time {time_ms} pv {pv}",
+        "depth 0 multipv 1 score {} nodes 0 nps 0 hashfull {hashfull} time {time_ms} pv {pv}",
         format_score(Value::from(hit.value)),
     ));
     let _ = f.bestmove(&bm);
@@ -2619,6 +2623,17 @@ mod tests {
         assert_eq!(
             written_pv_info(&info),
             "info depth 7 seldepth 9 multipv 1 score cp 100 lowerbound \
+             nodes 12345 nps 617250 hashfull 42 time 20\n"
+        );
+    }
+
+    #[test]
+    fn pv_info_line_omits_a_zero_seldepth() {
+        let mut info = pv_info_fixture(Vec::new());
+        info.sel_depth = 0;
+        assert_eq!(
+            written_pv_info(&info),
+            "info depth 7 multipv 1 score cp 100 \
              nodes 12345 nps 617250 hashfull 42 time 20\n"
         );
     }
