@@ -42,12 +42,13 @@ pub enum NumaAutoPolicy {
 /// The engine's default policy: bundle L3 domains up to 32 CPUs.
 pub const DEFAULT_POLICY: NumaAutoPolicy = NumaAutoPolicy::BundledL3 { bundle_size: 32 };
 
-/// The fail-loud paths the reference resolves with `std::exit`.
+/// Why a custom node string was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NumaError {
-    /// A CPU index was assigned to a node while already owned by another. The
-    /// reference `from_string` calls `std::exit(EXIT_FAILURE)` here.
+    /// A CPU index was assigned to a node while already owned by another.
     DuplicateCpu(CpuIndex),
+    /// No node held a single parseable CPU index.
+    NoNodes,
 }
 
 impl fmt::Display for NumaError {
@@ -56,6 +57,7 @@ impl fmt::Display for NumaError {
             NumaError::DuplicateCpu(c) => {
                 write!(f, "CPU {c} is assigned to more than one NUMA node")
             }
+            NumaError::NoNodes => write!(f, "no NUMA node could be parsed"),
         }
     }
 }
@@ -123,7 +125,12 @@ impl NumaConfig {
     /// Parse the reference's custom node syntax, e.g.
     /// `"0-15,32-47:16-31,48-63"`: `':'` separates nodes, `','` separates
     /// entries, `"a-b"` is an inclusive range, and empty node groups are
-    /// skipped. A repeated CPU is a [`NumaError::DuplicateCpu`].
+    /// skipped. A repeated CPU is a [`NumaError::DuplicateCpu`], and a string
+    /// yielding no node at all is [`NumaError::NoNodes`].
+    ///
+    /// An entry that is not a valid index or range is dropped rather than
+    /// rejected, as in the reference: `"0-15:16-31x"` is the one-node layout
+    /// `"0-15"`.
     pub fn from_string(s: &str) -> Result<Self, NumaError> {
         let mut cfg = Self::empty();
 
@@ -138,6 +145,9 @@ impl NumaConfig {
                 }
                 n += 1;
             }
+        }
+        if n == 0 {
+            return Err(NumaError::NoNodes);
         }
 
         cfg.custom_affinity = true;
@@ -489,21 +499,61 @@ fn remove_whitespace(s: &str) -> String {
     s.chars().filter(|c| !c.is_ascii_whitespace()).collect()
 }
 
-/// Parse a single decimal index, tolerating surrounding whitespace and trailing
-/// non-digits as the reference `str_to_size_t`'s `stoull` does.
+/// Parse a single decimal index the way the reference's `str_to_size_t` reads
+/// one through `strtoull`: an empty string, a leading `'-'`, an overflow, or
+/// anything but whitespace after the number is `None`. The C function's edges
+/// are kept too — leading whitespace and a `'+'` are accepted, a `'-'` after
+/// leading whitespace wraps, and a whitespace-only string is `0`.
 fn parse_size_t(s: &str) -> Option<CpuIndex> {
-    let t = s.trim_start();
-    let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
+    let is_space = |c: u8| matches!(c, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r');
+    let b = s.as_bytes();
+    if matches!(b.first(), None | Some(b'-')) {
         return None;
     }
-    digits.parse::<CpuIndex>().ok()
+
+    let mut i = 0;
+    while i < b.len() && is_space(b[i]) {
+        i += 1;
+    }
+    let negative = match b.get(i) {
+        Some(b'+') => {
+            i += 1;
+            false
+        }
+        Some(b'-') => {
+            i += 1;
+            true
+        }
+        _ => false,
+    };
+    let digits_start = i;
+    let mut value: u64 = 0;
+    while i < b.len() && b[i].is_ascii_digit() {
+        value = value.checked_mul(10)?.checked_add(u64::from(b[i] - b'0'))?;
+        i += 1;
+    }
+    // With no digits `strtoull` converts nothing and leaves its end pointer at
+    // the start of the string.
+    let end = if i == digits_start { 0 } else { i };
+    if b.get(end).is_some_and(|&c| !is_space(c)) {
+        return None;
+    }
+    let value = if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    };
+    CpuIndex::try_from(value).ok()
 }
 
 /// Expand the reference's shortened index-list syntax into a flat list: `','`
 /// separates entries, each a single index or an inclusive `"a-b"` range, with
-/// empty entries skipped.
+/// empty entries and entries that do not parse skipped.
 fn indices_from_shortened_string(s: &str) -> Vec<CpuIndex> {
+    // The reference's guard against a range exhausting memory. Its unsigned
+    // subtraction wraps for a descending range, which is skipped as a result.
+    const MAX_INDICES: CpuIndex = 1 << 20;
+
     let mut indices = Vec::new();
 
     if s.is_empty() {
@@ -523,7 +573,9 @@ fn indices_from_shortened_string(s: &str) -> Vec<CpuIndex> {
                 }
             }
             [first, last] => {
-                if let (Some(cfirst), Some(clast)) = (parse_size_t(first), parse_size_t(last)) {
+                if let (Some(cfirst), Some(clast)) = (parse_size_t(first), parse_size_t(last))
+                    && clast.wrapping_sub(cfirst) < MAX_INDICES
+                {
                     for c in cfirst..=clast {
                         indices.push(c);
                     }
@@ -588,9 +640,11 @@ fn from_system_numa(opts: &SysfsOptions, respect_affinity: bool) -> NumaConfig {
     cfg
 }
 
-/// Attempt the L3-aware config path: walk CPUs by "next unseen CPU", reading
-/// each one's `cache/index3/shared_cpu_list` and tagging its domain with the
-/// owning system NUMA node. `None` if no domains were found.
+/// Attempt the L3-aware config path: walk the CPUs of the system-NUMA config
+/// in ascending order, reading each unseen one's
+/// `cache/index3/shared_cpu_list` and tagging its domain with the owning system
+/// NUMA node. A CPU without that file is skipped. `None` if no domains were
+/// found.
 fn try_get_l3_aware_config(
     opts: &SysfsOptions,
     respect_affinity: bool,
@@ -601,26 +655,15 @@ fn try_get_l3_aware_config(
     let mut l3_domains: Vec<L3Domain> = Vec::new();
     let mut seen: BTreeSet<CpuIndex> = BTreeSet::new();
 
-    // The scan really terminates on the first missing or empty sysfs file; this
-    // bound only guards against a malformed tree that never grows `seen`.
-    const MAX_CPU_SCAN: CpuIndex = 1 << 20;
-
-    loop {
-        let next = {
-            let mut candidate = 0;
-            while candidate < MAX_CPU_SCAN && seen.contains(&candidate) {
-                candidate += 1;
-            }
-            candidate
-        };
-        if next >= MAX_CPU_SCAN {
-            break;
+    for &next in system_config.node_by_cpu.keys() {
+        if seen.contains(&next) {
+            continue;
         }
 
         let path = format!("devices/system/cpu/cpu{next}/cache/index3/shared_cpu_list");
         let siblings = match read_sysfs(&opts.root, &path) {
             Some(s) if !s.is_empty() => s,
-            _ => break,
+            _ => continue,
         };
 
         let mut domain = L3Domain::default();
@@ -854,11 +897,63 @@ mod tests {
     }
 
     #[test]
-    fn from_string_empty_is_empty_custom_config() {
-        let cfg = NumaConfig::from_string("").unwrap();
-        assert_eq!(cfg.num_numa_nodes(), 0);
-        assert!(cfg.is_custom_affinity());
-        assert!(cfg.requires_memory_replication());
+    fn from_string_zero_nodes_fails() {
+        for s in ["", ":", "::", ",", "x", "-1", "3-1", "abc:def", "0-2000000"] {
+            assert_eq!(
+                NumaConfig::from_string(s).map(|c| c.to_string()),
+                Err(NumaError::NoNodes),
+                "{s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_string_drops_unparseable_entries() {
+        let cfg = NumaConfig::from_string("0-15:16-31x").unwrap();
+        assert_eq!(cfg.to_string(), "0-15");
+        let cfg = NumaConfig::from_string("1x,2:3").unwrap();
+        assert_eq!(cfg.to_string(), "2:3");
+    }
+
+    #[test]
+    fn parse_size_t_rejects_trailing_junk() {
+        assert_eq!(parse_size_t("12"), Some(12));
+        assert_eq!(parse_size_t("12x"), None);
+        // Only the character right after the number is checked.
+        assert_eq!(parse_size_t("1 2"), Some(1));
+        assert_eq!(parse_size_t("0x10"), None);
+        assert_eq!(indices_from_shortened_string("1x,2,3y-4,5-6z"), vec![2]);
+    }
+
+    #[test]
+    fn parse_size_t_follows_strtoull_edges() {
+        assert_eq!(parse_size_t(""), None);
+        assert_eq!(parse_size_t("-1"), None);
+        assert_eq!(parse_size_t("18446744073709551616"), None);
+        assert_eq!(parse_size_t("18446744073709551615"), Some(CpuIndex::MAX));
+        assert_eq!(parse_size_t(" 7"), Some(7));
+        assert_eq!(parse_size_t("7 \n"), Some(7));
+        assert_eq!(parse_size_t("+7"), Some(7));
+        assert_eq!(parse_size_t(" -1"), Some(CpuIndex::MAX));
+        assert_eq!(parse_size_t(" "), Some(0));
+        assert_eq!(parse_size_t("+"), None);
+    }
+
+    #[test]
+    fn range_longer_than_cap_is_skipped() {
+        let cap = 1usize << 20;
+        assert_eq!(indices_from_shortened_string(&format!("0-{cap}")), vec![]);
+        assert_eq!(
+            indices_from_shortened_string(&format!("1-{},7", cap + 1)),
+            vec![7]
+        );
+        // A million-entry vector is too slow under miri.
+        if !cfg!(miri) {
+            assert_eq!(
+                indices_from_shortened_string(&format!("0-{}", cap - 1)).len(),
+                cap
+            );
+        }
     }
 
     #[test]

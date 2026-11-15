@@ -103,6 +103,18 @@ fn l3_domains_policy_one_node_per_domain() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
+fn l3_scan_skips_cpus_without_shared_cpu_list() {
+    // cpu2 has no `shared_cpu_list` and no domain lists it; cpu3's is empty.
+    // Both are skipped, and the scan goes on to cpu4.
+    let o = opts("l3_missing_cpu", all_cpus(6), 6);
+    let cfg = NumaConfig::from_sysfs(&NumaAutoPolicy::L3Domains, true, &o);
+    assert_eq!(cfg.num_numa_nodes(), 2);
+    assert_eq!(cfg.nodes()[0], set(&[0, 1]));
+    assert_eq!(cfg.nodes()[1], set(&[3, 4, 5]));
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
 fn bundled_l3_merges_within_system_node() {
     let o = opts("two_node_l3", all_cpus(8), 8);
     let cfg = NumaConfig::from_sysfs(&NumaAutoPolicy::BundledL3 { bundle_size: 4 }, true, &o);

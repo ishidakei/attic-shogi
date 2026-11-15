@@ -6,8 +6,9 @@
 //! reports the applied pool — zero threads before the first `isready` — which
 //! makes the deferral observable.
 //!
-//! `NumaPolicy none` is used throughout so the allocation line never carries a
-//! binding suffix and the assertions stay deterministic on any machine.
+//! `NumaPolicy none` is used wherever an allocation line is asserted, so it
+//! never carries a binding suffix and the assertions stay deterministic on any
+//! machine.
 
 mod common;
 
@@ -105,6 +106,56 @@ fn threads_and_numa_policy_take_effect_at_isready() {
         "Threads applies at isready, not at setoption or usinewgame: {out}"
     );
     assert!(!out.contains("with NUMA node thread binding"), "{out}");
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn invalid_numa_policy_is_reported_and_keeps_the_previous_layout() {
+    let dir = TempDir::new("numa-invalid");
+    write_synthetic_nn_bin(dir.path());
+    let evaldir = dir.path().to_str().expect("utf-8 temp path");
+
+    // The config line printed by a successful `NumaPolicy` reports the live
+    // layout, so the closing `none` reads back what the rejected value left.
+    let out = drive(&format!(
+        "setoption name EvalDir value {evaldir}\n\
+         setoption name USI_Hash value 16\n\
+         setoption name Threads value 1\n\
+         setoption name NumaPolicy value 0\n\
+         isready\n\
+         setoption name NumaPolicy value 0,0\n\
+         setoption name NumaPolicy value 0-3x:\n\
+         isready\n\
+         setoption name NumaPolicy value none\n\
+         quit\n"
+    ));
+
+    assert_eq!(out.matches("readyok\n").count(), 2, "{out}");
+    let rejected: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with("info string NumaPolicy:"))
+        .collect();
+    assert_eq!(
+        rejected,
+        [
+            "info string NumaPolicy: invalid value '0,0', keeping previous config.",
+            "info string NumaPolicy: invalid value '0-3x:', keeping previous config.",
+        ],
+        "{out}"
+    );
+    let processor_lines: Vec<&str> = out
+        .lines()
+        .filter(|l| l.starts_with("info string Available processors:"))
+        .collect();
+    assert_eq!(
+        processor_lines.len(),
+        2,
+        "a rejected value prints no layout: {out}"
+    );
+    assert_eq!(
+        processor_lines[1], "info string Available processors: 0",
+        "{out}"
+    );
 }
 
 #[test]

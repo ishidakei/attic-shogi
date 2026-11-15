@@ -6,7 +6,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use attic_numa::{DEFAULT_POLICY, NumaConfig, NumaIndex, SysfsOptions};
+use attic_numa::{DEFAULT_POLICY, NumaConfig, NumaError, NumaIndex, SysfsOptions};
 use attic_search::{
     BookConfig, BookHit, EnteringKingConfig, EnteringKingRule, PonderSignal, Prng, PvBound, PvInfo,
     PvOutputConfig, PvSink, QSearch, RootMove, Search, SearchControl, SharedHistories, TimeControl,
@@ -223,16 +223,17 @@ pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
     /// The active NUMA layout, detected once at construction from the engine
     /// default policy and replaced at `isready` by a pending `NumaPolicy`.
     numa_config: NumaConfig,
-    /// The `NumaPolicy` value [`Self::numa_config`] was resolved from. The
+    /// The `NumaPolicy` option value as of the last resource application. The
     /// binding decision reads it, so a `NumaPolicy` set but not yet applied
     /// leaves the live pool's binding unchanged.
     numa_policy: String,
-    /// A validated `NumaPolicy` layout and its value, set by `setoption` and
-    /// applied at the next `isready`, as the reference defers it.
-    pending_numa: Option<(NumaConfig, String)>,
-    /// Set when the NUMA layout or the thread count changes, so the next
-    /// `USI_Hash` application reallocates the table even at an unchanged size
-    /// and its pages are first-touched under the new layout.
+    /// A validated `NumaPolicy` layout, set by `setoption` and applied at the
+    /// next `isready`, as the reference defers it.
+    pending_numa: Option<NumaConfig>,
+    /// Set when the NUMA layout, the `NumaPolicy` value or the thread count
+    /// changes, so the next `USI_Hash` application reallocates the table even
+    /// at an unchanged size and its pages are first-touched under the new
+    /// layout.
     hash_needs_reallocation: bool,
     /// Whether the resource options have been applied once. The reference
     /// creates no workers before that, so until then the allocation line
@@ -428,9 +429,18 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     /// the pool was rebuilt.
     fn apply_resource_options(&mut self) -> bool {
         let mut rebuild = false;
-        if let Some((config, policy)) = self.pending_numa.take() {
+        if let Some(config) = self.pending_numa.take() {
             self.numa_config = config;
-            self.numa_policy = policy;
+            self.hash_needs_reallocation = true;
+            rebuild = true;
+        }
+        // The binding decision reads the option's value, not the layout's
+        // source: a rejected custom value keeps the previous layout but stays
+        // the option's value, and the reference then binds as for any custom
+        // string.
+        let policy = self.options.text("NumaPolicy");
+        if self.numa_policy != policy {
+            self.numa_policy = policy.to_string();
             self.hash_needs_reallocation = true;
             rebuild = true;
         }
@@ -738,13 +748,10 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // this line applies them. `NumaPolicy` is validated now, as the
         // reference's `on_change` handler does, and applied with them.
         if canonical.eq_ignore_ascii_case("NumaPolicy") {
-            // Unlike the `setoption` path, an override is a startup-time config
-            // step, so a bad value is reported rather than process-fatal and the
-            // previously detected config is kept.
             let policy = self.options.text("NumaPolicy").to_string();
             match numa_config_from_policy(&policy, &real_sysfs_options()) {
-                Ok(cfg) => self.pending_numa = Some((cfg, policy)),
-                Err(msg) => self.info_string(&format!("NumaPolicy error: {msg}"))?,
+                Ok(cfg) => self.pending_numa = Some(cfg),
+                Err(_) => self.info_string(&numa_policy_invalid_message(&policy))?,
             }
         }
 
@@ -834,9 +841,10 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     ///
     /// `auto` / `system` detect from the system respecting affinity; `hardware`
     /// detects ignoring affinity; `none` is a single all-threads node; anything
-    /// else is a custom node string. A string that fails to parse or yields zero
-    /// nodes prints an `info string` and terminates the process, where the
-    /// reference reaches `std::exit(EXIT_FAILURE)`.
+    /// else is a custom node string. A custom string the reference rejects
+    /// prints one `info string` and keeps the previous layout, pending or
+    /// live; the option itself still holds the rejected value, as in the
+    /// reference.
     fn handle_setoption_numa_policy(&mut self, value: &str) -> io::Result<()> {
         // A fixed override silently ignores this, and `text` then returns the
         // fixed value — which is the one resolved below.
@@ -844,12 +852,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         let policy = self.options.text("NumaPolicy").to_string();
 
         match numa_config_from_policy(&policy, &real_sysfs_options()) {
-            Ok(cfg) => self.pending_numa = Some((cfg, policy)),
-            Err(msg) => {
-                self.info_string(&format!("NumaPolicy error: {msg}"))?;
-                let _ = self.lock_writer().flush();
-                std::process::exit(1);
-            }
+            Ok(cfg) => self.pending_numa = Some(cfg),
+            Err(_) => return self.info_string(&numa_policy_invalid_message(&policy)),
         }
 
         // The reference's callback still returns both lines, and they describe
@@ -2036,22 +2040,19 @@ fn real_sysfs_options() -> SysfsOptions {
 /// * `none` → the default single all-threads node;
 /// * anything else → a custom node string via [`NumaConfig::from_string`].
 ///
-/// A custom string that fails to parse or yields zero nodes is an `Err`, where
-/// the reference reaches `std::exit(EXIT_FAILURE)`.
-fn numa_config_from_policy(policy: &str, opts: &SysfsOptions) -> Result<NumaConfig, String> {
-    let cfg = match policy {
+/// A custom string [`NumaConfig::from_string`] rejects is an `Err`.
+fn numa_config_from_policy(policy: &str, opts: &SysfsOptions) -> Result<NumaConfig, NumaError> {
+    Ok(match policy {
         "auto" | "system" => NumaConfig::from_sysfs(&DEFAULT_POLICY, true, opts),
         "hardware" => NumaConfig::from_sysfs(&DEFAULT_POLICY, false, opts),
         "none" => NumaConfig::default(),
-        other => {
-            let cfg = NumaConfig::from_string(other).map_err(|e| e.to_string())?;
-            if cfg.num_numa_nodes() == 0 {
-                return Err(format!("NumaPolicy `{other}` yields zero NUMA nodes"));
-            }
-            cfg
-        }
-    };
-    Ok(cfg)
+        other => NumaConfig::from_string(other)?,
+    })
+}
+
+/// The reference's reply to a rejected `NumaPolicy` value.
+fn numa_policy_invalid_message(policy: &str) -> String {
+    format!("NumaPolicy: invalid value '{policy}', keeping previous config.")
 }
 
 /// The worker → NUMA-node assignment for `requested` threads under `policy`.
@@ -3038,6 +3039,33 @@ mod tests {
         assert_eq!(d.numa_policy, "none");
         assert!(!marked(&d), "a NUMA layout change reallocates the table");
         assert!(!d.hash_needs_reallocation);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn invalid_numa_policy_keeps_the_previous_layout() {
+        let mut d = idle_driver();
+        d.handle_setoption("Threads", "1").unwrap();
+        d.handle_setoption("USI_Hash", "1").unwrap();
+        d.handle_setoption("NumaPolicy", "0").unwrap();
+        d.apply_resource_options();
+        assert_eq!(d.numa_config.to_string(), "0");
+
+        // Rejected while nothing is pending: the live layout stays.
+        d.handle_setoption("NumaPolicy", "0,0").unwrap();
+        assert!(d.pending_numa.is_none());
+        d.apply_resource_options();
+        assert_eq!(d.numa_config.to_string(), "0");
+        assert_eq!(d.numa_policy, "0,0");
+        assert_eq!(d.numa_bound, [0], "a rejected custom value still binds");
+
+        // Rejected while a layout is pending: the pending one stays.
+        d.handle_setoption("NumaPolicy", "none").unwrap();
+        d.handle_setoption("NumaPolicy", "").unwrap();
+        assert!(d.pending_numa.is_some());
+        d.apply_resource_options();
+        assert_eq!(d.numa_config.num_numa_nodes(), 1);
+        assert!(!d.numa_config.is_custom_affinity());
     }
 
     /// A miniature 2-node sysfs fixture tree with no L3 cache dirs. The caller
