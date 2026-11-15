@@ -584,6 +584,23 @@ impl OptionStore {
         }
     }
 
+    /// Whether `name`, compared case-insensitively, is a declared string option.
+    pub fn is_string(&self, name: &str) -> bool {
+        self.decls
+            .iter()
+            .any(|d| matches!(d, OptionDecl::String { .. }) && d.name().eq_ignore_ascii_case(name))
+    }
+
+    /// The current value of a declared option as USI text, `None` if `name` is
+    /// not declared.
+    pub fn value_text(&self, name: &str) -> Option<String> {
+        Some(match self.get(name)? {
+            OptionValue::Spin(v) => v.to_string(),
+            OptionValue::Check(b) => b.to_string(),
+            OptionValue::String(s) | OptionValue::Combo(s) => s.clone(),
+        })
+    }
+
     /// A declared string/combo's current value (`""` if the name is neither).
     pub fn text(&self, name: &str) -> &str {
         match self.get(name) {
@@ -832,6 +849,23 @@ mod tests {
         assert!(s.is_fixed("FV_SCALE"));
         s.set_value("FV_SCALE", "16").unwrap();
         assert_eq!(s.spin("FV_SCALE"), 24);
+    }
+
+    #[test]
+    fn value_text_renders_each_type() {
+        let s = OptionStore::new();
+        assert_eq!(s.value_text("FV_SCALE").as_deref(), Some("16"));
+        assert_eq!(s.value_text("USI_Ponder").as_deref(), Some("false"));
+        assert_eq!(s.value_text("EvalDir").as_deref(), Some("eval"));
+        assert_eq!(s.value_text("nope"), None);
+    }
+
+    #[test]
+    fn is_string_is_case_insensitive() {
+        let s = OptionStore::new();
+        assert!(s.is_string("evaldir"));
+        assert!(!s.is_string("FV_SCALE"));
+        assert!(!s.is_string("nope"));
     }
 
     #[test]

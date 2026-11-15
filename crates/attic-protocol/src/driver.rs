@@ -371,12 +371,6 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         Formatter::new(&mut *self.lock_writer()).info_string(msg)
     }
 
-    /// Emit one verbatim line with no USI keyword prefix — the option-override
-    /// `Error : ...` diagnostics the reference writes to raw `std::cout`.
-    fn emit_raw_line(&self, text: &str) -> io::Result<()> {
-        Formatter::new(&mut *self.lock_writer()).raw_line(text)
-    }
-
     /// Emit one `bestmove <mv>` line.
     fn bestmove(&self, mv: &str) -> io::Result<()> {
         Formatter::new(&mut *self.lock_writer()).bestmove(mv)
@@ -692,31 +686,43 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     }
 
     /// Apply one override line, mirroring the reference `build_option`. An
-    /// out-of-range or ill-typed value is silently not stored, as the reference
-    /// `operator=` range guard is, and the option is locked FIXED either way so
-    /// later `setoption`s cannot change it.
+    /// accepted value locks the option FIXED so later `setoption`s cannot
+    /// change it; a rejected one is reported and leaves the option settable.
+    /// Every `isready` re-reads the files, so reading a fixed option's own
+    /// value again is silent.
     fn apply_override_line(&mut self, line: &str) -> io::Result<()> {
-        let (name, value, invalid) = match parse_override_line(line) {
-            OverrideLine::Empty => return Ok(()),
-            OverrideLine::Plain { name, value } => (name, value, Vec::new()),
-            OverrideLine::Full {
-                name,
-                value,
-                invalid_tokens,
-            } => (name, value, invalid_tokens),
+        let (name, value) = match parse_override_line(line, |n| self.options.is_string(n)) {
+            OverrideLine::Skip => return Ok(()),
+            OverrideLine::InvalidDeclaration => {
+                return self.info_string(&format!("Error : invalid option declaration : {line}"));
+            }
+            OverrideLine::Override { name, value } => (name, value),
         };
-
-        // Reported first, but do not abort the override.
-        for tok in &invalid {
-            self.emit_raw_line(&format!("Error : invalid command: {tok}"))?;
-        }
 
         let Some(canonical) = self.options.canonical_name(&name) else {
-            return self.emit_raw_line(&format!("Error : option name not found : {name}"));
+            return self.info_string(&format!("Error : option name not found : {name}"));
         };
 
-        // Order matters: a fixed option ignores `set_value`.
-        let _ = self.options.set_value(canonical, &value);
+        let value_to_store = if self.options.is_string(canonical) && value == "<empty>" {
+            ""
+        } else {
+            value.as_str()
+        };
+        // A fixed option takes no new value: its own value again is a silent
+        // no-op, any other is rejected.
+        let accepted = if self.options.is_fixed(canonical) {
+            if self.options.value_text(canonical).as_deref() == Some(value_to_store) {
+                return Ok(());
+            }
+            false
+        } else {
+            self.options.set_value(canonical, value_to_store).is_ok()
+        };
+        if !accepted {
+            return self.info_string(&format!(
+                "Error : engine option override rejected. name = {name} , value = {value}"
+            ));
+        }
         self.options.mark_fixed(canonical);
 
         // `Threads` and `USI_Hash` need nothing here: the `isready` that read
@@ -3630,5 +3636,108 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Apply `lines` as one override file and return what they printed.
+    fn apply_overrides(
+        driver: &mut UsiDriver<&[u8], Vec<u8>>,
+        output: &Arc<Mutex<Vec<u8>>>,
+        lines: &[&str],
+    ) -> String {
+        output.lock().unwrap().clear();
+        for line in lines {
+            driver.apply_override_line(line).unwrap();
+        }
+        String::from_utf8(output.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn accepted_override_fixes_the_option_and_rereads_silently() {
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let mut driver = UsiDriver::new(&b""[..], Arc::clone(&output));
+
+        let out = apply_overrides(&mut driver, &output, &["FV_SCALE=24"]);
+        assert_eq!(
+            out,
+            "info string engine option override. name = FV_SCALE , value = 24\n"
+        );
+        assert!(driver.options.is_fixed("FV_SCALE"));
+        assert_eq!(driver.options.spin("FV_SCALE"), 24);
+
+        let out = apply_overrides(&mut driver, &output, &["FV_SCALE 24"]);
+        assert_eq!(out, "", "re-reading the fixed value must be silent");
+
+        let out = apply_overrides(&mut driver, &output, &["FV_SCALE 20"]);
+        assert_eq!(
+            out,
+            "info string Error : engine option override rejected. name = FV_SCALE , value = 20\n"
+        );
+        assert_eq!(driver.options.spin("FV_SCALE"), 24);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn rejected_override_leaves_the_option_settable() {
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let mut driver = UsiDriver::new(&b""[..], Arc::clone(&output));
+
+        let out = apply_overrides(&mut driver, &output, &["FV_SCALE 999"]);
+        assert_eq!(
+            out,
+            "info string Error : engine option override rejected. name = FV_SCALE , value = 999\n"
+        );
+        assert!(!driver.options.is_fixed("FV_SCALE"));
+        assert_eq!(driver.options.spin("FV_SCALE"), 16);
+
+        driver.handle_setoption("FV_SCALE", "20").unwrap();
+        assert_eq!(driver.options.spin("FV_SCALE"), 20);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn override_diagnostics_are_info_strings() {
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let mut driver = UsiDriver::new(&b""[..], Arc::clone(&output));
+
+        let out = apply_overrides(
+            &mut driver,
+            &output,
+            &[
+                "# a comment",
+                "NoSuchOption 1",
+                "option name FV_SCALE type spin default 24 bogus",
+            ],
+        );
+        assert_eq!(
+            out,
+            "info string Error : option name not found : NoSuchOption\n\
+             info string Error : invalid option declaration : \
+             option name FV_SCALE type spin default 24 bogus\n"
+        );
+        assert!(!driver.options.is_fixed("FV_SCALE"));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn string_override_keeps_spaces_and_maps_empty() {
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let mut driver = UsiDriver::new(&b""[..], Arc::clone(&output));
+
+        let out = apply_overrides(&mut driver, &output, &["BookDir = my book=dir"]);
+        assert_eq!(
+            out,
+            "info string engine option override. name = BookDir , value = my book=dir\n"
+        );
+        assert_eq!(driver.options.text("BookDir"), "my book=dir");
+
+        let out = apply_overrides(&mut driver, &output, &["EvalDir <empty>"]);
+        assert_eq!(
+            out,
+            "info string engine option override. name = EvalDir , value = <empty>\n"
+        );
+        assert_eq!(driver.options.text("EvalDir"), "");
+        let out = apply_overrides(&mut driver, &output, &["EvalDir <empty>"]);
+        assert_eq!(out, "");
     }
 }

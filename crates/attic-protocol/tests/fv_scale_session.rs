@@ -135,6 +135,65 @@ fn eval_options_override_applies_at_isready() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
+fn accepted_override_is_printed_once_across_isreadys() {
+    let dir = TempDir::new("once");
+    write_synthetic_nn_bin(dir.path());
+    std::fs::write(dir.path().join("eval_options.txt"), "FV_SCALE=24\n").expect("write file");
+    let evaldir = dir.path().to_str().expect("utf-8 temp path");
+
+    let out = drive(&format!(
+        "usi\nsetoption name EvalDir value {evaldir}\nisready\nisready\nquit\n"
+    ));
+
+    assert_eq!(
+        out.matches("info string read engine options, path = ")
+            .count(),
+        2,
+        "each isready re-reads the file:\n{out}"
+    );
+    assert_eq!(
+        out.matches(OVERRIDE_LINE).count(),
+        1,
+        "the override is printed only when first applied:\n{out}"
+    );
+    assert_eq!(out.matches("readyok").count(), 2, "{out}");
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn rejected_override_is_an_info_string_and_leaves_the_option_settable() {
+    let dir = TempDir::new("rejected");
+    write_synthetic_nn_bin(dir.path());
+    // The second line can only apply if the first did not fix the option.
+    std::fs::write(
+        dir.path().join("eval_options.txt"),
+        "FV_SCALE 999\nFV_SCALE 24\n",
+    )
+    .expect("write file");
+    let evaldir = dir.path().to_str().expect("utf-8 temp path");
+
+    let out = drive(&format!(
+        "usi\nsetoption name EvalDir value {evaldir}\nisready\nquit\n"
+    ));
+
+    assert!(
+        out.contains(
+            "info string Error : engine option override rejected. name = FV_SCALE , value = 999\n"
+        ),
+        "missing rejection in:\n{out}"
+    );
+    assert!(
+        out.contains(OVERRIDE_LINE),
+        "missing later override in:\n{out}"
+    );
+    assert!(
+        !out.lines().any(|l| l.starts_with("Error")),
+        "a diagnostic must be an info string:\n{out}"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
 fn absent_eval_options_is_silent() {
     let dir = TempDir::new("absent");
     write_synthetic_nn_bin(dir.path());

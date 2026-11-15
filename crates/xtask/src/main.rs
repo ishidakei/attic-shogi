@@ -806,7 +806,8 @@ fn parse_info_line(line: &str) -> Option<ParsedInfo> {
 
 /// Extract `N` from
 /// `info string engine option override. name = FV_SCALE , value = N`, the line
-/// the reference prints at `isready` for every override it applies.
+/// the reference prints at the first `isready` that applies an override; a
+/// later `isready` re-reading the same value is silent.
 fn parse_fv_scale_override(line: &str) -> Option<i32> {
     let rest = line.strip_prefix("info string engine option override.")?;
     let mut tokens = rest.split_ascii_whitespace();
