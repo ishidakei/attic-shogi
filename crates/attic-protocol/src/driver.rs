@@ -209,6 +209,11 @@ pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
     /// The last `go` command's limits, retained so a Stochastic_Ponder
     /// `ponderhit` can re-issue it with `ponder` stripped.
     last_go: Option<GoLimits>,
+    /// Set when the last `go ponder` actually rewound the position under
+    /// Stochastic_Ponder; only then does `ponderhit` restart the search. A
+    /// position without a `moves` clause is pondered in place, and its
+    /// `ponderhit` continues the running search as a plain one does.
+    stochastic_ponder_rewound: bool,
     /// The worker thread pool: a main-worker slot plus `Threads − 1` persistent
     /// helper threads following the reference `idle_loop` (park → receive job →
     /// run → report → park). The main worker is the per-`go` coordinator thread
@@ -308,6 +313,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             last_game_ply: 0,
             last_position: (PositionSfen::StartPos, Vec::new()),
             last_go: None,
+            stochastic_ponder_rewound: false,
             pool,
             numa_config,
             numa_policy: "auto".to_string(),
@@ -940,9 +946,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 
         // Stochastic_Ponder ponders one move earlier than the retained
         // position; `ponderMode` stays set.
-        if limits.ponder && self.options.check("Stochastic_Ponder") {
-            self.apply_stochastic_ponder_rewind();
-        }
+        self.stochastic_ponder_rewound = limits.ponder
+            && self.options.check("Stochastic_Ponder")
+            && self.apply_stochastic_ponder_rewind();
 
         // Rewound under Stochastic_Ponder, so read after the rewind above.
         let game_ply = self.pos.ply() as i32;
@@ -976,15 +982,19 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 
     /// Stochastic_Ponder `go ponder` rewind: the retained position with its
     /// last move dropped, installed as the search root. Best effort — nothing
-    /// to rewind, or a rebuild failure, leaves it untouched.
-    fn apply_stochastic_ponder_rewind(&mut self) {
+    /// to rewind, or a rebuild failure, leaves it untouched. Returns whether
+    /// the root was rewound.
+    fn apply_stochastic_ponder_rewind(&mut self) -> bool {
         let (sfen, moves) = &self.last_position;
-        if moves.is_empty() {
-            return;
-        }
-        let rewound = &moves[..moves.len() - 1];
-        if let Some(pos) = build_position_from(sfen, rewound) {
-            self.pos = pos;
+        let Some((_, rewound)) = moves.split_last() else {
+            return false;
+        };
+        match build_position_from(sfen, rewound) {
+            Some(pos) => {
+                self.pos = pos;
+                true
+            }
+            None => false,
         }
     }
 
@@ -1348,7 +1358,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     /// time management and releases a held book reply, whose coordinator wait
     /// loop polls the same flag.
     fn handle_ponderhit(&mut self) -> io::Result<()> {
-        let stochastic = self.options.check("Stochastic_Ponder")
+        let stochastic = self.stochastic_ponder_rewound
             && self.search.as_ref().is_some_and(|a| a.ponder.is_some());
         if stochastic {
             return self.stochastic_ponderhit();
@@ -1372,6 +1382,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             active.suppress.store(true, Ordering::Relaxed);
         }
         self.finish_search_join();
+        self.stochastic_ponder_rewound = false;
 
         let (sfen, moves) = self.last_position.clone();
         if let Some(pos) = build_position_from(&sfen, &moves) {

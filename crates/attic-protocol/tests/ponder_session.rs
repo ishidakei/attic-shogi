@@ -196,6 +196,79 @@ fn stochastic_ponder_reissues_on_the_current_position() {
     assert_legal_after(&["7g7f"], &sole_bestmove(&out));
 }
 
+/// Ponder `position` with `Stochastic_Ponder` set to `stochastic`, wait until
+/// the pondering search has printed an iteration deeper than 1, send
+/// `ponderhit`, and return whether a fresh depth-1 iteration was printed after
+/// it — the mark of a restarted search. A continued search only prints deeper
+/// iterations, and its final PV repeats its last depth.
+fn ponderhit_restarts(tag: &str, stochastic: bool, position: &str) -> bool {
+    let dir = TempDir::new(tag);
+    write_synthetic_nn_bin(dir.path());
+    let e = dir.path().to_str().unwrap();
+
+    // Every iteration prints, so the first one of a restart is visible.
+    let h = start_ready(
+        e,
+        &[
+            "setoption name PvInterval value 0".to_string(),
+            format!("setoption name Stochastic_Ponder value {stochastic}"),
+        ],
+    );
+    h.send(position);
+    h.send("go ponder btime 800 wtime 800");
+
+    assert!(
+        h.wait_until(30_000, |o| o.contains("info depth 2 ")),
+        "the pondering search must print a second iteration:\n{}",
+        h.output()
+    );
+    assert!(
+        !h.output().contains("bestmove"),
+        "no bestmove before the ponderhit:\n{}",
+        h.output()
+    );
+    let before = h.output().len();
+
+    h.send("ponderhit");
+    assert!(
+        h.wait_until(30_000, |o| bestmove_lines(o).len() == 1),
+        "ponderhit must yield exactly one bestmove:\n{}",
+        h.output()
+    );
+    let out = h.quit_join();
+    out[before..].contains("info depth 1 ")
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn stochastic_ponderhit_restarts_after_a_rewind() {
+    assert!(ponderhit_restarts(
+        "ponder-stochastic-rewound",
+        true,
+        "position startpos moves 7g7f"
+    ));
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn stochastic_ponderhit_continues_without_a_moves_clause() {
+    assert!(!ponderhit_restarts(
+        "ponder-stochastic-in-place",
+        true,
+        "position startpos"
+    ));
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn plain_ponderhit_continues_with_a_moves_clause() {
+    assert!(!ponderhit_restarts(
+        "ponder-plain-moves",
+        false,
+        "position startpos moves 7g7f"
+    ));
+}
+
 #[test]
 #[cfg_attr(miri, ignore)]
 fn gameover_terminates_a_pondering_search() {
