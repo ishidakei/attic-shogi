@@ -346,6 +346,38 @@ fn secondary_aging_shortens_a_kept_decisive_non_exact_entry() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
+fn penalize_lowers_the_stored_depth_and_floors_at_unoccupied() {
+    let mut tt = TranspositionTable::new();
+    tt.resize(1);
+    let k = key(710, 0x77);
+    store(&mut tt, k, 1, 120, false, Bound::Upper, 10, 0x0456, -3);
+
+    let (_, _, w) = tt.probe(k, 1, any);
+    w.penalize(1);
+    let (found, data, slot) = tt.locate(k, 1, any);
+    assert!(found);
+    assert_eq!(data.depth, 9);
+    assert_eq!(data.value, 120, "only the depth changes");
+    assert_eq!(data.move16, 0x0456);
+
+    tt.penalize_at(slot, 2);
+    assert_eq!(tt.probe(k, 1, any).1.depth, 7);
+
+    // `DEPTH_NONE + 1` is the shallowest occupied depth; a larger penalty
+    // leaves the entry unoccupied rather than wrapping.
+    let k = key(711, 0x78);
+    store(&mut tt, k, 1, 0, false, Bound::Lower, DEPTH_NONE + 1, 0, 0);
+    let (found, data, w) = tt.probe(k, 1, any);
+    assert!(found);
+    assert_eq!(data.depth, DEPTH_NONE + 1);
+    w.penalize(3);
+    let (found, data, _) = tt.probe(k, 1, any);
+    assert!(!found);
+    assert_eq!(data.depth, DEPTH_NONE);
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
 fn resize_sizes_by_formula_and_clears() {
     let mut tt = TranspositionTable::new();
     assert_eq!(tt.cluster_count(), 0, "fresh table is empty");

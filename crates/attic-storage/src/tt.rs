@@ -220,6 +220,13 @@ impl TTEntry {
         depth8 - 8 * relative_age(gen_bound8, curr_generation) as i32
     }
 
+    /// `TTWriter::penalize`: `depth8 = max(depth8 - penalty, 0)`.
+    #[inline]
+    fn penalize(&self, penalty: u8) {
+        let depth8 = self.depth8.load(REL);
+        self.depth8.store(depth8.saturating_sub(penalty), REL);
+    }
+
     /// Zero every field. Takes `&mut self`, so the writes are plain stores
     /// under the exclusivity contract rather than atomic ops.
     #[inline]
@@ -696,6 +703,13 @@ impl TranspositionTable {
         );
     }
 
+    /// Lower the stored depth of the entry [`Self::locate`] captured by
+    /// `penalty`, as [`TTWriter::penalize`] does.
+    #[inline]
+    pub fn penalize_at(&self, slot: TtSlot, penalty: u8) {
+        self.table[slot.cluster].entry[slot.entry].penalize(penalty);
+    }
+
     /// A stable checksum over the whole table, for determinism tests.
     pub fn checksum(&self) -> u64 {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -755,6 +769,14 @@ impl TTWriter<'_> {
         self.cluster.save(
             self.index, key, value, pv, bound, depth, mv, eval, generation,
         );
+    }
+
+    /// Lower the targeted entry's stored depth by `penalty`
+    /// (`TTWriter::penalize`). It floors at the unoccupied value, so a racing
+    /// writer can never make it wrap.
+    #[inline]
+    pub fn penalize(self, penalty: u8) {
+        self.cluster.entry[self.index].penalize(penalty);
     }
 }
 

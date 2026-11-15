@@ -58,12 +58,18 @@ pub struct RootMove {
     pub mean_squared_score: i64,
     /// `selDepth` recorded when this move became the PV.
     pub sel_depth: i32,
-    /// `uciScore` is a lower bound (fail high).
-    pub score_lowerbound: bool,
-    /// `uciScore` is an upper bound (fail low).
-    pub score_upperbound: bool,
+    /// The score is only a lower bound (a fail high, or a loss from an aborted
+    /// search that is not trusted).
+    pub inexact_lower: bool,
+    /// The score is only an upper bound (a fail low, or a loss capped at an
+    /// earlier line's when a MultiPV line was aborted).
+    pub inexact_upper: bool,
     /// Nodes spent searching this root move's subtree.
     pub effort: u64,
+    /// The previous iteration's `pv`, kept with [`Self::previous_score`].
+    pub previous_pv: Vec<Move>,
+    /// Whether [`Self::previous_score`] was an exact score of a searched line.
+    pub previous_score_exact: bool,
 }
 
 impl RootMove {
@@ -78,10 +84,29 @@ impl RootMove {
             average_score: -VALUE_INFINITE,
             mean_squared_score: MEAN_SQUARED_INIT,
             sel_depth: 0,
-            score_lowerbound: false,
-            score_upperbound: false,
+            inexact_lower: false,
+            inexact_upper: false,
             effort: 0,
+            previous_pv: Vec::new(),
+            previous_score_exact: false,
         }
+    }
+
+    /// The score is a bound rather than an exact value.
+    pub fn is_inexact(&self) -> bool {
+        self.inexact_lower || self.inexact_upper
+    }
+
+    /// The score is a proven loss that an exact search established, so it may
+    /// be trusted as one.
+    pub fn is_exact_loss(&self) -> bool {
+        self.score != -VALUE_INFINITE && is_loss(self.score) && !self.is_inexact()
+    }
+
+    /// Mark the score exact.
+    pub fn unset_inexact(&mut self) {
+        self.inexact_lower = false;
+        self.inexact_upper = false;
     }
 }
 
@@ -134,15 +159,18 @@ pub struct WorkerVote {
     pub pv_len: usize,
     /// `completedDepth` — the last fully-completed iterative-deepening depth.
     pub completed_depth: i32,
+    /// `rootMoves[0].is_inexact()` — a bound is never taken as a proven result.
+    pub inexact: bool,
 }
 
 /// `get_best_thread`: the index of the worker whose result the engine reports.
 /// `workers[0]` must be the main worker, and the slice is never empty.
 ///
 /// Each worker's `pv[0]` is voted by `(score - minScore + 14) * completedDepth`;
-/// then a proven-win incumbent only yields to a shorter mate, a proven-loss one
-/// only to a longer defence, and otherwise the challenger wins on a proven
-/// decisive score or a higher vote total.
+/// then a proven-win incumbent only yields to a shorter proven mate, a
+/// proven-loss one only to a longer defence, and otherwise the challenger wins
+/// on a proven decisive score or a higher vote total. An inexact score proves
+/// nothing.
 pub fn select_best_worker(workers: &[WorkerVote]) -> usize {
     debug_assert!(!workers.is_empty());
 
@@ -173,10 +201,12 @@ pub fn select_best_worker(workers: &[WorkerVote]) -> usize {
         let best_vote = votes[&cur.pv0];
         let new_vote = votes[&th.pv0];
 
-        let best_in_win = is_win(best_score);
-        let new_in_win = is_win(new_score);
-        let best_in_loss = best_score != -VALUE_INFINITE && is_loss(best_score);
-        let new_in_loss = new_score != -VALUE_INFINITE && is_loss(new_score);
+        let exact_loss =
+            |w: &WorkerVote| w.score != -VALUE_INFINITE && is_loss(w.score) && !w.inexact;
+        let best_in_win = is_win(best_score) && !cur.inexact;
+        let new_in_win = is_win(new_score) && !th.inexact;
+        let best_in_loss = exact_loss(cur);
+        let new_in_loss = exact_loss(th);
 
         // A vote total only counts when the PV has more than two moves.
         let better_voting_value =
@@ -184,7 +214,7 @@ pub fn select_best_worker(workers: &[WorkerVote]) -> usize {
 
         if best_in_win {
             // Keep the shortest mate: switch only to a higher proven-win score.
-            if new_score > best_score {
+            if new_in_win && new_score > best_score {
                 best = i;
             }
         } else if best_in_loss {
@@ -841,6 +871,7 @@ mod tests {
             pv0,
             pv_len,
             completed_depth,
+            inexact: false,
         }
     }
 
@@ -900,5 +931,30 @@ mod tests {
         // (the challenger's `pv.len() > 2` factor is 0, so it cannot exceed).
         let workers = [vote(50, a, 3, 5), vote(50, b, 2, 5)];
         assert_eq!(select_best_worker(&workers), 0);
+    }
+
+    #[test]
+    fn vote_inexact_decisive_scores_prove_nothing() {
+        let (a, b) = two_moves();
+        let inexact = |mut w: WorkerVote| {
+            w.inexact = true;
+            w
+        };
+        let mate_in = |ply: Value| VALUE_MATE - ply;
+        let mated_in = |ply: Value| -VALUE_MATE + ply;
+        // An inexact win is not a proven one: a higher vote total displaces it.
+        let workers = [inexact(vote(mate_in(5), a, 3, 0)), vote(100, b, 3, 8)];
+        assert_eq!(select_best_worker(&workers), 1);
+        // A proven-win incumbent ignores an inexact shorter mate.
+        let workers = [
+            vote(mate_in(5), a, 1, 8),
+            inexact(vote(mate_in(3), b, 1, 8)),
+        ];
+        assert_eq!(select_best_worker(&workers), 0);
+        // An inexact loss is no proven loss, so it neither takes over nor stays.
+        let workers = [vote(50, a, 3, 8), inexact(vote(mated_in(3), b, 3, 8))];
+        assert_eq!(select_best_worker(&workers), 0);
+        let workers = [inexact(vote(mated_in(3), a, 3, 1)), vote(50, b, 3, 8)];
+        assert_eq!(select_best_worker(&workers), 1);
     }
 }

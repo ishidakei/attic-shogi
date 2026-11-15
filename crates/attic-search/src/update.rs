@@ -162,6 +162,9 @@ pub struct SearchStackCell {
     pub reduction: i32,
     /// `ss->cutoffCnt` — how many beta cutoffs happened at this ply.
     pub cutoff_cnt: i32,
+    /// `ss->priorNMPFailHigh` — how many null-move searches failed high at
+    /// this ply since the parent node last reset it.
+    pub prior_nmp_fail_high: i32,
     /// `ss->excludedMove` — the singular-extension excluded move.
     pub excluded_move: Move,
     /// `ss->followPV` — whether this ply follows the previous iteration's PV.
@@ -189,6 +192,7 @@ impl Default for SearchStackCell {
             static_eval: 32002,
             reduction: 0,
             cutoff_cnt: 0,
+            prior_nmp_fail_high: 0,
             excluded_move: Move::none(),
             follow_pv: false,
             pv: Vec::new(),
@@ -199,9 +203,13 @@ impl Default for SearchStackCell {
 }
 
 /// Plies-and-weights for [`update_continuation_histories`]:
-/// `{1:1157, 2:648, 3:288, 4:576, 5:140, 6:441}`.
-const CONTHIST_BONUSES: [(usize, i32); 6] =
-    [(1, 1157), (2, 648), (3, 288), (4, 576), (5, 140), (6, 441)];
+/// `{1:520, 2:390, 3:145, 4:251, 6:209}`. Ply 5 is not updated.
+const CONTHIST_BONUSES: [(usize, i32); 5] = [(1, 520), (2, 390), (3, 145), (4, 251), (6, 209)];
+
+/// Continuation-history consistency multipliers (`CMHCMultipliers`), indexed by
+/// how many of the planes updated so far, the current one included, held a
+/// positive value before the update.
+const CMHC_MULTIPLIERS: [i64; 6] = [94, 103, 110, 106, 119, 126];
 
 /// A *plain* capture test (`Position::capture`): a non-drop landing on an
 /// occupied square. In this engine `capture_stage == capture`, so this is the
@@ -217,8 +225,10 @@ fn is_capture(pos: &Position, m: Move) -> bool {
 /// `ss` is the index of the *current* cell in `stack`; `(ss - i)` cells are
 /// earlier plies. Each write is guarded by `(ss - i)->currentMove` being an ok
 /// move; the `i > 2` plies are skipped entirely when the current cell is in
-/// check. The caller must ensure `ss >= 6` so `stack[ss - i]` is in range (the
-/// reference guarantees this with its `stack + 7` sentinel base).
+/// check. Each write is scaled by a multiplier that grows with the number of
+/// positive entries met so far ([`CMHC_MULTIPLIERS`]). The caller must ensure
+/// `ss >= 6` so `stack[ss - i]` is in range (the reference guarantees this with
+/// its `stack + 7` sentinel base).
 pub fn update_continuation_histories(
     hist: &mut WorkerHistories,
     stack: &[SearchStackCell],
@@ -228,6 +238,7 @@ pub fn update_continuation_histories(
     bonus: i32,
 ) {
     let in_check = stack[ss].in_check;
+    let mut positive_count = 0;
     for (i, weight) in CONTHIST_BONUSES {
         // Only update the first 2 continuation histories if we are in check.
         if in_check && i > 2 {
@@ -235,7 +246,12 @@ pub fn update_continuation_histories(
         }
         let prev = &stack[ss - i];
         if prev.current_move.is_ok() {
-            let value = (bonus * weight / 1024) + 88 * (i < 2) as i32;
+            if hist.continuation.get_at(prev.cont_hist, pc, to) > 0 {
+                positive_count += 1;
+            }
+            let multiplier = CMHC_MULTIPLIERS[positive_count];
+            let value =
+                (bonus as i64 * weight as i64 * multiplier / 65536) as i32 + 73 * (i < 2) as i32;
             hist.continuation.update_at(prev.cont_hist, pc, to, value);
         }
     }
@@ -263,9 +279,9 @@ pub fn update_quiet_histories(
     let moved = m.moved_piece_after();
     update_continuation_histories(hist, stack, ss, moved, m.to_sq(), bonus * 955 / 1024);
 
-    // Asymmetric pawn-history bump: +850/1024 of a positive bonus, +550/1024 of
-    // a non-positive one.
-    let pawn_bonus = bonus * if bonus > 0 { 850 } else { 550 } / 1024;
+    // Asymmetric pawn-history bump: 850/1024 of a bonus above -4, 550/1024 of
+    // anything lower.
+    let pawn_bonus = bonus * (if bonus > -4 { 850 } else { 550 }) / 1024;
     hist.shared
         .pawn_update(pos.pawn_key(), moved, m.to_sq(), pawn_bonus);
 }
@@ -278,7 +294,8 @@ pub fn update_quiet_histories(
 /// `prev_sq` is the previous move's destination (`None` for `SQ_NONE`).
 /// `prior_capture` mirrors `pos.captured_piece() != NO_PIECE` — whether the
 /// move that reached this node captured. It is a caller argument because this
-/// module does not model the Position's captured-piece stack.
+/// module does not model the Position's captured-piece stack. Away from PV nodes
+/// the best move's bonus grows with the number of moves searched before it.
 #[allow(clippy::too_many_arguments)]
 pub fn update_all_stats(
     hist: &mut WorkerHistories,
@@ -292,13 +309,19 @@ pub fn update_all_stats(
     depth: i32,
     tt_move: Move,
     prior_capture: bool,
+    pv_node: bool,
 ) {
     let moved_piece = best_move.moved_piece_after();
 
-    let bonus = (128 * depth - 77).min(1529)
+    let mut bonus = (128 * depth - 77).min(1529)
         + 353 * (best_move == tt_move) as i32
         + stack[ss - 1].stat_score / 32;
     let malus = (882 * depth - 204).min(2122);
+
+    if !pv_node {
+        let searched = (quiets_searched.len() + captures_searched.len()) as i64;
+        bonus += (bonus as i64 * searched / 256) as i32;
+    }
 
     if !is_capture(pos, best_move) {
         update_quiet_histories(hist, pos, stack, ss, best_move, bonus * 806 / 1024);
@@ -349,7 +372,7 @@ pub fn update_all_stats(
 }
 
 /// `update_correction_history(pos, ss, w, bonus)`: fold `bonus` into the
-/// correction channels. `ss` is the current cell index in `stack` (`ss >= 4`).
+/// correction channels. `ss` is the current cell index in `stack` (`ss >= 6`).
 pub fn update_correction_history(
     hist: &mut WorkerHistories,
     pos: &Position,
@@ -395,6 +418,12 @@ pub fn update_correction_history(
                 pc,
                 to,
                 bonus * 63 / 128,
+            );
+            hist.continuation_correction.update_at(
+                stack[ss - 6].cont_corr,
+                pc,
+                to,
+                bonus * 35 / 128,
             );
         }
     }
@@ -583,7 +612,9 @@ mod tests {
     fn continuation_histories_writes_expected_cells() {
         // A stack where (ss-1)..(ss-6) all have distinct ok currentMoves and
         // distinct continuation planes, current cell NOT in check. Verify each
-        // plane receives the weighted bonus with the +88 only on i==1.
+        // weighted plane receives the bonus with the +73 only on i==1, and
+        // that plane 5 carries no weight. Every entry starts negative, so the
+        // multiplier stays at its first value.
         let mut hist = WorkerHistories::new();
         let ss = 7usize;
         let mut stack = fresh_stack(ss + 1);
@@ -608,13 +639,56 @@ mod tests {
 
         update_continuation_histories(&mut hist, &stack, ss, pc, to, bonus);
 
-        for (idx, i) in (1..=6).enumerate() {
-            let weight = CONTHIST_BONUSES[idx].1;
-            let write = (bonus * weight / 1024) + 88 * (i < 2) as i32;
-            let expected = apply_gravity(pre[idx] as i16, write, CONTINUATION_HISTORY_D) as i32;
+        for (i, weight) in CONTHIST_BONUSES {
+            let write = bonus * weight * 94 / 65536 + 73 * (i < 2) as i32;
+            let expected = apply_gravity(pre[i - 1] as i16, write, CONTINUATION_HISTORY_D) as i32;
             assert_eq!(
                 hist.continuation.get_at(i, pc, to),
                 expected,
+                "continuation plane {i} mismatch",
+            );
+        }
+        assert_eq!(
+            hist.continuation.get_at(5, pc, to),
+            CONTINUATION_INIT as i32,
+            "plane 5 is not updated"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn continuation_histories_multiplier_counts_positive_entries() {
+        // Planes 1 and 3 start positive. The multiplier index counts the
+        // positive entries met so far, the current one included: 1 at planes 1
+        // and 2, 2 from plane 3 on.
+        let mut hist = WorkerHistories::new();
+        let ss = 7usize;
+        let mut stack = fresh_stack(ss + 1);
+        let pawn = Piece::new(PieceKind::Pawn, Color::Black);
+        let dummy = Move::make(Square::new(4, 4).unwrap(), Square::new(4, 3).unwrap(), pawn);
+        for i in 1..=6 {
+            stack[ss - i].current_move = dummy;
+            stack[ss - i].cont_hist = i;
+        }
+        let pc = Piece::new(PieceKind::Silver, Color::Black);
+        let to = Square::new(3, 3).unwrap();
+        hist.continuation.update_at(1, pc, to, 30000);
+        hist.continuation.update_at(3, pc, to, 30000);
+        let pre: Vec<i32> = (1..=6)
+            .map(|i| hist.continuation.get_at(i, pc, to))
+            .collect();
+        assert!(pre[0] > 0 && pre[2] > 0 && pre[1] < 0 && pre[3] < 0 && pre[5] < 0);
+
+        let bonus = -700;
+        update_continuation_histories(&mut hist, &stack, ss, pc, to, bonus);
+
+        for ((i, weight), multiplier) in CONTHIST_BONUSES.into_iter().zip([103, 103, 110, 110, 110])
+        {
+            let write =
+                (bonus as i64 * weight as i64 * multiplier / 65536) as i32 + 73 * (i < 2) as i32;
+            assert_eq!(
+                hist.continuation.get_at(i, pc, to),
+                apply_gravity(pre[i - 1] as i16, write, CONTINUATION_HISTORY_D) as i32,
                 "continuation plane {i} mismatch",
             );
         }
@@ -725,8 +799,8 @@ mod tests {
             hist.low_ply.get(2, mv),
             apply_gravity(low_pre, bonus * 761 / 1024, MAIN_HISTORY_D) as i32,
         );
-        // continuation write uses bonus*955/1024 (+88 since i==1) at plane 3.
-        let cont_write = (bonus * 955 / 1024 * CONTHIST_BONUSES[0].1 / 1024) + 88;
+        // continuation write uses bonus*955/1024 (+73 since i==1) at plane 3.
+        let cont_write = bonus * 955 / 1024 * CONTHIST_BONUSES[0].1 * 94 / 65536 + 73;
         assert_eq!(
             hist.continuation.get_at(3, moved, to),
             apply_gravity(cont_pre, cont_write, CONTINUATION_HISTORY_D) as i32,
@@ -757,6 +831,30 @@ mod tests {
             hist.shared.pawn_get(pk, moved, to),
             apply_gravity(pawn_pre, bonus * 550 / 1024, PAWN_HISTORY_D) as i32,
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn quiet_histories_small_malus_keeps_the_850_pawn_scale() {
+        // The 550 scale starts at -4; -3 still takes 850.
+        let pos = simple_pos();
+        let ss = 7usize;
+        let stack = fresh_stack(ss + 1);
+        let bp = Piece::new(PieceKind::Pawn, Color::Black);
+        let mv = Move::make(Square::new(4, 4).unwrap(), Square::new(4, 3).unwrap(), bp);
+        let pk = pos.pawn_key();
+        let moved = mv.moved_piece_after();
+        let to = mv.to_sq();
+        for (bonus, scale) in [(-3, 850), (-4, 550)] {
+            let mut hist = WorkerHistories::new();
+            let pawn_pre = hist.shared.pawn_get(pk, moved, to) as i16;
+            update_quiet_histories(&mut hist, &pos, &stack, ss, mv, bonus);
+            assert_eq!(
+                hist.shared.pawn_get(pk, moved, to),
+                apply_gravity(pawn_pre, bonus * scale / 1024, PAWN_HISTORY_D) as i32,
+                "bonus {bonus}",
+            );
+        }
     }
 
     // ---- update_all_stats -------------------------------------------------
@@ -796,6 +894,7 @@ mod tests {
             depth,
             Move::none(),
             false,
+            false,
         );
 
         assert_eq!(
@@ -808,11 +907,11 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn all_stats_quiet_best_bumps_best_and_decays_others() {
         // bestMove is a quiet pawn push; one other quiet was searched. The best
-        // gets +bonus*806/1024; the other gets the decayed negated malus.
+        // gets +bonus*806/1024; the other gets the decayed negated malus. Away
+        // from a PV node the bonus first grows by 1/256 per searched move.
         let pos = simple_pos();
-        let mut hist = WorkerHistories::new();
+        let stack = fresh_stack(8 + 1);
         let ss = 8usize;
-        let stack = fresh_stack(ss + 1);
 
         let bp = Piece::new(PieceKind::Pawn, Color::Black);
         let best = Move::make(Square::new(4, 4).unwrap(), Square::new(4, 3).unwrap(), bp);
@@ -822,39 +921,44 @@ mod tests {
 
         let depth = 5;
         let tt_move = best; // bestMove == ttMove ⇒ +353 in the bonus.
-        let bonus = (128 * depth - 77).min(1529) + 353 + stack[ss - 1].stat_score / 32;
+        let base_bonus = (128 * depth - 77).min(1529) + 353 + stack[ss - 1].stat_score / 32;
         let malus = (882 * depth - 204).min(2122);
 
-        let us = pos.side_to_move();
-        let best_main_pre = hist.main.get(us, best) as i16;
-        let other_main_pre = hist.main.get(us, other) as i16;
+        for (pv_node, bonus) in [(true, base_bonus), (false, base_bonus + base_bonus / 256)] {
+            let mut hist = WorkerHistories::new();
+            let us = pos.side_to_move();
+            let best_main_pre = hist.main.get(us, best) as i16;
+            let other_main_pre = hist.main.get(us, other) as i16;
 
-        update_all_stats(
-            &mut hist,
-            &pos,
-            &stack,
-            ss,
-            best,
-            None,
-            &[other],
-            &[],
-            depth,
-            tt_move,
-            false,
-        );
+            update_all_stats(
+                &mut hist,
+                &pos,
+                &stack,
+                ss,
+                best,
+                None,
+                &[other],
+                &[],
+                depth,
+                tt_move,
+                false,
+                pv_node,
+            );
 
-        // Best move mainHistory: +bonus*806/1024.
-        assert_eq!(
-            hist.main.get(us, best),
-            apply_gravity(best_main_pre, bonus * 806 / 1024, MAIN_HISTORY_D) as i32,
-        );
-        // The single non-best quiet: actualMalus starts malus*1113/1024, then
-        // is decayed *977/1024 once, applied negated.
-        let actual_malus = (malus * 1113 / 1024) * 977 / 1024;
-        assert_eq!(
-            hist.main.get(us, other),
-            apply_gravity(other_main_pre, -actual_malus, MAIN_HISTORY_D) as i32,
-        );
+            // Best move mainHistory: +bonus*806/1024.
+            assert_eq!(
+                hist.main.get(us, best),
+                apply_gravity(best_main_pre, bonus * 806 / 1024, MAIN_HISTORY_D) as i32,
+                "pv_node {pv_node}",
+            );
+            // The single non-best quiet: actualMalus starts malus*1113/1024,
+            // then is decayed *977/1024 once, applied negated.
+            let actual_malus = (malus * 1113 / 1024) * 977 / 1024;
+            assert_eq!(
+                hist.main.get(us, other),
+                apply_gravity(other_main_pre, -actual_malus, MAIN_HISTORY_D) as i32,
+            );
+        }
     }
 
     #[test]
@@ -894,6 +998,7 @@ mod tests {
             &[cap],
             depth,
             Move::none(),
+            false,
             false,
         );
 
@@ -935,7 +1040,7 @@ mod tests {
         let malus = (882 * depth - 204).min(2122);
 
         // (ss-1) continuation write: pc=prev_piece, to=prev_sq, plane from
-        // (ss-2).cont_hist (=5), i==1 weight 1157, +88.
+        // (ss-2).cont_hist (=5), i==1 weight 520, multiplier 94, +73.
         let pre = hist.continuation.get_at(5, prev_piece, prev_sq) as i16;
 
         update_all_stats(
@@ -950,9 +1055,10 @@ mod tests {
             depth,
             Move::none(),
             false,
+            false,
         );
 
-        let write = (-malus * 616 / 1024 * CONTHIST_BONUSES[0].1 / 1024) + 88;
+        let write = -malus * 616 / 1024 * CONTHIST_BONUSES[0].1 * 94 / 65536 + 73;
         assert_eq!(
             hist.continuation.get_at(5, prev_piece, prev_sq),
             apply_gravity(pre, write, CONTINUATION_HISTORY_D) as i32,
@@ -982,6 +1088,7 @@ mod tests {
         stack[ss - 1].current_move = Move::make(Square::new(4, 4).unwrap(), to, bp);
         stack[ss - 2].cont_corr = ContinuationCorrectionHistory::plane_index(bp, to);
         stack[ss - 4].cont_corr = ContinuationCorrectionHistory::plane_index(bp, to);
+        stack[ss - 6].cont_corr = ContinuationCorrectionHistory::plane_index(bp, to);
 
         let us = pos2.side_to_move();
         let bonus = 200;
@@ -1033,13 +1140,14 @@ mod tests {
             ),
             apply_gravity(bnp_pre, bonus * 187 / 128, CORRECTION_HISTORY_D) as i32,
         );
-        // The two continuation-correction planes are the same plane here, so the
-        // 126/128 write then the 63/128 write compose.
+        // The three continuation-correction planes are the same plane here, so
+        // the 126/128, 63/128 and 35/128 writes compose.
         let after_126 = apply_gravity(cc_pre, bonus * 126 / 128, CORRECTION_HISTORY_D);
         let after_63 = apply_gravity(after_126, bonus * 63 / 128, CORRECTION_HISTORY_D);
+        let after_35 = apply_gravity(after_63, bonus * 35 / 128, CORRECTION_HISTORY_D);
         assert_eq!(
             hist.continuation_correction.get_at(plane, bp, to),
-            after_63 as i32,
+            after_35 as i32,
         );
     }
 

@@ -159,6 +159,13 @@ impl ButterflyHistory {
         self.table.iter_mut().for_each(|e| *e = v);
     }
 
+    /// Scale every entry by `num / den`, truncating toward zero.
+    pub fn scale(&mut self, num: i32, den: i32) {
+        self.table
+            .iter_mut()
+            .for_each(|e| *e = (*e as i32 * num / den) as i16);
+    }
+
     fn index(us: Color, m: Move) -> usize {
         us.index() * (1 << 16) + (m.to_bits() & 0xFFFF) as usize
     }

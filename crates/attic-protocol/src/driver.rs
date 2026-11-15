@@ -2444,6 +2444,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
                 pv0: r.best.pv[0],
                 pv_len: r.best.pv.len(),
                 completed_depth: r.completed_depth,
+                inexact: r.best.is_inexact(),
             })
             .collect();
         select_best_worker(&votes)
@@ -2484,8 +2485,9 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     // that PV out so the GUI sees the score the decision was made on. The
     // reference judges the printed `uciScore` in centipawns, not the raw internal
     // score, and maps an unset one — an iteration aborted before any PV line was
-    // scored — to zero rather than resigning outright.
-    let resign_by_value = best.score != -VALUE_INFINITE && {
+    // scored — to zero rather than resigning outright. A bound is never resigned
+    // on.
+    let resign_by_value = best.score != -VALUE_INFINITE && !best.is_inexact() && {
         let resign_score = if best.uci_score == -VALUE_INFINITE {
             0
         } else {
@@ -2494,12 +2496,10 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
         to_cp(resign_score) <= -resign_value
     };
 
-    // Final PV output before `bestmove`. `pv_idx == lines.len()` makes every
-    // line exact, matching the reference `pv()` after the MultiPV loop
-    // (`worker.pvIdx == multiPV`).
+    // Final PV output before `bestmove`.
     if !uci_pv_sent || resign_by_value {
         let n = pv_lines.len();
-        let infos = qs.build_pv_infos(&pos, &pv_lines, n, completed_depth, n, total_nodes);
+        let infos = qs.build_pv_infos(&pos, &pv_lines, completed_depth, n, total_nodes);
         let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
         for info in &infos {
             let _ = write_pv_info(&mut *guard, info);
