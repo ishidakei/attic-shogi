@@ -18,7 +18,7 @@ use crate::history::{
 };
 
 /// Reference `clear()` init constants.
-const MAIN_HISTORY_INIT: i16 = 0;
+const MAIN_HISTORY_INIT: i16 = -5;
 const CAPTURE_HISTORY_INIT: i16 = -678;
 const CONTINUATION_INIT: i16 = -523;
 const CONTINUATION_CORRECTION_INIT: i16 = 6;
@@ -209,7 +209,7 @@ const CONTHIST_BONUSES: [(usize, i32); 5] = [(1, 520), (2, 390), (3, 145), (4, 2
 /// Continuation-history consistency multipliers (`CMHCMultipliers`), indexed by
 /// how many of the planes updated so far, the current one included, held a
 /// positive value before the update.
-const CMHC_MULTIPLIERS: [i64; 6] = [94, 103, 110, 106, 119, 126];
+const CMHC_MULTIPLIERS: [i32; 6] = [94, 103, 110, 106, 119, 126];
 
 /// A *plain* capture test (`Position::capture`): a non-drop landing on an
 /// occupied square. In this engine `capture_stage == capture`, so this is the
@@ -250,8 +250,7 @@ pub fn update_continuation_histories(
                 positive_count += 1;
             }
             let multiplier = CMHC_MULTIPLIERS[positive_count];
-            let value =
-                (bonus as i64 * weight as i64 * multiplier / 65536) as i32 + 73 * (i < 2) as i32;
+            let value = bonus * weight * multiplier / 65536 + 73 * (i < 2) as i32;
             hist.continuation.update_at(prev.cont_hist, pc, to, value);
         }
     }
@@ -294,8 +293,8 @@ pub fn update_quiet_histories(
 /// `prev_sq` is the previous move's destination (`None` for `SQ_NONE`).
 /// `prior_capture` mirrors `pos.captured_piece() != NO_PIECE` — whether the
 /// move that reached this node captured. It is a caller argument because this
-/// module does not model the Position's captured-piece stack. Away from PV nodes
-/// the best move's bonus grows with the number of moves searched before it.
+/// module does not model the Position's captured-piece stack. The best move's
+/// bonus grows with the number of moves searched at the node.
 #[allow(clippy::too_many_arguments)]
 pub fn update_all_stats(
     hist: &mut WorkerHistories,
@@ -309,7 +308,6 @@ pub fn update_all_stats(
     depth: i32,
     tt_move: Move,
     prior_capture: bool,
-    pv_node: bool,
 ) {
     let moved_piece = best_move.moved_piece_after();
 
@@ -318,10 +316,11 @@ pub fn update_all_stats(
         + stack[ss - 1].stat_score / 32;
     let malus = (882 * depth - 204).min(2122);
 
-    if !pv_node {
-        let searched = (quiets_searched.len() + captures_searched.len()) as i64;
-        bonus += (bonus as i64 * searched / 256) as i32;
-    }
+    // The reference multiplies in `u64`: a negative bonus wraps, so the
+    // quotient rounds toward minus infinity, and the cast back keeps the low
+    // 32 bits.
+    let searched = (quiets_searched.len() + captures_searched.len()) as u64;
+    bonus += ((bonus as u64).wrapping_mul(searched) / 256) as i32;
 
     if !is_capture(pos, best_move) {
         update_quiet_histories(hist, pos, stack, ss, best_move, bonus * 806 / 1024);
@@ -536,7 +535,7 @@ mod tests {
         let to = Square::new(4, 3).unwrap();
         let m = Move::make(Square::new(4, 4).unwrap(), to, bp);
 
-        // mainHistory init 0 (both a low and a high index).
+        // mainHistory init -5 (both a low and a high index).
         assert_eq!(hist.main.get(Color::Black, m), MAIN_HISTORY_INIT as i32);
         assert_eq!(hist.main.get(Color::White, m), MAIN_HISTORY_INIT as i32);
         // lowPlyHistory left zero by clear() (per-`go` fill is elsewhere).
@@ -561,7 +560,7 @@ mod tests {
             hist.continuation.get_at(last_plane, bs, to),
             CONTINUATION_INIT as i32
         );
-        // correctionHistory init 0 across all four channels and both colors.
+        // correctionHistory init -5 across all four channels and both colors.
         for &color in &[Color::Black, Color::White] {
             for &ch in &[
                 CorrChannel::Pawn,
@@ -569,8 +568,8 @@ mod tests {
                 CorrChannel::NonPawnWhite,
                 CorrChannel::NonPawnBlack,
             ] {
-                assert_eq!(hist.shared.correction_get(0, color, ch), 0);
-                assert_eq!(hist.shared.correction_get(0xFFFF, color, ch), 0);
+                assert_eq!(hist.shared.correction_get(0, color, ch), -5);
+                assert_eq!(hist.shared.correction_get(0xFFFF, color, ch), -5);
             }
         }
         // continuationCorrectionHistory init 6, sentinel and a deep plane.
@@ -684,8 +683,7 @@ mod tests {
 
         for ((i, weight), multiplier) in CONTHIST_BONUSES.into_iter().zip([103, 103, 110, 110, 110])
         {
-            let write =
-                (bonus as i64 * weight as i64 * multiplier / 65536) as i32 + 73 * (i < 2) as i32;
+            let write = bonus * weight * multiplier / 65536 + 73 * (i < 2) as i32;
             assert_eq!(
                 hist.continuation.get_at(i, pc, to),
                 apply_gravity(pre[i - 1] as i16, write, CONTINUATION_HISTORY_D) as i32,
@@ -894,7 +892,6 @@ mod tests {
             depth,
             Move::none(),
             false,
-            false,
         );
 
         assert_eq!(
@@ -907,10 +904,11 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn all_stats_quiet_best_bumps_best_and_decays_others() {
         // bestMove is a quiet pawn push; one other quiet was searched. The best
-        // gets +bonus*806/1024; the other gets the decayed negated malus. Away
-        // from a PV node the bonus first grows by 1/256 per searched move.
+        // gets +bonus*806/1024; the other gets the decayed negated malus. The
+        // bonus first grows by 1/256 per searched move, rounded toward minus
+        // infinity: a negative bonus of -1084 grows by -5, not -4.
         let pos = simple_pos();
-        let stack = fresh_stack(8 + 1);
+        let mut stack = fresh_stack(8 + 1);
         let ss = 8usize;
 
         let bp = Piece::new(PieceKind::Pawn, Color::Black);
@@ -921,10 +919,14 @@ mod tests {
 
         let depth = 5;
         let tt_move = best; // bestMove == ttMove ⇒ +353 in the bonus.
-        let base_bonus = (128 * depth - 77).min(1529) + 353 + stack[ss - 1].stat_score / 32;
         let malus = (882 * depth - 204).min(2122);
 
-        for (pv_node, bonus) in [(true, base_bonus), (false, base_bonus + base_bonus / 256)] {
+        for (stat_score, base_bonus, bonus) in [(0, 916, 916 + 3), (-64000, -1084, -1084 - 5)] {
+            stack[ss - 1].stat_score = stat_score;
+            assert_eq!(
+                (128 * depth - 77).min(1529) + 353 + stack[ss - 1].stat_score / 32,
+                base_bonus
+            );
             let mut hist = WorkerHistories::new();
             let us = pos.side_to_move();
             let best_main_pre = hist.main.get(us, best) as i16;
@@ -942,14 +944,13 @@ mod tests {
                 depth,
                 tt_move,
                 false,
-                pv_node,
             );
 
             // Best move mainHistory: +bonus*806/1024.
             assert_eq!(
                 hist.main.get(us, best),
                 apply_gravity(best_main_pre, bonus * 806 / 1024, MAIN_HISTORY_D) as i32,
-                "pv_node {pv_node}",
+                "stat_score {stat_score}",
             );
             // The single non-best quiet: actualMalus starts malus*1113/1024,
             // then is decayed *977/1024 once, applied negated.
@@ -998,7 +999,6 @@ mod tests {
             &[cap],
             depth,
             Move::none(),
-            false,
             false,
         );
 
@@ -1054,7 +1054,6 @@ mod tests {
             &[],
             depth,
             Move::none(),
-            false,
             false,
         );
 

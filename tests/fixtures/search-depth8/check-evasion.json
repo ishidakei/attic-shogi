@@ -2,7 +2,7 @@
   "sfen": "4k4/9/4r4/9/9/9/4K3B/9/9 b RG2gs2n3p 1",
   "depth": 8,
   "bestmove": "1g5c+",
-  "score": { "cp": 3066 },
-  "nodes": 755,
+  "score": { "cp": 3083 },
+  "nodes": 761,
   "pv": ["1g5c+", "N*4e", "5g5f", "G*4f", "5f6e"]
 }

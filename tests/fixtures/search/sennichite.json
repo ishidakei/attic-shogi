@@ -3,7 +3,7 @@
   "moves": ["5h4h", "5b4b", "4h5h", "4b5b", "5h4h", "5b4b", "4h5h", "4b5b", "5h4h", "5b4b", "4h5h", "4b5b"],
   "depth": 3,
   "bestmove": "P*4d",
-  "score": { "cp": 601 },
-  "nodes": 537,
-  "pv": ["P*4d", "5b5c", "5h4g", "5c4d"]
+  "score": { "cp": 526 },
+  "nodes": 762,
+  "pv": ["P*4d", "5b6a", "5h4g"]
 }

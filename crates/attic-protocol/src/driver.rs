@@ -26,8 +26,8 @@ use crate::parser::{Command, GoLimits, MATE_UNLIMITED_MS, PositionSfen, parse_li
 /// The `id name` value. Its version tracks how far upstream YaneuraOu has been
 /// ported and nothing else — it moves only on an upstream catch-up, never for a
 /// divergence, fix, or addition. The `git` suffix marks a build past the last
-/// tagged release; a tagged release snapshot carries the plain `Attic 9.80`.
-pub const ENGINE_NAME: &str = "Attic 9.80git";
+/// tagged release; a tagged release snapshot carries the plain `Attic 9.96`.
+pub const ENGINE_NAME: &str = "Attic 9.96git";
 pub const ENGINE_AUTHOR: &str = "Kei Ishida <ishida.kei@gmail.com>";
 
 /// The largest iterative-deepening depth a `go` ever requests: one below
@@ -2454,7 +2454,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     let chosen_result = &results[chosen];
     let mut best = chosen_result.best.clone();
     let mut pv_lines = chosen_result.pv_lines.clone();
-    let completed_depth = chosen_result.completed_depth.max(1);
+    let root_depth = chosen_result.root_depth;
     let ponder_candidate = chosen_result.ponder_candidate;
     // `uciPvSent` is the main worker's flag, whatever worker is chosen.
     let mut uci_pv_sent = results[0].uci_pv_sent;
@@ -2499,7 +2499,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     // Final PV output before `bestmove`.
     if !uci_pv_sent || resign_by_value {
         let n = pv_lines.len();
-        let infos = qs.build_pv_infos(&pos, &pv_lines, completed_depth, n, total_nodes);
+        let infos = qs.build_pv_infos(&pos, &pv_lines, root_depth, n, total_nodes);
         let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
         for info in &infos {
             let _ = write_pv_info(&mut *guard, info);

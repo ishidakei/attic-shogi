@@ -292,9 +292,9 @@ impl CorrChannel {
     }
 }
 
-/// Reference `SharedHistories::clear()` init values: correction entries `0`,
+/// Reference `SharedHistories::clear()` init values: correction entries `-5`,
 /// pawn entries `-1238`.
-const CORRECTION_INIT: i16 = 0;
+const CORRECTION_INIT: i16 = -5;
 const PAWN_INIT: i16 = -1238;
 
 /// [`apply_gravity`] on an atomic entry: a plain relaxed load-modify-store
@@ -358,8 +358,7 @@ impl SharedHistories {
             pawn: LargePageArray::zeroed(pawn_slots * PAWN_SLOT_LEN),
             pawn_mask: pawn_slots - 1,
         };
-        // The correction fill of `0` is a no-op on the zeroed allocation, but is
-        // written explicitly so that every page is first-touched on the node.
+        // Both fills run here, so that every page is first-touched on the node.
         out.fill_correction(CORRECTION_INIT);
         out.fill_pawn(PAWN_INIT);
         out
@@ -628,7 +627,7 @@ mod shared_tests {
         let _ = SharedHistories::new(0);
     }
 
-    /// Init values: pawn `-1238`, correction `0`, across distinct slots.
+    /// Init values: pawn `-1238`, correction `-5`, across distinct slots.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn init_values() {
@@ -637,8 +636,8 @@ mod shared_tests {
         assert_eq!(sh.pawn_get(0xFFFF, bp(), to()), -1238);
         for &color in &[Color::Black, Color::White] {
             for &ch in &CHANNELS {
-                assert_eq!(sh.correction_get(0, color, ch), 0);
-                assert_eq!(sh.correction_get(0xFFFF, color, ch), 0);
+                assert_eq!(sh.correction_get(0, color, ch), -5);
+                assert_eq!(sh.correction_get(0xFFFF, color, ch), -5);
             }
         }
     }
@@ -683,22 +682,24 @@ mod shared_tests {
         let key_b = CORRHIST_BASE_SIZE as u64; // 65536
 
         let one = SharedHistories::new(1);
+        let b_before = one.correction_get(key_b, Color::Black, CorrChannel::Pawn);
         one.correction_update(key_a, Color::Black, CorrChannel::Pawn, 1_000_000);
         assert_ne!(
             one.correction_get(key_b, Color::Black, CorrChannel::Pawn),
-            0,
+            b_before,
             "thread_count 1: correction keys 0 and 65536 share a slot"
         );
 
         let two = SharedHistories::new(2);
+        let b_before = two.correction_get(key_b, Color::Black, CorrChannel::Pawn);
         two.correction_update(key_a, Color::Black, CorrChannel::Pawn, 1_000_000);
         assert_ne!(
             two.correction_get(key_a, Color::Black, CorrChannel::Pawn),
-            0
+            b_before
         );
         assert_eq!(
             two.correction_get(key_b, Color::Black, CorrChannel::Pawn),
-            0,
+            b_before,
             "thread_count 2: correction keys 0 and 65536 are in distinct slots"
         );
     }
