@@ -168,10 +168,9 @@ pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
     /// The loaded network holder, present only after a successful `isready`.
     /// `go` before this is set replies `bestmove resign`.
     eval: Option<LoadedEval>,
-    /// The shared transposition table. Sized from `USI_Hash` at the first
-    /// successful `isready` and by every later `setoption name USI_Hash`,
-    /// cleared on `usinewgame`. `run_root` bumps the generation itself; the
-    /// driver never does. `resize` / `clear` go through [`Arc::get_mut`], which
+    /// The shared transposition table. Sized from `USI_Hash` at every
+    /// successful `isready`, cleared on `usinewgame`. `run_root` bumps the
+    /// generation itself; the driver never does. `resize` / `clear` go through [`Arc::get_mut`], which
     /// succeeds only once every worker clone has dropped — the
     /// lifecycle-exclusivity contract on [`TranspositionTable`].
     tt: Arc<TranspositionTable>,
@@ -217,8 +216,23 @@ pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
     /// recreating the pool on `usinewgame` or a `Threads` resize.
     pool: ThreadPool,
     /// The active NUMA layout, detected once at construction from the engine
-    /// default policy and replaced by every `setoption name NumaPolicy`.
+    /// default policy and replaced at `isready` by a pending `NumaPolicy`.
     numa_config: NumaConfig,
+    /// The `NumaPolicy` value [`Self::numa_config`] was resolved from. The
+    /// binding decision reads it, so a `NumaPolicy` set but not yet applied
+    /// leaves the live pool's binding unchanged.
+    numa_policy: String,
+    /// A validated `NumaPolicy` layout and its value, set by `setoption` and
+    /// applied at the next `isready`, as the reference defers it.
+    pending_numa: Option<(NumaConfig, String)>,
+    /// Set when the NUMA layout or the thread count changes, so the next
+    /// `USI_Hash` application reallocates the table even at an unchanged size
+    /// and its pages are first-touched under the new layout.
+    hash_needs_reallocation: bool,
+    /// Whether the resource options have been applied once. The reference
+    /// creates no workers before that, so until then the allocation line
+    /// reports zero threads, although [`Self::pool`] already exists here.
+    resources_applied: bool,
     /// The current worker → NUMA-node binding assignment, empty when binding is
     /// inactive. Index `i` is worker `i`: slot 0 is the per-`go` coordinator,
     /// `1..` the helper threads.
@@ -296,6 +310,10 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             last_go: None,
             pool,
             numa_config,
+            numa_policy: "auto".to_string(),
+            pending_numa: None,
+            hash_needs_reallocation: false,
+            resources_applied: false,
             numa_bound,
             worker_shared,
             worker_networks: Vec::new(),
@@ -396,28 +414,54 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         }
     }
 
-    /// Resize the shared transposition table to the current `USI_Hash` value in
-    /// MiB. The caller must have run [`Self::finish_search_join`] first so
-    /// [`Arc::get_mut`] succeeds.
-    fn resize_tt_to_hash_option(&mut self) {
+    /// Apply the resource options `setoption` only stores — a pending
+    /// `NumaPolicy` layout, `Threads`, then `USI_Hash` — in the reference's
+    /// `isready` order. The caller must have run [`Self::finish_search_join`]
+    /// first so [`Arc::get_mut`] succeeds.
+    ///
+    /// The reference recreates its workers at every `isready`; here the pool is
+    /// rebuilt only when the layout or the thread count changed, because
+    /// `usinewgame` already gives every worker fresh tables. Returns whether
+    /// the pool was rebuilt.
+    fn apply_resource_options(&mut self) -> bool {
+        let mut rebuild = false;
+        if let Some((config, policy)) = self.pending_numa.take() {
+            self.numa_config = config;
+            self.numa_policy = policy;
+            self.hash_needs_reallocation = true;
+            rebuild = true;
+        }
+        let requested = self.options.threads();
+        if self.pool.size() != requested {
+            self.hash_needs_reallocation = true;
+            rebuild = true;
+        }
+        if rebuild {
+            self.rebuild_pool(requested);
+        }
+
         let mb = self.options.spin("USI_Hash").max(1) as usize;
-        Arc::get_mut(&mut self.tt)
-            .expect("no search worker holds the TT during a USI_Hash resize")
-            .resize(mb);
+        let tt = Arc::get_mut(&mut self.tt)
+            .expect("no search worker holds the TT during a USI_Hash resize");
+        if std::mem::take(&mut self.hash_needs_reallocation) {
+            tt.reallocate(mb);
+        } else {
+            tt.resize(mb);
+        }
+        self.resources_applied = true;
+        rebuild
     }
 
-    /// Recompute the worker → NUMA-node binding for the current `Threads` /
-    /// `NumaPolicy` options and rebuild the worker pool with it. Every pool
+    /// Recompute the worker → NUMA-node binding for `requested` workers under
+    /// the active NUMA layout and rebuild the worker pool with it. Every pool
     /// (re)build routes through here so [`Self::numa_bound`] stays consistent
     /// with the live pool. Helpers bind once at spawn; the per-`go` coordinator
     /// binds at each `go`.
     ///
     /// Callers must have joined any running search first — a resize destroys and
     /// recreates the helper threads.
-    fn rebuild_pool(&mut self) {
-        let requested = self.options.threads();
-        let policy = self.options.text("NumaPolicy").to_string();
-        self.numa_bound = compute_numa_binding(&self.numa_config, &policy, requested);
+    fn rebuild_pool(&mut self, requested: usize) {
+        self.numa_bound = compute_numa_binding(&self.numa_config, &self.numa_policy, requested);
         // Every pool rebuild resets the shared tables, matching the reference.
         // The coordinator's own game-scoped per-worker tables persist, so only
         // its shared handle is swapped.
@@ -505,10 +549,15 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 
     /// Emit the `Using N thread[s][ with NUMA node thread binding: ...]` line.
     fn emit_thread_allocation_information(&self) -> io::Result<()> {
+        let (threads, bound) = if self.resources_applied {
+            (self.pool.size(), &self.numa_bound[..])
+        } else {
+            (0, &[][..])
+        };
         self.emit_info_string_lines(&thread_allocation_information_as_string(
-            self.pool.size(),
+            threads,
             &self.numa_config,
-            &self.numa_bound,
+            bound,
         ))
     }
 
@@ -670,25 +719,18 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         let _ = self.options.set_value(canonical, &value);
         self.options.mark_fixed(canonical);
 
-        // Mirror the reference option `on_change` handlers for the options whose
-        // value drives a resource.
-        if canonical.eq_ignore_ascii_case("Threads") {
-            self.finish_search_join();
-            self.rebuild_pool();
-        } else if canonical.eq_ignore_ascii_case("USI_Hash") {
-            self.finish_search_join();
-            self.resize_tt_to_hash_option();
-        } else if canonical.eq_ignore_ascii_case("NumaPolicy") {
+        // `Threads` and `USI_Hash` need nothing here: the `isready` that read
+        // this line applies them. `NumaPolicy` is validated now, as the
+        // reference's `on_change` handler does, and applied with them.
+        if canonical.eq_ignore_ascii_case("NumaPolicy") {
             // Unlike the `setoption` path, an override is a startup-time config
             // step, so a bad value is reported rather than process-fatal and the
             // previously detected config is kept.
-            self.finish_search_join();
             let policy = self.options.text("NumaPolicy").to_string();
             match numa_config_from_policy(&policy, &real_sysfs_options()) {
-                Ok(cfg) => self.numa_config = cfg,
+                Ok(cfg) => self.pending_numa = Some((cfg, policy)),
                 Err(msg) => self.info_string(&format!("NumaPolicy error: {msg}"))?,
             }
-            self.rebuild_pool();
         }
 
         self.info_string(&format!(
@@ -727,37 +769,39 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         self.reload_book()?;
         let path = self.nn_bin_path();
 
-        if self.eval.as_ref().is_some_and(|e| e.path == path) {
-            return Ok(IsreadyOutcome::Ready);
+        let mut reloaded = false;
+        if !self.eval.as_ref().is_some_and(|e| e.path == path) {
+            match Search::from_network_file_with_warnings(&path) {
+                Ok((search, warnings)) => {
+                    // The loader's non-fatal warnings (hash mismatches), mirroring
+                    // the reference `Detail::ReadParameters` diagnostics.
+                    for warning in &warnings {
+                        self.info_string(warning)?;
+                    }
+                    self.eval = Some(LoadedEval {
+                        path,
+                        source: Arc::new(search),
+                        // A reload starts with no replicas, dropping the stale set.
+                        replicas: BTreeMap::new(),
+                    });
+                    reloaded = true;
+                }
+                // The resource options stay pending until an `isready` succeeds.
+                Err(e) => return Ok(IsreadyOutcome::LoadFailed(e.to_string())),
+            }
         }
 
-        match Search::from_network_file_with_warnings(&path) {
-            Ok((search, warnings)) => {
-                // The loader's non-fatal warnings (hash mismatches), mirroring
-                // the reference `Detail::ReadParameters` diagnostics.
-                for warning in &warnings {
-                    self.info_string(warning)?;
-                }
-                // Only fires when the host never set `USI_Hash` itself; a
-                // `setoption` before this will already have sized the table.
-                if self.tt.cluster_count() == 0 {
-                    self.resize_tt_to_hash_option();
-                }
-                self.eval = Some(LoadedEval {
-                    path,
-                    source: Arc::new(search),
-                    // A reload starts with no replicas, dropping the stale set.
-                    replicas: BTreeMap::new(),
-                });
-                // As the reference does after a reload, so no replica is ever
-                // built on the search path.
-                self.rebuild_networks();
-                Ok(IsreadyOutcome::Ready)
-            }
-            Err(e) => Ok(IsreadyOutcome::LoadFailed(e.to_string())),
+        // A pool rebuild replicates the network itself; otherwise a reload
+        // still needs its replicas, so none is ever built on the search path.
+        if !self.apply_resource_options() && reloaded {
+            self.rebuild_networks();
         }
+        Ok(IsreadyOutcome::Ready)
     }
 
+    /// `Threads` and `USI_Hash` are only stored here; [`Self::handle_isready`]
+    /// applies them, as the reference does, so a host setting both never
+    /// briefly holds a table sized for the wrong thread layout.
     fn handle_setoption(&mut self, name: &str, value: &str) -> io::Result<()> {
         // The option store accepts any string, but mapping it to a `NumaConfig`
         // can fail loudly, and a successful set emits both info lines.
@@ -765,29 +809,13 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             return self.handle_setoption_numa_policy(value);
         }
         match self.options.set_value(name, value) {
-            Ok(()) => {
-                // Like the reference `ThreadPool::set`, this destroys and
-                // recreates every worker rather than diffing the count.
-                if name.eq_ignore_ascii_case("Threads") {
-                    self.finish_search_join();
-                    self.rebuild_pool();
-                    // The reference prints the allocation line from the
-                    // `Threads` on_change callback.
-                    self.emit_thread_allocation_information()?;
-                }
-                // The reference's callback waits for any running search before
-                // resizing.
-                if name.eq_ignore_ascii_case("USI_Hash") {
-                    self.finish_search_join();
-                    self.resize_tt_to_hash_option();
-                }
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(e) => self.info_string(&format!("option {name} rejected: {e}")),
         }
     }
 
-    /// Apply `setoption name NumaPolicy value <v>`.
+    /// Validate `setoption name NumaPolicy value <v>` and keep the layout for
+    /// the next `isready`.
     ///
     /// `auto` / `system` detect from the system respecting affinity; `hardware`
     /// detects ignoring affinity; `none` is a single all-threads node; anything
@@ -800,10 +828,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         let _ = self.options.set_value("NumaPolicy", value);
         let policy = self.options.text("NumaPolicy").to_string();
 
-        self.finish_search_join();
-
         match numa_config_from_policy(&policy, &real_sysfs_options()) {
-            Ok(cfg) => self.numa_config = cfg,
+            Ok(cfg) => self.pending_numa = Some((cfg, policy)),
             Err(msg) => {
                 self.info_string(&format!("NumaPolicy error: {msg}"))?;
                 let _ = self.lock_writer().flush();
@@ -811,8 +837,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             }
         }
 
-        // The reference's callback returns both lines joined by a newline.
-        self.rebuild_pool();
+        // The reference's callback still returns both lines, and they describe
+        // the layout and pool in effect, not the pending ones.
         self.emit_numa_config_information()?;
         self.emit_thread_allocation_information()
     }
@@ -869,8 +895,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         self.last_go = None;
         // The helper workers' game-scoped histories live in the pool threads, so
         // recreating the pool is what gives them the fresh tables the reference
-        // `search_clear` provides.
-        self.rebuild_pool();
+        // `search_clear` provides. The size is the live one: a `Threads` set
+        // since the last `isready` waits for the next.
+        self.rebuild_pool(self.pool.size());
     }
 
     /// Snapshot the book-selection options into a [`BookConfig`] for one `go`.
@@ -1259,13 +1286,15 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         };
 
         // The two option lines the reference emits, routed through the ordinary
-        // `setoption` path so the pool and TT resize exactly as a host
-        // `setoption` would.
+        // `setoption` path.
         self.handle_setoption("Threads", &config.threads.to_string())?;
         self.handle_setoption("USI_Hash", &config.tt_mb.to_string())?;
 
         // The `search_clear` the reference runs once before the positions — the
-        // identical starting state that makes two runs report equal nodes.
+        // identical starting state that makes two runs report equal nodes. In the
+        // reference that clear is a full `isready`, which is where the two
+        // options above take effect.
+        self.apply_resource_options();
         self.handle_usinewgame();
 
         // The reference times from after `search_clear`, excluding the clear.
@@ -2884,23 +2913,99 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn setoption_threads_emits_allocation_line() {
-        // `NumaPolicy none` keeps binding off, so the line is deterministic
-        // across machines.
+    fn setoption_threads_and_hash_are_silent() {
         let out = run_with(
-            "setoption name NumaPolicy value none\n\
-             setoption name Threads value 1\n\
+            "setoption name Threads value 1\n\
              setoption name Threads value 4\n\
-             setoption name Threads value 2\n\
+             setoption name USI_Hash value 2\n\
              quit\n",
         );
-        assert!(out.contains("info string Using 1 thread\n"), "{out}");
-        assert!(out.contains("info string Using 4 threads\n"), "{out}");
-        assert!(out.contains("info string Using 2 threads\n"), "{out}");
-        assert!(
-            !out.contains("with NUMA node thread binding"),
-            "none policy must not bind: {out}"
-        );
+        assert_eq!(out, "");
+    }
+
+    fn idle_driver() -> UsiDriver<&'static [u8], Vec<u8>> {
+        UsiDriver::new(&b""[..], Arc::new(Mutex::new(Vec::new())))
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn resource_options_wait_for_apply() {
+        let mut d = idle_driver();
+        let before = d.pool.size();
+        d.handle_setoption("Threads", "1").unwrap();
+        d.handle_setoption("USI_Hash", "2").unwrap();
+        d.handle_setoption("NumaPolicy", "none").unwrap();
+        assert_eq!(d.pool.size(), before);
+        assert_eq!(d.tt.cluster_count(), 0);
+        assert_eq!(d.numa_policy, "auto");
+
+        assert!(d.apply_resource_options());
+        assert_eq!(d.pool.size(), 1);
+        assert_eq!(d.tt.cluster_count(), 2 * 32_768);
+        assert_eq!(d.numa_policy, "none");
+        assert!(d.pending_numa.is_none());
+        assert!(d.numa_bound.is_empty(), "none policy must not bind");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn unchanged_resource_options_rebuild_nothing() {
+        let mut d = idle_driver();
+        d.handle_setoption("Threads", "1").unwrap();
+        d.handle_setoption("USI_Hash", "2").unwrap();
+        d.apply_resource_options();
+        let shared = Arc::clone(&d.worker_shared[0]);
+        let table = d.tt.backing_ptr_addr();
+
+        assert!(!d.apply_resource_options());
+        assert!(Arc::ptr_eq(&shared, &d.worker_shared[0]), "pool rebuilt");
+        assert_eq!(d.tt.backing_ptr_addr(), table, "TT reallocated");
+        assert!(!d.hash_needs_reallocation);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn layout_change_reallocates_a_same_size_table() {
+        let mut d = idle_driver();
+        d.handle_setoption("Threads", "1").unwrap();
+        d.handle_setoption("USI_Hash", "2").unwrap();
+        d.apply_resource_options();
+
+        const K: u64 = 0x0123_4567_89ab_cdef;
+        let mark = |d: &UsiDriver<&'static [u8], Vec<u8>>| {
+            let generation = d.tt.generation();
+            let (_, _, w) = d.tt.probe(K, 0, |_| true);
+            w.write(
+                K,
+                5,
+                false,
+                attic_storage::Bound::Exact,
+                9,
+                0x1,
+                5,
+                generation,
+            );
+        };
+        let marked = |d: &UsiDriver<&'static [u8], Vec<u8>>| d.tt.probe(K, 0, |_| true).0;
+
+        mark(&d);
+        assert!(!d.apply_resource_options());
+        assert!(marked(&d), "unchanged options keep the table");
+
+        // A thread-count change forces the reallocation.
+        d.handle_setoption("Threads", "2").unwrap();
+        assert!(d.apply_resource_options());
+        assert_eq!(d.tt.cluster_count(), 2 * 32_768);
+        assert!(!marked(&d), "a Threads change reallocates the table");
+
+        // So does a NUMA layout applied at an unchanged thread count.
+        mark(&d);
+        d.handle_setoption("NumaPolicy", "none").unwrap();
+        assert!(d.pending_numa.is_some());
+        assert!(d.apply_resource_options());
+        assert_eq!(d.numa_policy, "none");
+        assert!(!marked(&d), "a NUMA layout change reallocates the table");
+        assert!(!d.hash_needs_reallocation);
     }
 
     /// A miniature 2-node sysfs fixture tree with no L3 cache dirs. The caller

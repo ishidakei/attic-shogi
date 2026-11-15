@@ -486,6 +486,17 @@ impl TranspositionTable {
             return;
         }
 
+        self.reallocate(mb_size);
+    }
+
+    /// Allocate a fresh `mb_size` MiB table even when the cluster count is
+    /// unchanged — the reference's forced resize after a NUMA or thread-count
+    /// change, so the pages are first-touched under the new layout.
+    pub fn reallocate(&mut self, mb_size: usize) {
+        let new_cluster_count = mb_size * 1024 * 1024 / size_of::<Cluster>();
+        debug_assert!(new_cluster_count & 1 == 0);
+        // Drop the old region first so the two never coexist in memory.
+        self.table = ClusterArray::empty();
         // A freshly allocated region is zeroed, so every entry is unoccupied;
         // this stands in for the reference's post-resize `clear()`.
         self.table = ClusterArray::alloc(new_cluster_count);

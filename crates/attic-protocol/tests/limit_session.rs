@@ -109,6 +109,7 @@ fn usi_hash_small_matches_default_fixed_depth() {
     // hash size as the only difference.
     h.send("usinewgame");
     h.send("setoption name USI_Hash value 8");
+    h.send("isready");
     go_and_wait(&h, "position startpos", "go depth 3", 2);
     let out = h.quit_join();
 
@@ -123,8 +124,8 @@ fn usi_hash_small_matches_default_fixed_depth() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn usi_hash_mid_session_resize_between_gos() {
-    // The driver joins the first worker before resizing, so both `go`s emit a
-    // bestmove and the engine exits cleanly.
+    // The `isready` that applies the new size joins the first worker before
+    // resizing, so both `go`s emit a bestmove and the engine exits cleanly.
     let dir = TempDir::new("hash-resize");
     write_synthetic_nn_bin(dir.path());
     let e = dir.path().to_str().unwrap();
@@ -137,6 +138,7 @@ fn usi_hash_mid_session_resize_between_gos() {
         "first go must complete"
     );
     h.send("setoption name USI_Hash value 16");
+    h.send("isready");
     h.send("position startpos");
     h.send("go depth 2");
     assert!(

@@ -101,6 +101,14 @@ impl Engine {
         self.stdin.flush().expect("flush engine stdin");
     }
 
+    /// Set `Threads` and wait for the `isready` that applies it.
+    fn set_threads(&mut self, threads: u32) {
+        self.send(&format!("setoption name Threads value {threads}"));
+        self.send("isready");
+        self.read_until(|l| l == "readyok")
+            .expect("isready after Threads must reply readyok");
+    }
+
     /// Read trimmed lines until one satisfies `pred`, or `None` on EOF.
     fn read_until<F: Fn(&str) -> bool>(&mut self, pred: F) -> Option<String> {
         let mut line = String::new();
@@ -175,7 +183,7 @@ fn go_depth_2_and_3_match_fixtures_via_binary() {
     };
 
     // A fixture assertion must run on one worker: helpers pollute the shared TT.
-    eng.send("setoption name Threads value 1");
+    eng.set_threads(1);
     // `PvInterval 0` keeps per-iteration `info` output independent of the wall
     // clock, which the default 300 ms would not be.
     eng.send("setoption name PvInterval value 0");
@@ -235,7 +243,7 @@ fn threads_cycle_single_thread_matches_fixture_multi_thread_is_legal() {
     eng.send("setoption name PvInterval value 0");
     let d2 = load_fixture("search-depth2/startpos-7g7f.json");
     for threads in [1u32, 4, 2] {
-        eng.send(&format!("setoption name Threads value {threads}"));
+        eng.set_threads(threads);
         eng.send("usinewgame");
         eng.send(&format!("position startpos moves {}", d2.moves.join(" ")));
         eng.send("go depth 2");
@@ -271,7 +279,7 @@ fn threads2_go_movetime_and_depth_and_infinite_and_fischer() {
     let Some(mut eng) = Engine::start() else {
         return;
     };
-    eng.send("setoption name Threads value 2");
+    eng.set_threads(2);
 
     // The deadline is polled only at ~512-node `check_time` checkpoints, and in
     // an unoptimised build with two workers contending for cores a single
@@ -369,7 +377,7 @@ fn go_infinite_then_stop_yields_one_prompt_bestmove() {
 
     // `Threads=1` so the ~512-node `check_time` cadence is not slowed by helper
     // CPU contention.
-    eng.send("setoption name Threads value 1");
+    eng.set_threads(1);
     eng.send("usinewgame");
     eng.send("position startpos");
     eng.send("go infinite");
@@ -400,7 +408,7 @@ fn go_movetime_returns_within_a_generous_bound() {
         return;
     };
 
-    eng.send("setoption name Threads value 1");
+    eng.set_threads(1);
     eng.send("usinewgame");
     eng.send("position startpos");
     let t = Instant::now();
@@ -438,7 +446,7 @@ fn fischer_mini_game_makes_every_deadline_with_one_bestmove_each() {
     // is met to the millisecond.
     let per_move_bound = Duration::from_secs(3);
 
-    eng.send("setoption name Threads value 1");
+    eng.set_threads(1);
     eng.send("usinewgame");
     let mut moves: Vec<String> = Vec::new();
 
@@ -488,7 +496,7 @@ fn byoyomi_mini_game_makes_every_deadline_with_one_bestmove_each() {
     const BYOYOMI: u64 = 1000;
     let per_move_bound = Duration::from_secs(3);
 
-    eng.send("setoption name Threads value 1");
+    eng.set_threads(1);
     eng.send("usinewgame");
     let mut moves: Vec<String> = Vec::new();
 

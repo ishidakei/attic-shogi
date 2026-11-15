@@ -425,6 +425,23 @@ fn resize_to_same_size_is_a_no_op() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
+fn reallocate_to_same_size_clears() {
+    let mut tt = TranspositionTable::new();
+    tt.resize(1);
+    let k = key(5, 0x9);
+    store(&mut tt, k, 0, 5, false, Bound::Exact, 9, 0x9, 5);
+    assert!(tt.probe(k, 0, any).0);
+
+    tt.reallocate(1);
+    assert_eq!(tt.cluster_count(), 32_768);
+    assert!(
+        !tt.probe(k, 0, any).0,
+        "a forced reallocation starts from an empty table"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
 fn clear_zeroes_entries_and_generation() {
     let mut tt = TranspositionTable::new();
     tt.resize(1);
