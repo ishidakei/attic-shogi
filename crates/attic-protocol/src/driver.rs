@@ -356,6 +356,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                 Command::GameOver => self.handle_gameover(),
                 Command::PonderHit => self.handle_ponderhit()?,
                 Command::Bench(tokens) => self.handle_bench(&tokens)?,
+                Command::CriticalError { command, reason } => {
+                    self.handle_critical_error(&command, &reason)?
+                }
                 Command::Quit => {
                     self.finish_search_join();
                     return Ok(());
@@ -1022,7 +1025,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         if limits.depth.is_none() {
             let dl = self.options.spin("DepthLimit");
             if dl != 0 {
-                limits.depth = Some(dl as u32);
+                limits.depth = Some(dl as i32);
             }
         }
         if limits.nodes.is_none() {
@@ -1051,10 +1054,10 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // mapped onto a `movetime`-style bound. A bare or `infinite` `go mate`
         // carries no bound and runs until `stop`.
         let mate_budget = match limits.mate {
-            Some(m) if m != MATE_UNLIMITED_MS => Some(m as i64),
+            Some(m) if m != MATE_UNLIMITED_MS => Some(i64::from(m)),
             _ => None,
         };
-        let movetime = limits.movetime.map(|m| m as i64).or(mate_budget);
+        let movetime = limits.movetime.or(mate_budget);
 
         // Side-flip continuity: when the side to move alternated between the
         // last completed search and this one, the persisted previous scores are
@@ -1083,11 +1086,11 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             let mut prng = Prng::new(self.book_seed ^ 0xA5A5_5A5A_1234_5678);
             let tm = TimeManagement::init(
                 &TimeInput {
-                    time_us: time_opt.unwrap_or(0) as i64,
-                    inc_us: inc_opt.unwrap_or(0) as i64,
-                    byoyomi_us: limits.byoyomi.unwrap_or(0) as i64,
+                    time_us: time_opt.unwrap_or(0),
+                    inc_us: inc_opt.unwrap_or(0),
+                    byoyomi_us: limits.byoyomi.unwrap_or(0),
                     movetime: movetime.unwrap_or(0),
-                    rtime: limits.rtime.unwrap_or(0) as i64,
+                    rtime: limits.rtime.unwrap_or(0),
                     network_delay: self.options.spin("NetworkDelay"),
                     network_delay2: self.options.spin("NetworkDelay2"),
                     minimum_thinking_time: self.options.spin("MinimumThinkingTime"),
@@ -1126,7 +1129,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             time,
         };
         let depth = match limits.depth {
-            Some(d) => (d as i32).clamp(1, SEARCH_MAX_DEPTH),
+            Some(d) => d.clamp(1, SEARCH_MAX_DEPTH),
             None => SEARCH_MAX_DEPTH,
         };
 
@@ -1402,6 +1405,18 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 
     fn handle_too_long(&mut self) -> io::Result<()> {
         self.info_string("command too long")
+    }
+
+    /// Print the reference's critical-error line and terminate the process
+    /// with status 1, as the reference does; a running search is abandoned.
+    /// The reference ends the message with an extra newline, so an empty line
+    /// follows it.
+    fn handle_critical_error(&mut self, command: &str, reason: &str) -> io::Result<()> {
+        self.info_string(&format!(
+            "CRITICAL ERROR: Command `{command}` failed. Reason: {reason}\n"
+        ))?;
+        let _ = self.lock_writer().flush();
+        std::process::exit(1);
     }
 }
 

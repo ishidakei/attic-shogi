@@ -94,12 +94,16 @@ pub fn parse_bench(tokens: &[String], current_sfen: &str) -> Result<BenchConfig,
     let mut limits = GoLimits::default();
     match limit_type.as_str() {
         "depth" => {
-            let d = u32::try_from(limit)
+            let d = i32::try_from(limit)
                 .map_err(|_| BenchParseError(format!("depth limit out of range `{limit}`")))?;
             limits.depth = Some(d);
         }
         "nodes" => limits.nodes = Some(limit),
-        "movetime" => limits.movetime = Some(limit),
+        "movetime" => {
+            let t = i64::try_from(limit)
+                .map_err(|_| BenchParseError(format!("movetime limit out of range `{limit}`")))?;
+            limits.movetime = Some(t);
+        }
         other => {
             return Err(BenchParseError(format!(
                 "unsupported limit type `{other}` (supported: depth, nodes, movetime)"

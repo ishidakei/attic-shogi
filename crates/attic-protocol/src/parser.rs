@@ -11,17 +11,23 @@ pub enum PositionSfen {
 }
 
 /// All USI `go` sub-tokens captured verbatim, including the ones the driver
-/// does not act on, so the parse is lossless.
+/// does not act on, so the parse is lossless. Each field has the integer type
+/// the reference engine reads it into, so a value it accepts (a negative
+/// increment, a negative `nodes` wrapping to a huge count) is accepted here
+/// with the same meaning.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GoLimits {
-    pub depth: Option<u32>,
+    pub depth: Option<i32>,
     pub nodes: Option<u64>,
-    pub movetime: Option<u64>,
-    pub wtime: Option<u64>,
-    pub btime: Option<u64>,
-    pub winc: Option<u64>,
-    pub binc: Option<u64>,
-    pub byoyomi: Option<u64>,
+    /// Never negative: a negative `movetime` is clamped to 1.
+    pub movetime: Option<i64>,
+    /// Never negative: a negative `wtime` is clamped to 1.
+    pub wtime: Option<i64>,
+    /// Never negative: a negative `btime` is clamped to 1.
+    pub btime: Option<i64>,
+    pub winc: Option<i64>,
+    pub binc: Option<i64>,
+    pub byoyomi: Option<i64>,
     pub infinite: bool,
     /// `go ponder` — think on the predicted position; hold the reply until
     /// `ponderhit` or `stop`.
@@ -32,16 +38,16 @@ pub struct GoLimits {
     /// mate search; `Some(ms)` carries the budget, with the sentinel
     /// [`MATE_UNLIMITED_MS`] standing for unlimited (the reference's
     /// `INT32_MAX`).
-    pub mate: Option<u64>,
+    pub mate: Option<i32>,
     /// `go rtime <ms>` — a randomised minimum-thinking-time budget used for
     /// self-play variety. `init_` seeds all three time bounds to `rtime` (plus a
     /// decaying random bump) and returns early. `None` means no `rtime`.
-    pub rtime: Option<u64>,
+    pub rtime: Option<i64>,
 }
 
 /// The `go mate` unlimited-budget sentinel (`limits.mate = INT32_MAX`):
 /// `go mate infinite` and a bare `go mate` both map here.
-pub const MATE_UNLIMITED_MS: u64 = i32::MAX as u64;
+pub const MATE_UNLIMITED_MS: i32 = i32::MAX;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -70,6 +76,14 @@ pub enum Command {
     /// verbatim; [`crate::bench::parse_bench`] gives them meaning (defaults, limit
     /// type, position source).
     Bench(Vec<String>),
+    /// A command the reference engine refuses by terminating: it prints an
+    /// `info string CRITICAL ERROR` line quoting `command` and `reason`, then
+    /// exits with status 1. `command` is the input line as read, without its
+    /// trailing newline.
+    CriticalError {
+        command: String,
+        reason: String,
+    },
     Quit,
     Unknown(String),
     TooLong,
@@ -92,7 +106,7 @@ pub fn parse_line(input: &str) -> Command {
         "quit" => Command::Quit,
         "setoption" => parse_setoption(parts),
         "position" => parse_position(trimmed, parts),
-        "go" => parse_go(trimmed, parts),
+        "go" => parse_go(input.strip_suffix('\n').unwrap_or(input), trimmed),
         "stop" => Command::Stop,
         // `gameover [result]`: the trailing win/lose/draw token is optional and
         // ignored — the command is handled identically to `stop`.
@@ -132,75 +146,160 @@ fn parse_position<'a>(line: &str, parts: impl Iterator<Item = &'a str>) -> Comma
     Command::Position { sfen, moves }
 }
 
-fn parse_go<'a>(line: &str, parts: impl Iterator<Item = &'a str>) -> Command {
-    let tokens: Vec<&str> = parts.collect();
+/// Parse the arguments of `go` as the reference engine reads them from a C++
+/// input stream, so the same lines are accepted, clamped or refused.
+///
+/// A number is read as the longest prefix of the next word that forms an
+/// integer of the field's type; whatever follows the digits is read as the
+/// next word (`go btime 1.5` is `btime 1`, then a word `.5`). A missing,
+/// non-numeric or out-of-range number is a [`Command::CriticalError`], as is a
+/// `go mate` budget that is not a whole integer word.
+///
+/// Words this port does not support make the line [`Command::Unknown`], but
+/// only once the rest of the line has been read: the reference skips them and
+/// still refuses a malformed number after them. `searchmoves` ends the parse,
+/// as it takes every remaining word in the reference.
+fn parse_go(raw: &str, trimmed: &str) -> Command {
+    let mut args = ArgStream {
+        rest: &trimmed["go".len()..],
+    };
+    let critical = |key: &str| Command::CriticalError {
+        command: raw.to_string(),
+        reason: format!("Invalid argument for '{key}'"),
+    };
     let mut limits = GoLimits::default();
-    let mut i = 0;
-    while i < tokens.len() {
-        let key = tokens[i];
+    let mut unsupported = false;
+    while let Some(key) = args.word() {
         match key {
-            "infinite" => {
-                limits.infinite = true;
-                i += 1;
-            }
-            "ponder" => {
-                limits.ponder = true;
-                i += 1;
-            }
-            // `go mate [ms|infinite]`: the token after `mate` is a millisecond
+            "searchmoves" => return Command::Unknown(trimmed.to_string()),
+            "infinite" => limits.infinite = true,
+            "ponder" => limits.ponder = true,
+            // `go mate [ms|infinite]`: the word after `mate` is a millisecond
             // time budget; `infinite`, or nothing following, means unlimited.
-            // Anything else that is not a valid `u64` is an error (the
-            // reference's `stoi` would throw).
-            "mate" => match tokens.get(i + 1) {
-                None => {
-                    limits.mate = Some(MATE_UNLIMITED_MS);
-                    i += 1;
-                }
-                Some(&"infinite") => {
-                    limits.mate = Some(MATE_UNLIMITED_MS);
-                    i += 2;
-                }
-                Some(value) => {
-                    let Ok(v) = value.parse::<u64>() else {
-                        return Command::Unknown(line.to_string());
-                    };
-                    limits.mate = Some(v);
-                    i += 2;
+            "mate" => match args.word() {
+                None | Some("infinite") => limits.mate = Some(MATE_UNLIMITED_MS),
+                Some(word) => {
+                    let mut budget = ArgStream { rest: word };
+                    match budget.integer() {
+                        Some(v) if budget.rest.is_empty() => limits.mate = Some(v),
+                        _ => return critical("mate"),
+                    }
                 }
             },
-            "depth" | "nodes" | "movetime" | "wtime" | "btime" | "winc" | "binc" | "byoyomi"
-            | "rtime" => {
-                let Some(value) = tokens.get(i + 1) else {
-                    return Command::Unknown(line.to_string());
+            "depth" => match args.integer() {
+                Some(v) => limits.depth = Some(v),
+                None => return critical(key),
+            },
+            "nodes" => match args.integer() {
+                Some(v) => limits.nodes = Some(v),
+                None => return critical(key),
+            },
+            // `go perft` is a reference engine feature this port lacks; its
+            // depth is still read so a malformed one is refused the same way.
+            "perft" => match args.integer::<i32>() {
+                Some(_) => unsupported = true,
+                None => return critical(key),
+            },
+            "movetime" | "wtime" | "btime" | "winc" | "binc" | "byoyomi" | "rtime" => {
+                let Some(v) = args.integer::<i64>() else {
+                    return critical(key);
                 };
-                if key == "depth" {
-                    match value.parse::<u32>() {
-                        Ok(v) => limits.depth = Some(v),
-                        Err(_) => return Command::Unknown(line.to_string()),
-                    }
-                } else {
-                    let Ok(v) = value.parse::<u64>() else {
-                        return Command::Unknown(line.to_string());
-                    };
-                    match key {
-                        "nodes" => limits.nodes = Some(v),
-                        "movetime" => limits.movetime = Some(v),
-                        "wtime" => limits.wtime = Some(v),
-                        "btime" => limits.btime = Some(v),
-                        "winc" => limits.winc = Some(v),
-                        "binc" => limits.binc = Some(v),
-                        "byoyomi" => limits.byoyomi = Some(v),
-                        "rtime" => limits.rtime = Some(v),
-                        _ => unreachable!("matched key {key} but no branch"),
-                    }
-                }
-                i += 2;
+                let field = match key {
+                    "movetime" => &mut limits.movetime,
+                    "wtime" => &mut limits.wtime,
+                    "btime" => &mut limits.btime,
+                    "winc" => &mut limits.winc,
+                    "binc" => &mut limits.binc,
+                    "byoyomi" => &mut limits.byoyomi,
+                    _ => &mut limits.rtime,
+                };
+                *field = Some(v);
             }
-            _ => return Command::Unknown(line.to_string()),
+            _ => unsupported = true,
+        }
+    }
+    if unsupported {
+        return Command::Unknown(trimmed.to_string());
+    }
+    for t in [&mut limits.wtime, &mut limits.btime, &mut limits.movetime]
+        .into_iter()
+        .flatten()
+    {
+        if *t < 0 {
+            *t = 1;
         }
     }
     Command::Go(limits)
 }
+
+/// The whitespace a C++ input stream skips in the "C" locale.
+fn is_stream_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r')
+}
+
+/// A cursor over the arguments of a command line that reads words and
+/// integers the way a C++ `std::istream` extracts them.
+struct ArgStream<'a> {
+    rest: &'a str,
+}
+
+impl<'a> ArgStream<'a> {
+    /// The next whitespace-delimited word, or `None` at the end of the line.
+    fn word(&mut self) -> Option<&'a str> {
+        let s = self.rest.trim_start_matches(is_stream_space);
+        let end = s.find(is_stream_space).unwrap_or(s.len());
+        self.rest = &s[end..];
+        (end > 0).then(|| &s[..end])
+    }
+
+    /// The integer at the cursor: an optional sign and at least one decimal
+    /// digit, consumed up to the first non-digit. `None` when there is no
+    /// digit or the value does not fit `T`. For an unsigned `T` a minus sign
+    /// negates modulo 2^N, as the stream does.
+    fn integer<T: StreamInteger>(&mut self) -> Option<T> {
+        let s = self.rest.trim_start_matches(is_stream_space);
+        let (negative, body) = match s.as_bytes().first() {
+            Some(b'-') => (true, &s[1..]),
+            Some(b'+') => (false, &s[1..]),
+            _ => (false, s),
+        };
+        let digits = body.bytes().take_while(u8::is_ascii_digit).count();
+        self.rest = &body[digits..];
+        if digits == 0 {
+            return None;
+        }
+        let magnitude = body[..digits].bytes().try_fold(0u64, |acc, b| {
+            acc.checked_mul(10)?.checked_add(u64::from(b - b'0'))
+        })?;
+        T::from_sign_magnitude(negative, magnitude)
+    }
+}
+
+trait StreamInteger: Sized {
+    fn from_sign_magnitude(negative: bool, magnitude: u64) -> Option<Self>;
+}
+
+impl StreamInteger for u64 {
+    fn from_sign_magnitude(negative: bool, magnitude: u64) -> Option<Self> {
+        Some(if negative {
+            magnitude.wrapping_neg()
+        } else {
+            magnitude
+        })
+    }
+}
+
+macro_rules! signed_stream_integer {
+    ($($t:ty),*) => {$(
+        impl StreamInteger for $t {
+            fn from_sign_magnitude(negative: bool, magnitude: u64) -> Option<Self> {
+                let v = i128::from(magnitude);
+                <$t>::try_from(if negative { -v } else { v }).ok()
+            }
+        }
+    )*};
+}
+signed_stream_integer!(i32, i64);
 
 fn parse_setoption<'a>(parts: impl Iterator<Item = &'a str>) -> Command {
     // USI: setoption name <NAME> [value <VALUE...>]
@@ -444,19 +543,154 @@ mod tests {
         );
     }
 
+    fn critical(command: &str, key: &str) -> Command {
+        Command::CriticalError {
+            command: command.to_string(),
+            reason: format!("Invalid argument for '{key}'"),
+        }
+    }
+
     #[test]
-    fn go_with_missing_value_is_unknown() {
+    fn go_with_missing_value_is_critical() {
+        for key in [
+            "depth", "nodes", "movetime", "wtime", "btime", "winc", "binc", "byoyomi", "rtime",
+            "perft",
+        ] {
+            let line = format!("go {key}");
+            assert_eq!(parse_line(&line), critical(&line, key));
+        }
+    }
+
+    #[test]
+    fn go_with_non_integer_value_is_critical() {
+        for (line, key) in [
+            ("go nodes not-a-number", "nodes"),
+            ("go btime x", "btime"),
+            ("go byoyomi depth 3", "byoyomi"),
+            ("go depth -", "depth"),
+            ("go wtime +", "wtime"),
+            ("go movetime .5", "movetime"),
+            ("go perft x", "perft"),
+        ] {
+            assert_eq!(parse_line(line), critical(line, key));
+        }
+    }
+
+    #[test]
+    fn go_with_out_of_range_value_is_critical() {
+        for (line, key) in [
+            ("go depth 2147483648", "depth"),
+            ("go depth -2147483649", "depth"),
+            ("go btime 9223372036854775808", "btime"),
+            ("go nodes 18446744073709551616", "nodes"),
+            ("go nodes -18446744073709551616", "nodes"),
+            ("go mate 2147483648", "mate"),
+        ] {
+            assert_eq!(parse_line(line), critical(line, key));
+        }
+    }
+
+    #[test]
+    fn go_critical_error_quotes_the_line_as_read() {
         assert_eq!(
-            parse_line("go depth"),
-            Command::Unknown("go depth".to_string())
+            parse_line("go  wtime  abc \n"),
+            critical("go  wtime  abc ", "wtime")
+        );
+        assert_eq!(
+            parse_line("go btime x\r\n"),
+            critical("go btime x\r", "btime")
         );
     }
 
     #[test]
-    fn go_with_non_integer_value_is_unknown() {
+    fn go_malformed_value_after_unsupported_word_is_critical() {
         assert_eq!(
-            parse_line("go nodes not-a-number"),
-            Command::Unknown("go nodes not-a-number".to_string())
+            parse_line("go movestogo btime x"),
+            critical("go movestogo btime x", "btime")
+        );
+    }
+
+    #[test]
+    fn go_malformed_value_after_searchmoves_is_unknown() {
+        assert_eq!(
+            parse_line("go searchmoves 7g7f btime x"),
+            Command::Unknown("go searchmoves 7g7f btime x".to_string())
+        );
+    }
+
+    #[test]
+    fn go_negative_times_clamp_to_one() {
+        let expected = GoLimits {
+            btime: Some(1),
+            wtime: Some(1),
+            movetime: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(
+            parse_line("go btime -5 wtime -7 movetime -1000"),
+            Command::Go(expected)
+        );
+    }
+
+    #[test]
+    fn go_zero_times_are_not_clamped() {
+        let expected = GoLimits {
+            btime: Some(0),
+            wtime: Some(0),
+            movetime: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            parse_line("go btime 0 wtime 0 movetime 0"),
+            Command::Go(expected)
+        );
+    }
+
+    #[test]
+    fn go_other_negative_values_are_kept() {
+        let expected = GoLimits {
+            depth: Some(-3),
+            winc: Some(-5),
+            binc: Some(-6),
+            byoyomi: Some(-100),
+            rtime: Some(-7),
+            mate: Some(-5),
+            ..Default::default()
+        };
+        assert_eq!(
+            parse_line("go depth -3 winc -5 binc -6 byoyomi -100 rtime -7 mate -5"),
+            Command::Go(expected)
+        );
+    }
+
+    #[test]
+    fn go_negative_nodes_wraps() {
+        let expected = GoLimits {
+            nodes: Some(u64::MAX - 4),
+            ..Default::default()
+        };
+        assert_eq!(parse_line("go nodes -5"), Command::Go(expected));
+    }
+
+    #[test]
+    fn go_reads_the_numeric_prefix_and_the_rest_as_the_next_word() {
+        let expected = GoLimits {
+            btime: Some(100),
+            depth: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(parse_line("go btime +100depth 3"), Command::Go(expected));
+        assert_eq!(
+            parse_line("go btime 1.5"),
+            Command::Unknown("go btime 1.5".to_string())
+        );
+    }
+
+    #[test]
+    fn go_perft_is_unknown() {
+        assert_eq!(
+            parse_line("go perft 3"),
+            Command::Unknown("go perft 3".to_string())
         );
     }
 
@@ -550,11 +784,15 @@ mod tests {
     }
 
     #[test]
-    fn go_mate_non_integer_budget_is_unknown() {
-        assert_eq!(
-            parse_line("go mate soon"),
-            Command::Unknown("go mate soon".to_string())
-        );
+    fn go_mate_budget_must_be_a_whole_integer_word() {
+        for line in ["go mate soon", "go mate 12abc", "go mate 1.5", "go mate -"] {
+            assert_eq!(parse_line(line), critical(line, "mate"));
+        }
+        let expected = GoLimits {
+            mate: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(parse_line("go mate +5"), Command::Go(expected));
     }
 
     #[test]
