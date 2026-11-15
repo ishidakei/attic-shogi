@@ -1,31 +1,34 @@
 //! Transposition table, a port of the reference's, specialised to the engine's
-//! default build configuration: a 64-bit position key whose low 16 bits are the
-//! in-cluster fragment, and three 10-byte entries per 32-byte cluster
-//! (`TT_CLUSTER_SIZE == 3`).
+//! default build configuration: a 64-bit position key whose low 21 bits are the
+//! in-cluster tag, and 32-byte clusters each holding one `u64` that packs three
+//! 21-bit tags, followed by three 8-byte entries.
 //!
 //! Those choices are load-bearing for search-node parity. The cluster size and
 //! the `clusterCount = mb·2²⁰ / sizeof(Cluster)` arithmetic together decide
-//! which positions collide, and the in-cluster replacement policy decides which
-//! entry survives a collision.
+//! which positions collide, the tag width decides which collisions go
+//! unnoticed, and the in-cluster replacement and aging policies decide which
+//! entry survives.
 //!
 //! The Storage layer must not depend on the State layer, so this module speaks
 //! in primitives: a `u64` key, a `u8` side-to-move, and the best move as its
-//! low-16-bit fragment. Widening that fragment and validating it against a
-//! position is the Search layer's job.
+//! low-16-bit fragment. A probe asks its caller whether a stored fragment
+//! rebuilds into a move in the probed position, since a tag match whose move
+//! does not rebuild counts as a miss; widening the fragment and validating it
+//! further is the Search layer's job.
 //!
 //! # Threading
 //!
-//! The table is shared as `Arc<TranspositionTable>`, and every entry field is
-//! an atomic accessed with [`Ordering::Relaxed`] — the Rust-sound equivalent of
-//! the reference's racy, lock-free `TTEntry`.
+//! The table is shared as `Arc<TranspositionTable>`, and every tag word and
+//! entry field is an atomic accessed with [`Ordering::Relaxed`] — the
+//! Rust-sound equivalent of the reference's racy, lock-free cluster.
 //!
-//! Relaxed atomics make each *field* access indivisible, but an entry is six
-//! fields with no cross-field atomicity, so a concurrent write can land between
-//! this thread's reads and [`TTEntry::read`] can return a payload mixing an old
-//! key fragment with a new value. **This is tolerated, as the reference
-//! tolerates it**: a mismatched fragment reads back as a miss or a
-//! wrong-position hit, and the Search layer validates every TT move against the
-//! actual position before trusting it.
+//! Relaxed atomics make each *field* access indivisible, but a tag and its
+//! entry are six fields with no cross-field atomicity, so a concurrent write
+//! can land between this thread's reads and a probe can return a payload
+//! mixing an old tag with a new value. **This is tolerated, as the reference
+//! tolerates it**: a mismatched tag reads back as a miss or a wrong-position
+//! hit, and the Search layer validates every TT move against the actual
+//! position before trusting it.
 //!
 //! [`TranspositionTable::resize`] and [`TranspositionTable::clear`] take
 //! `&mut self`, so the driver must reach them through [`Arc::get_mut`], which
@@ -37,7 +40,7 @@ use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::slice;
-use std::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, AtomicU64, Ordering};
 
 use crate::large_page;
 
@@ -60,6 +63,13 @@ pub const DEPTH_NONE: Depth = -3;
 /// `VALUE_NONE`, the sentinel returned for a miss.
 pub const VALUE_NONE: Value = 32002;
 
+/// `VALUE_INFINITE`. A stored value at or beyond it is not a search result.
+const VALUE_INFINITE: Value = 32001;
+
+/// `VALUE_TB_WIN_IN_MAX_PLY` (`VALUE_MATE − MAX_PLY`): the smallest decisive
+/// magnitude.
+const VALUE_TB_WIN_IN_MAX_PLY: Value = 32000 - 246;
+
 /// The reference's default `USI_Hash` in MiB. Only the default the driver
 /// passes to `resize`: a fresh table is empty, like the reference's
 /// default-constructed one.
@@ -73,8 +83,12 @@ const BOUND_MASK: u8 = 0b11 << BOUND_SHIFT;
 const PV_SHIFT: u8 = BOUND_SHIFT + 2;
 const PV_MASK: u8 = 1 << PV_SHIFT;
 
-/// Number of entries per cluster (`TT_CLUSTER_SIZE == 3`).
+/// Number of entries per cluster.
 const CLUSTER_SIZE: usize = 3;
+
+/// Width of an in-cluster tag: the low bits of the position key.
+const KEY_BITS: u32 = 21;
+const KEY_MASK: u64 = (1 << KEY_BITS) - 1;
 
 /// Bound type of a stored value. The discriminants matter:
 /// `Exact == Upper | Lower`, and the value is packed into `genBound8`.
@@ -148,15 +162,20 @@ fn relative_age(gen_bound8: u8, curr_generation: u8) -> u8 {
     curr_generation.wrapping_sub(gen_bound8) & GENERATION_MASK
 }
 
-/// A single transposition-table entry — 10 bytes, laid out field-for-field like
-/// the reference's `TTEntry`, with each field an atomic. `#[repr(C)]` pins the
-/// layout so that a [`Cluster`] is exactly 32 bytes and the `clusterCount`
-/// arithmetic matches the reference.
+/// `is_decisive`: a mate or mated score, at any distance within `MAX_PLY`.
+#[inline]
+fn is_decisive(v: Value) -> bool {
+    v >= VALUE_TB_WIN_IN_MAX_PLY || v <= -VALUE_TB_WIN_IN_MAX_PLY
+}
+
+/// A single transposition-table entry — 8 bytes, laid out field-for-field like
+/// the reference's `TTEntry`, with each field an atomic. Its tag lives in the
+/// owning [`Cluster`]'s `keys` word. `#[repr(C)]` pins the layout so that a
+/// [`Cluster`] is exactly 32 bytes and the `clusterCount` arithmetic matches
+/// the reference.
 #[repr(C)]
 #[derive(Default)]
 struct TTEntry {
-    /// Low 16 bits of the position key (`TTE_KEY_TYPE`).
-    key: AtomicU16,
     /// `depth − DEPTH_NONE`; `0` means unoccupied.
     depth8: AtomicU8,
     /// Packed `generation | bound << 5 | pv << 7`.
@@ -205,25 +224,44 @@ impl TTEntry {
     /// under the exclusivity contract rather than atomic ops.
     #[inline]
     fn reset(&mut self) {
-        *self.key.get_mut() = 0;
         *self.depth8.get_mut() = 0;
         *self.gen_bound8.get_mut() = 0;
         *self.move16.get_mut() = 0;
         *self.value16.get_mut() = 0;
         *self.eval16.get_mut() = 0;
     }
+}
 
-    /// Store a new node's data, possibly overwriting an older position
-    /// (`TTEntry::save`). `curr_generation` is an argument rather than read from
-    /// the table because the reference lets learners pass a per-thread one.
+/// A cluster: the [`KEY_BITS`]-bit tags of its [`CLUSTER_SIZE`] entries packed
+/// into one word (entry `i` at bit `KEY_BITS · i`; bit 63 is always clear),
+/// then the entries. Entries in one cluster share a hash slot.
+#[repr(C)]
+#[derive(Default)]
+struct Cluster {
+    keys: AtomicU64,
+    entry: [TTEntry; CLUSTER_SIZE],
+}
+
+impl Cluster {
+    /// The tag stored for entry `i`, from a `keys` word read once.
+    #[inline]
+    fn tag(keys: u64, i: usize) -> u64 {
+        (keys >> (KEY_BITS * i as u32)) & KEY_MASK
+    }
+
+    /// Store a new node's data into entry `index`, possibly overwriting an
+    /// older position (`TTWriter::write`). `curr_generation` is an argument
+    /// rather than read from the table because the reference lets learners pass
+    /// a per-thread one.
     ///
-    /// The old `key` / `depth8` / `gen_bound8` are each read once before any
-    /// store, so the replacement decision sees the pre-save entry state.
+    /// The tag word and the entry's `depth8` / `gen_bound8` are each read once
+    /// before any store, so the replacement decision sees the pre-save state.
     #[inline]
     #[allow(clippy::too_many_arguments)]
     fn save(
         &self,
-        k: u16,
+        index: usize,
+        k: u64,
         v: Value,
         pv: bool,
         b: Bound,
@@ -232,18 +270,21 @@ impl TTEntry {
         ev: Value,
         curr_generation: u8,
     ) {
-        let old_key = self.key.load(REL);
-        let old_depth8 = self.depth8.load(REL);
-        let old_gen_bound8 = self.gen_bound8.load(REL);
+        let shift = KEY_BITS * index as u32;
+        let keys = self.keys.load(REL);
+        let key_diff = ((keys >> shift) ^ k) & KEY_MASK;
+        let entry = &self.entry[index];
+        let old_depth8 = entry.depth8.load(REL);
+        let old_gen_bound8 = entry.gen_bound8.load(REL);
 
-        if m != 0 || k != old_key {
-            self.move16.store(m, REL);
+        if m != 0 || key_diff != 0 {
+            entry.move16.store(m, REL);
         }
 
         // The depth comparison is in `i32` to match the reference's `int`
         // promotion: `depth8 - 4` may be negative.
         if b == Bound::Exact
-            || k != old_key
+            || key_diff != 0
             || d - DEPTH_NONE + 2 * pv as Depth > old_depth8 as Depth - 4
             || relative_age(old_gen_bound8, curr_generation) != 0
         {
@@ -251,25 +292,27 @@ impl TTEntry {
             debug_assert!(d - DEPTH_NONE < 256);
             debug_assert!(curr_generation <= GENERATION_MASK);
 
-            self.key.store(k, REL);
-            self.depth8.store((d - DEPTH_NONE) as u8, REL);
-            self.gen_bound8.store(
+            self.keys.store(keys ^ (key_diff << shift), REL);
+            entry.depth8.store((d - DEPTH_NONE) as u8, REL);
+            entry.gen_bound8.store(
                 curr_generation | (b as u8) << BOUND_SHIFT | (pv as u8) << PV_SHIFT,
                 REL,
             );
-            self.value16.store(v as i16, REL);
-            self.eval16.store(ev as i16, REL);
+            entry.value16.store(v as i16, REL);
+            entry.eval16.store(ev as i16, REL);
+        } else if old_depth8 as Depth + DEPTH_NONE >= 5
+            && Bound::from_u8((old_gen_bound8 & BOUND_MASK) >> BOUND_SHIFT) != Bound::Exact
+        {
+            // Secondary aging: a kept, deep, non-exact entry holding a decisive
+            // value loses one ply of depth on every refused write, so that a
+            // stale mate bound gives way. The range check guards against a torn
+            // value; a racy underflow saturates at "unoccupied".
+            let v16 = entry.value16.load(REL) as Value;
+            if v16.abs() < VALUE_INFINITE && is_decisive(v16) {
+                entry.depth8.store(old_depth8.saturating_sub(1), REL);
+            }
         }
     }
-}
-
-/// A cluster of [`CLUSTER_SIZE`] entries plus padding to a round 32 bytes.
-/// Entries in one cluster share a hash slot.
-#[repr(C)]
-#[derive(Default)]
-struct Cluster {
-    entry: [TTEntry; CLUSTER_SIZE],
-    _padding: [u8; 2],
 }
 
 // The `clusterCount` arithmetic assumes a 32-byte cluster, so a layout
@@ -446,6 +489,7 @@ impl TranspositionTable {
     pub fn clear(&mut self) {
         *self.generation8.get_mut() = 0;
         for cluster in self.table.iter_mut() {
+            *cluster.keys.get_mut() = 0;
             for entry in cluster.entry.iter_mut() {
                 entry.reset();
             }
@@ -536,46 +580,35 @@ impl TranspositionTable {
 
     /// Look up `key` (`TranspositionTable::probe`).
     ///
+    /// `rebuilds(move16)` tells whether a stored, non-zero move fragment
+    /// rebuilds into a move in the probed position (`Position::to_move`). The
+    /// lowest entry whose tag matches is taken unless its move fails to
+    /// rebuild; then the later entries with the same tag are tried, and if none
+    /// has a move that rebuilds (or no move), the probe is a miss.
+    ///
     /// Returns `(found, data, writer)`:
     /// - `found` is `true` when a matching, occupied entry exists (possibly a
-    ///   16-bit key collision);
+    ///   21-bit tag collision);
     /// - `data` is a copy of that entry's payload, or [`TTData::none`] on a
     ///   miss;
     /// - `writer` targets the matching entry on a hit, or the least-valuable
     ///   entry to replace on a miss.
     ///
     /// Panics if the table has not been sized (`clusterCount == 0`).
-    pub fn probe(&self, key: u64, side_to_move: u8) -> (bool, TTData, TTWriter<'_>) {
-        assert!(
-            !self.table.is_empty(),
-            "TranspositionTable::probe called before resize"
-        );
-
-        let ci = self.cluster_index(key, side_to_move);
-        let key16 = key as u16;
-        let generation = self.generation8.load(REL);
-        let cluster = &self.table[ci];
-
-        if let Some(i) = (0..CLUSTER_SIZE).find(|&i| cluster.entry[i].key.load(REL) == key16) {
-            let found = cluster.entry[i].is_occupied();
-            let data = cluster.entry[i].read();
-            return (found, data, TTWriter::new(&cluster.entry[i]));
-        }
-
-        // On a miss, replace the least valuable entry.
-        let mut replace = 0;
-        for i in 1..CLUSTER_SIZE {
-            if cluster.entry[replace].replace_priority(generation)
-                > cluster.entry[i].replace_priority(generation)
-            {
-                replace = i;
-            }
-        }
-
+    pub fn probe(
+        &self,
+        key: u64,
+        side_to_move: u8,
+        rebuilds: impl Fn(u16) -> bool,
+    ) -> (bool, TTData, TTWriter<'_>) {
+        let (found, data, slot) = self.locate(key, side_to_move, rebuilds);
         (
-            false,
-            TTData::none(),
-            TTWriter::new(&cluster.entry[replace]),
+            found,
+            data,
+            TTWriter {
+                cluster: &self.table[slot.cluster],
+                index: slot.entry,
+            },
         )
     }
 
@@ -588,22 +621,33 @@ impl TranspositionTable {
     /// different slot.
     ///
     /// Panics if the table has not been sized (`clusterCount == 0`).
-    pub fn locate(&self, key: u64, side_to_move: u8) -> (bool, TTData, TtSlot) {
+    pub fn locate(
+        &self,
+        key: u64,
+        side_to_move: u8,
+        rebuilds: impl Fn(u16) -> bool,
+    ) -> (bool, TTData, TtSlot) {
         assert!(
             !self.table.is_empty(),
-            "TranspositionTable::locate called before resize"
+            "TranspositionTable::probe called before resize"
         );
 
         let ci = self.cluster_index(key, side_to_move);
-        let key16 = key as u16;
+        let key21 = key & KEY_MASK;
         let generation = self.generation8.load(REL);
         let cluster = &self.table[ci];
+        let keys = cluster.keys.load(REL);
 
-        if let Some(i) = (0..CLUSTER_SIZE).find(|&i| cluster.entry[i].key.load(REL) == key16) {
-            let found = cluster.entry[i].is_occupied();
+        for i in 0..CLUSTER_SIZE {
+            if Cluster::tag(keys, i) != key21 {
+                continue;
+            }
             let data = cluster.entry[i].read();
+            if data.move16 != 0 && !rebuilds(data.move16) {
+                continue;
+            }
             return (
-                found,
+                cluster.entry[i].is_occupied(),
                 data,
                 TtSlot {
                     cluster: ci,
@@ -647,8 +691,9 @@ impl TranspositionTable {
         eval: Value,
         generation: u8,
     ) {
-        self.table[slot.cluster].entry[slot.entry]
-            .save(key as u16, value, pv, bound, depth, mv, eval, generation);
+        self.table[slot.cluster].save(
+            slot.entry, key, value, pv, bound, depth, mv, eval, generation,
+        );
     }
 
     /// A stable checksum over the whole table, for determinism tests.
@@ -659,8 +704,8 @@ impl TranspositionTable {
             h = h.wrapping_mul(0x0000_0100_0000_01b3);
         };
         for cluster in self.table.iter() {
+            mix(cluster.keys.load(REL));
             for e in &cluster.entry {
-                mix(e.key.load(REL) as u64);
                 mix(e.depth8.load(REL) as u64);
                 mix(e.gen_bound8.load(REL) as u64);
                 mix(e.move16.load(REL) as u64);
@@ -685,18 +730,14 @@ pub struct TtSlot {
 /// A single-use handle for writing one entry (`TTWriter`), obtained from
 /// [`TranspositionTable::probe`].
 pub struct TTWriter<'a> {
-    entry: &'a TTEntry,
+    cluster: &'a Cluster,
+    index: usize,
 }
 
-impl<'a> TTWriter<'a> {
-    #[inline]
-    fn new(entry: &'a TTEntry) -> Self {
-        TTWriter { entry }
-    }
-
+impl TTWriter<'_> {
     /// Store data into the targeted entry, subject to the replacement policy
-    /// (`TTWriter::write`). `key` is the full 64-bit position key (its low 16
-    /// bits become the stored fragment); `mv` is the 16-bit move fragment;
+    /// (`TTWriter::write`). `key` is the full 64-bit position key (its low 21
+    /// bits become the stored tag); `mv` is the 16-bit move fragment;
     /// `generation` is the current [`TranspositionTable::generation`].
     #[inline]
     #[allow(clippy::too_many_arguments)]
@@ -711,8 +752,9 @@ impl<'a> TTWriter<'a> {
         eval: Value,
         generation: u8,
     ) {
-        self.entry
-            .save(key as u16, value, pv, bound, depth, mv, eval, generation);
+        self.cluster.save(
+            self.index, key, value, pv, bound, depth, mv, eval, generation,
+        );
     }
 }
 
@@ -771,15 +813,14 @@ mod alloc_tests {
     fn fresh_allocation_is_zeroed() {
         let a = ClusterArray::alloc(4096);
         for cluster in a.iter() {
+            assert_eq!(cluster.keys.load(REL), 0);
             for e in &cluster.entry {
                 assert!(!e.is_occupied());
-                assert_eq!(e.key.load(REL), 0);
                 assert_eq!(e.gen_bound8.load(REL), 0);
                 assert_eq!(e.move16.load(REL), 0);
                 assert_eq!(e.value16.load(REL), 0);
                 assert_eq!(e.eval16.load(REL), 0);
             }
-            assert_eq!(cluster._padding, [0u8; 2]);
         }
     }
 

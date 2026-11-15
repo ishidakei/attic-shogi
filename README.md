@@ -4,7 +4,7 @@
 移植です。後述の相違点を除いて移植しています。
 
 移植元の上流コードは YaneuraOu のコミット
-`d47c9bfb94210fb1f9b741d5ee16ce081b35cacd` (V9.80) の状態を基準にしています。
+`efc50597dde619c3ace52b2b46c31a4964fa3954`（V9.80 より後）の状態を基準にしています。
 
 本 README はバージョン番号の更新に合わせて更新しています。それ以外のタイミングでは、
 上記の移植元コミットより後の変更を本リポジトリが含んでいる場合があります。
@@ -59,14 +59,14 @@ cargo build --release
   `-C target-cpu=native` を適用します。生成されるバイナリはビルドしたマシンの
   CPU に最適化されるため、実行するマシン上でビルドしてください。
 
-エンジンとのやり取りは、標準入出力上の USI プロトコルで行います。引数なしで
+エンジンとのやり取りは標準入出力上の USI プロトコルで行います。引数なしで
 起動すると、USI コマンドの入力待ちになります。
 
 ```bash
 ./target/release/attic
 ```
 
-正しくビルドできたかは、`usi` コマンドへの応答で確認できます。
+正しくビルドできたかは `usi` コマンドへの応答で確認できます。
 
 ```bash
 printf 'usi\nquit\n' | ./target/release/attic
@@ -121,7 +121,7 @@ ZMM レジスタの使用有無で判別できます。
 objdump -d target/release/attic | grep -c '%zmm'
 ```
 
-上の 2 つのビルドでは、それぞれ 2382 と 0 でした。
+上の 2 つのビルドではそれぞれ 2382 と 0 でした。
 
 ## 評価関数ファイル（`nn.bin`）
 
@@ -132,7 +132,7 @@ SFNNwoP1536（SFNN-1536）ネットワーク構成のものだけです。評価
 プロジェクトを支援する方法があります
 （<https://yaneuraou.yaneu.com/support-the-project/>）。
 
-用意した `nn.bin` は、作業ディレクトリの `eval/nn.bin` に置いてください。`EvalDir` の
+用意した `nn.bin` は作業ディレクトリの `eval/nn.bin` に置いてください。`EvalDir` の
 既定値（`eval`）のまま読み込めます。
 
 ### ヘッダ検証（[`crates/attic-eval/src/loader.rs`](crates/attic-eval/src/loader.rs)）

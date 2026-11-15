@@ -1147,7 +1147,7 @@ impl<'a> QSearch<'a> {
         let side = us.index() as u8;
         // Captured once, as the reference's `ttWriter` is; every write below
         // targets this exact slot.
-        let (found, tt_data, tt_slot) = self.tt.locate(pos_key, side);
+        let (found, tt_data, tt_slot) = self.tt.locate(pos_key, side, |m| pos.to_move(m).is_some());
         // `if constexpr (!ReadTT) ttHit = false;`.
         let tt_hit = found && self.read_tt;
         // `ttData.move = ttHit ? to_move(ttData.move) : Move::none();`. The
@@ -2062,7 +2062,7 @@ impl QSearch<'_> {
             } else {
                 let key = pos.key();
                 let side = pos.side_to_move().index() as u8;
-                let (found, data, _writer) = self.tt.probe(key, side);
+                let (found, data, _writer) = self.tt.probe(key, side, |m| pos.to_move(m).is_some());
                 if !found {
                     break;
                 }
@@ -2116,7 +2116,7 @@ impl QSearch<'_> {
         let undo = pos.do_move(pv0);
         let key = pos.key();
         let side = pos.side_to_move().index() as u8;
-        let (found, data, _writer) = self.tt.probe(key, side);
+        let (found, data, _writer) = self.tt.probe(key, side, |m| pos.to_move(m).is_some());
         if found {
             // Push the child TT move only if it is playable here.
             if let Some(m) = pos.to_move(data.move16)
@@ -2420,7 +2420,8 @@ impl QSearch<'_> {
         let side = us.index() as u8;
         // Captured once, as the reference's `ttWriter` is; every write in this
         // node targets this exact slot.
-        let (tt_hit, tt_data, tt_slot) = self.tt.locate(pos_key, side);
+        let (tt_hit, tt_data, tt_slot) =
+            self.tt.locate(pos_key, side, |m| pos.to_move(m).is_some());
         self.stack[s].tt_hit = tt_hit;
         // At the root the current PV line's move is treated as the TT move
         // whatever the probe returned, while `tt_data`'s other fields are still
@@ -2537,13 +2538,10 @@ impl QSearch<'_> {
                 unadjusted_static_eval = static_eval;
                 eval = static_eval;
             } else if tt_hit {
-                unadjusted_static_eval = tt_data.eval;
-                if !is_valid(unadjusted_static_eval) {
-                    unadjusted_static_eval = self.static_eval(pos);
-                } else if pv_node {
-                    // USE_CLASSIC_EVAL re-eval on PV nodes.
-                    unadjusted_static_eval = self.static_eval(pos);
-                }
+                // The reference's NNUE build without lazy evaluation re-evaluates
+                // on every hit, never trusting the stored eval, which can belong
+                // to another position under a tag collision.
+                unadjusted_static_eval = self.static_eval(pos);
                 let corrected = to_corrected_static_eval(unadjusted_static_eval, correction_value);
                 static_eval = corrected;
                 eval = if is_valid(tt_value) && bound_matches(tt_data.bound, tt_value > corrected) {
@@ -3433,12 +3431,14 @@ mod tests {
         let key = p.key();
         let side = p.side_to_move().index() as u8;
         let generation = table.generation();
-        let (_f, _d, w) = table.probe(key, side);
+        let (_f, _d, w) = table.probe(key, side, |m| p.to_move(m).is_some());
         w.write(key, value, pv, bound, depth, mv, eval, generation);
     }
 
     fn probe_root(table: &mut TranspositionTable, p: &Position) -> (bool, TTData) {
-        let (f, d, _w) = table.probe(p.key(), p.side_to_move().index() as u8);
+        let (f, d, _w) = table.probe(p.key(), p.side_to_move().index() as u8, |m| {
+            p.to_move(m).is_some()
+        });
         (f, d)
     }
 

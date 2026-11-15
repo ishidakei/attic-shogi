@@ -780,11 +780,10 @@ impl Position {
         // enemy king attacks exactly the squares from which a side-to-move `pt`
         // piece checks that king.
         //
-        // Slot 9 (KING) holds the actual king ring rather than the reference's
-        // hard `0`. A king move can never be a *legal* check, so the reference
-        // never reaches this slot; the ring keeps the predicates byte-identical
-        // to the scratch-scan oracle on the pseudo-legal-but-illegal king steps
-        // the generators do emit.
+        // The KING slot stays empty, as in the reference. A legal king move can
+        // never give direct check, but the quiet scorer reads this slot for the
+        // pseudo-legal king steps next to the enemy king the generators do emit,
+        // and its gives-check bonus reorders the partially sorted quiets.
         let occ = board.occupied();
         let mut check_squares = [Bitboard::EMPTY; CHECK_PATTERN_COUNT];
         if let Some(eks) = enemy_king {
@@ -814,7 +813,6 @@ impl Position {
                 bishop | king_ring;
             check_squares[check_pattern(Piece::promoted(PieceKind::Rook, enemy).unwrap())] =
                 rook | king_ring;
-            check_squares[check_pattern(Piece::new(PieceKind::King, enemy))] = king_ring;
         }
 
         // `slider_blockers(c)` returns `(blockersForKing[c], pinners[~c])`, so
