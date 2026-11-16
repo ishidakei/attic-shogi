@@ -1159,11 +1159,11 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         let multi_pv = (self.options.spin("MultiPV").max(1)) as usize;
 
         // The reference consults `get_best_thread` only for
-        // `MultiPV == 1 && !limits.depth && !limits.mate`, so a fixed-depth
-        // result stays reproducible, MultiPV shows every line, and a mate proof
-        // stays on the main worker's own line.
+        // `!limits.depth && !limits.mate`, whatever the MultiPV, so a
+        // fixed-depth result stays reproducible and a mate proof stays on the
+        // main worker's own line.
         let mate_mode = limits.mate.is_some();
-        let use_voting = limits.depth.is_none() && multi_pv == 1 && !mate_mode;
+        let use_voting = limits.depth.is_none() && !mate_mode;
 
         // A zero interval never suppresses, so every iteration prints.
         let consideration_mode = self.options.check("ConsiderationMode");
@@ -2523,7 +2523,6 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
                 score: r.best.score,
                 pv0: r.best.pv[0],
                 pv_len: r.best.pv.len(),
-                completed_depth: r.completed_depth,
                 inexact: r.best.is_inexact(),
             })
             .collect();

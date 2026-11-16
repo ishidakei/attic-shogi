@@ -1,5 +1,5 @@
 //! Session tests for the MultiPV loop, the `PvInterval` throttle,
-//! `ConsiderationMode`, and the voting-off-under-MultiPV path.
+//! `ConsiderationMode`, and the multi-thread MultiPV paths.
 //!
 //! Each test waits for the `bestmove` before quitting: `quit` sets the stop
 //! flag, which would abort a MultiPV search mid-iteration. Assertions that
@@ -225,7 +225,7 @@ fn multipv_single_legal_move_works() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn threads2_multipv2_completes_with_both_lines_and_a_legal_bestmove() {
-    // Voting is off under MultiPV > 1 (the reference `MultiPV == 1` guard).
+    // A fixed depth keeps the vote off.
     let dir = TempDir::new("threads2-multipv2");
     write_synthetic_nn_bin(dir.path());
     let e = dir.path().to_str().unwrap();
@@ -239,6 +239,42 @@ fn threads2_multipv2_completes_with_both_lines_and_a_legal_bestmove() {
         ],
         "position startpos",
         "go depth 3",
+    );
+
+    assert!(
+        out.lines().any(|l| multipv_of(l) == Some(1)),
+        "must emit a multipv 1 line in:\n{out}"
+    );
+    assert!(
+        out.lines().any(|l| multipv_of(l) == Some(2)),
+        "must emit a multipv 2 line in:\n{out}"
+    );
+    let bms = bestmove_lines(&out);
+    assert_eq!(bms.len(), 1, "one bestmove in:\n{out}");
+    let start = parse(STARTPOS);
+    let tok = bms[0].split_whitespace().next().unwrap();
+    let mv = parse_usi_move(tok, &start).expect("well-formed USI move");
+    assert!(legal(&start).contains(&mv), "{tok} is not a legal move");
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn threads2_multipv2_voted_search_reports_both_lines_and_a_legal_bestmove() {
+    // Without a depth limit the thread vote runs under MultiPV > 1 too, and the
+    // final output carries the chosen worker's lines.
+    let dir = TempDir::new("threads2-multipv2-vote");
+    write_synthetic_nn_bin(dir.path());
+    let e = dir.path().to_str().unwrap();
+
+    let out = run_session(
+        e,
+        2,
+        &[
+            "setoption name MultiPV value 2",
+            "setoption name PvInterval value 0",
+        ],
+        "position startpos",
+        "go nodes 20000",
     );
 
     assert!(
