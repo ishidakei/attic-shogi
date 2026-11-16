@@ -7,7 +7,7 @@
 //! first-search move ordering is a pure function of them and the static terms —
 //! which is what makes the depth-1 node counts reproducible.
 //!
-//! `pawnHistory` and `correctionHistory` do not live here: they are shared
+//! `pawnHistory`, `correctionHistory` and `continuationHistory` are shared
 //! between the worker threads of one NUMA node, so they sit in
 //! [`SharedHistories`] with atomic entries. At a thread count of 1 that type is
 //! byte-identical to a per-worker copy, so single-thread node counts are
@@ -206,11 +206,6 @@ impl PieceToHistory {
         self.table.iter_mut().for_each(|e| *e = v);
     }
 
-    /// Overwrite this plane's entries from `src`, a `PIECE_NB * SQ_NB` slice.
-    fn copy_from_slice(&mut self, src: &[i16]) {
-        self.table.copy_from_slice(src);
-    }
-
     fn index(pc: Piece, to: Square) -> usize {
         piece_code(pc) * SQ_NB + to.index() as usize
     }
@@ -292,10 +287,11 @@ impl CorrChannel {
     }
 }
 
-/// Reference `SharedHistories::clear()` init values: correction entries `-5`,
-/// pawn entries `-1238`.
+/// Reference `clear()` init values of the shared tables: correction entries
+/// `-5`, pawn entries `-1238`, continuation entries `-523`.
 const CORRECTION_INIT: i16 = -5;
 const PAWN_INIT: i16 = -1238;
+const CONTINUATION_INIT: i16 = -523;
 
 /// [`apply_gravity`] on an atomic entry: a plain relaxed load-modify-store
 /// rather than a CAS loop, because the reference leaves its read-modify-write
@@ -317,10 +313,11 @@ const CORR_SLOT_LEN: usize = Color::COUNT * CorrChannel::COUNT;
 /// Number of `i16` entries a pawn-history slot holds (`[pc][to]`).
 const PAWN_SLOT_LEN: usize = PIECE_NB * SQ_NB;
 
-/// The reference `SharedHistories`: the unified correction history and the pawn
-/// history, **shared between the worker threads of one NUMA node** and sized by
-/// that node's thread count, so that a larger node gets a proportionally larger,
-/// less-contended table.
+/// The reference `SharedHistories`: the unified correction history, the pawn
+/// history and the continuation history, **shared between the worker threads
+/// of one NUMA node**. The correction and pawn tables are sized by that node's
+/// thread count, so that a larger node gets a proportionally larger,
+/// less-contended table; the continuation table has a fixed shape.
 ///
 /// `thread_count` must be a non-zero power of two, which is what makes slot
 /// selection a single mask over the full 64-bit key.
@@ -335,6 +332,8 @@ pub struct SharedHistories {
     pawn: LargePageArray<AtomicI16>,
     /// `pawnHistory.get_size() - 1` — the pawn slot mask.
     pawn_mask: usize,
+    /// `continuationHistory[in_check][capture][pc][to]` planes.
+    continuation: ContinuationHistory,
 }
 
 impl SharedHistories {
@@ -357,10 +356,12 @@ impl SharedHistories {
             corr_mask: corr_slots - 1,
             pawn: LargePageArray::zeroed(pawn_slots * PAWN_SLOT_LEN),
             pawn_mask: pawn_slots - 1,
+            continuation: ContinuationHistory::new(),
         };
-        // Both fills run here, so that every page is first-touched on the node.
+        // Every fill runs here, so that every page is first-touched on the node.
         out.fill_correction(CORRECTION_INIT);
         out.fill_pawn(PAWN_INIT);
+        out.continuation.fill(CONTINUATION_INIT);
         out
     }
 
@@ -377,6 +378,11 @@ impl SharedHistories {
     /// Number of pawn slots.
     pub fn pawn_slots(&self) -> usize {
         self.pawn_mask + 1
+    }
+
+    /// The node's continuation history.
+    pub fn continuation(&self) -> &ContinuationHistory {
+        &self.continuation
     }
 
     /// Overwrite every correction entry with `v`.
@@ -495,13 +501,16 @@ impl ContinuationCorrectionHistory {
     }
 }
 
-/// The worker's `continuationHistory`: planes keyed by
-/// `(in_check, capture, moved_piece, to)`, each a [`PieceToHistory`]. A search
-/// stack cell points at one such plane, and the update primitives write the
-/// current move's `[pc][to]` within it.
+/// The `continuationHistory`: planes keyed by `(in_check, capture,
+/// moved_piece, to)`, each a `[pc][to]` plane. A search stack cell points at
+/// one such plane, and the update primitives write the current move's
+/// `[pc][to]` within it.
+///
+/// It lives in [`SharedHistories`], so its entries are atomic and its methods
+/// take `&self`; updates race exactly as `apply_gravity_atomic` describes.
 pub struct ContinuationHistory {
     /// Flat over `[plane][inner_pc][inner_to]`.
-    table: LargePageArray<i16>,
+    table: LargePageArray<AtomicI16>,
 }
 
 impl Default for ContinuationHistory {
@@ -524,8 +533,10 @@ impl ContinuationHistory {
     }
 
     /// Overwrite every entry with `v`; the reference's init is `-523`.
-    pub fn fill(&mut self, v: i16) {
-        self.table.iter_mut().for_each(|e| *e = v);
+    pub fn fill(&self, v: i16) {
+        for e in self.table.iter() {
+            e.store(v, Ordering::Relaxed);
+        }
     }
 
     /// The plane index selected by `(in_check, capture, pc, to)`.
@@ -541,22 +552,16 @@ impl ContinuationHistory {
 
     /// The inner `[pc][to]` value in `plane`.
     pub fn get_at(&self, plane: usize, pc: Piece, to: Square) -> i32 {
-        self.table[Self::cell(plane, pc, to)] as i32
+        self.table[Self::cell(plane, pc, to)].load(Ordering::Relaxed) as i32
     }
 
     /// Gravity-update the inner `[pc][to]` entry in `plane`.
-    pub fn update_at(&mut self, plane: usize, pc: Piece, to: Square, bonus: i32) {
-        let i = Self::cell(plane, pc, to);
-        self.table[i] = apply_gravity(self.table[i], bonus, CONTINUATION_HISTORY_D);
-    }
-
-    /// Copy `plane` out into a standalone [`PieceToHistory`], which is the form
-    /// [`crate::MovePicker`] reads continuation planes in.
-    pub fn clone_plane(&self, plane: usize) -> PieceToHistory {
-        let mut out = PieceToHistory::new();
-        let base = plane * Self::PLANE_LEN;
-        out.copy_from_slice(&self.table[base..base + Self::PLANE_LEN]);
-        out
+    pub fn update_at(&self, plane: usize, pc: Piece, to: Square, bonus: i32) {
+        apply_gravity_atomic(
+            &self.table[Self::cell(plane, pc, to)],
+            bonus,
+            CONTINUATION_HISTORY_D,
+        );
     }
 }
 
@@ -627,13 +632,17 @@ mod shared_tests {
         let _ = SharedHistories::new(0);
     }
 
-    /// Init values: pawn `-1238`, correction `-5`, across distinct slots.
+    /// Init values: pawn `-1238`, correction `-5`, continuation `-523`, across
+    /// distinct slots.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn init_values() {
         let sh = SharedHistories::new(1);
         assert_eq!(sh.pawn_get(0, bp(), to()), -1238);
         assert_eq!(sh.pawn_get(0xFFFF, bp(), to()), -1238);
+        let last_plane = ContinuationHistory::plane_index(true, true, bp(), to());
+        assert_eq!(sh.continuation().get_at(0, bp(), to()), -523);
+        assert_eq!(sh.continuation().get_at(last_plane, bp(), to()), -523);
         for &color in &[Color::Black, Color::White] {
             for &ch in &CHANNELS {
                 assert_eq!(sh.correction_get(0, color, ch), -5);
@@ -704,6 +713,30 @@ mod shared_tests {
         );
     }
 
+    /// Two threads racing the unguarded load-modify-store on one entry are free
+    /// of undefined behaviour (miri's race detector checks this; the full
+    /// tables are too large for it), and the entry stays within `[-D, D]`.
+    #[test]
+    fn racing_gravity_updates_are_data_race_free() {
+        let cell = Arc::new(AtomicI16::new(-523));
+        let handles: Vec<_> = (0..2)
+            .map(|t| {
+                let cell = Arc::clone(&cell);
+                std::thread::spawn(move || {
+                    for i in 0..50i32 {
+                        let bonus = if (i + t) % 2 == 0 { 9000 } else { -7000 };
+                        apply_gravity_atomic(&cell, bonus, CONTINUATION_HISTORY_D);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("update thread must not panic");
+        }
+        let v = cell.load(Ordering::Relaxed) as i32;
+        assert!(v.abs() <= CONTINUATION_HISTORY_D, "value {v} exceeds D");
+    }
+
     /// Atomicity smoke: two threads hammering the same entry with `<<` terminates
     /// and leaves a value within `[-D, D]` (the reference accepts lost updates but
     /// the gravity bound always holds —).
@@ -720,6 +753,7 @@ mod shared_tests {
                         let bonus = if (i + t) % 2 == 0 { 5000 } else { -5000 };
                         sh.pawn_update(key, bp(), to(), bonus);
                         sh.correction_update(key, Color::White, CorrChannel::Minor, bonus);
+                        sh.continuation().update_at(7, bp(), to(), bonus);
                     }
                 })
             })
@@ -733,6 +767,11 @@ mod shared_tests {
         assert!(
             cv.abs() <= CORRECTION_HISTORY_D,
             "correction value {cv} exceeds D"
+        );
+        let nv = sh.continuation().get_at(7, bp(), to());
+        assert!(
+            nv.abs() <= CONTINUATION_HISTORY_D,
+            "continuation value {nv} exceeds D"
         );
     }
 }

@@ -2334,13 +2334,13 @@ impl QSearch<'_> {
         } else {
             (2252 * self.histories.main.get(us, mv)
                 + 1126
-                    * self.histories.continuation.get_at(
+                    * self.histories.continuation().get_at(
                         self.stack[s - 1].cont_hist,
                         moved_piece,
                         mv.to_sq(),
                     )
                 + 1093
-                    * self.histories.continuation.get_at(
+                    * self.histories.continuation().get_at(
                         self.stack[s - 2].cont_hist,
                         moved_piece,
                         mv.to_sq(),
@@ -3055,11 +3055,11 @@ impl QSearch<'_> {
                         continue;
                     }
                 } else if !self.stack[s].follow_pv || !pv_node {
-                    let mut history = self.histories.continuation.get_at(
+                    let mut history = self.histories.continuation().get_at(
                         self.stack[s - 1].cont_hist,
                         moved_piece,
                         mv.to_sq(),
-                    ) + self.histories.continuation.get_at(
+                    ) + self.histories.continuation().get_at(
                         self.stack[s - 2].cont_hist,
                         moved_piece,
                         mv.to_sq(),

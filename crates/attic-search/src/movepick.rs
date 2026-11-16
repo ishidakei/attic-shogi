@@ -170,7 +170,7 @@ fn score_evasion(pos: &Position, m: Move, hist: &WorkerHistories, cont_plane0: u
         // Indexed by the after-promotion piece, as in [`score_capture`]; for a
         // drop that is the dropped piece in the side-to-move's colour.
         let pc = m.moved_piece_after();
-        hist.main.get(us, m) + hist.continuation.get_at(cont_plane0, pc, to)
+        hist.main.get(us, m) + hist.continuation().get_at(cont_plane0, pc, to)
     }
 }
 
@@ -191,11 +191,11 @@ fn score_quiet(
 
     let mut value = 2 * hist.main.get(us, m);
     value += 2 * hist.shared.pawn_get(pos.pawn_key(), pc, to);
-    value += hist.continuation.get_at(cont_planes[0], pc, to);
-    value += hist.continuation.get_at(cont_planes[1], pc, to);
-    value += hist.continuation.get_at(cont_planes[2], pc, to);
-    value += hist.continuation.get_at(cont_planes[3], pc, to);
-    value += hist.continuation.get_at(cont_planes[5], pc, to);
+    value += hist.continuation().get_at(cont_planes[0], pc, to);
+    value += hist.continuation().get_at(cont_planes[1], pc, to);
+    value += hist.continuation().get_at(cont_planes[2], pc, to);
+    value += hist.continuation().get_at(cont_planes[3], pc, to);
+    value += hist.continuation().get_at(cont_planes[5], pc, to);
 
     // A bonus for a direct check that is not a losing sacrifice, read off the
     // `checkSquares` snapshot taken once at `QUIET_INIT` entry.
@@ -1520,7 +1520,7 @@ mod tests {
             Square::new(4, 4).unwrap(),
         );
         let cont_planes = [plane, 0, 0, 0, 0, 0];
-        let mut h = init_histories();
+        let h = init_histories();
 
         let q_target = Move::make(
             Square::new(4, 4).unwrap(),
@@ -1532,7 +1532,7 @@ mod tests {
         let mut mp = MovePicker::new_main_search(&p, None, 6, 0, cont_planes, false);
         // No captures in this position, so the first next_move enters QUIET_INIT.
         // Bump the plane cell for q_target before that first call.
-        h.continuation.update_at(
+        h.continuation().update_at(
             plane,
             q_target.moved_piece_after(),
             q_target.to_sq(),
@@ -1647,7 +1647,7 @@ mod tests {
         // A single continuation fill drives all five read planes (SENTINEL_PLANES
         // point every read at plane 0). Large-magnitude values push quiets across
         // the `-14000` threshold for the negative seeds.
-        h.continuation.fill(-1700 * seed);
+        h.continuation().fill(-1700 * seed);
         h
     }
 

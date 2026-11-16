@@ -20,11 +20,13 @@ use crate::history::{
 /// Reference `clear()` init constants.
 const MAIN_HISTORY_INIT: i16 = -5;
 const CAPTURE_HISTORY_INIT: i16 = -678;
-const CONTINUATION_INIT: i16 = -523;
 const CONTINUATION_CORRECTION_INIT: i16 = 6;
-/// The pawn-history init is applied by [`SharedHistories::new`] instead.
+/// The pawn-history and continuation-history inits are applied by
+/// [`SharedHistories::new`] instead.
 #[cfg(test)]
 const PAWN_HISTORY_INIT: i16 = -1238;
+#[cfg(test)]
+const CONTINUATION_INIT: i16 = -523;
 
 /// Capacity of a searched-move list (`SEARCHEDLIST_CAPACITY`).
 pub const SEARCHED_LIST_CAPACITY: usize = 32;
@@ -68,9 +70,9 @@ impl SearchedList {
 }
 
 /// The full set of history tables an update touches: the per-worker ones, plus
-/// a handle to the node-shared correction and pawn tables. At a thread count of
-/// 1 the shared ones are byte-identical to per-worker copies, so single-thread
-/// search is unaffected by the sharing.
+/// a handle to the node-shared correction, pawn and continuation tables. At a
+/// thread count of 1 the shared ones are byte-identical to per-worker copies,
+/// so single-thread search is unaffected by the sharing.
 pub struct WorkerHistories {
     /// `mainHistory[us][move.raw16]` (init `0`).
     pub main: ButterflyHistory,
@@ -79,14 +81,13 @@ pub struct WorkerHistories {
     pub low_ply: LowPlyHistory,
     /// `captureHistory[pc][to][captured type]` (init `-678`).
     pub capture: CapturePieceToHistory,
-    /// `continuationHistory[in_check][capture][pc][to]` planes (init `-523`).
-    pub continuation: ContinuationHistory,
     /// `continuationCorrectionHistory[pc][to]` planes (init `6`).
     pub continuation_correction: ContinuationCorrectionHistory,
     /// `ttMoveHistory` — a single gravity entry (init `0`).
     pub tt_move: TtMoveHistory,
-    /// The node-shared `correctionHistory` and `pawnHistory`, so that an
-    /// interior update on one worker is visible to every worker on the node.
+    /// The node-shared `correctionHistory`, `pawnHistory` and
+    /// `continuationHistory`, so that an interior update on one worker is
+    /// visible to every worker on the node.
     pub shared: Arc<SharedHistories>,
 }
 
@@ -111,15 +112,12 @@ impl WorkerHistories {
         main.fill(MAIN_HISTORY_INIT);
         let mut capture = CapturePieceToHistory::new();
         capture.fill(CAPTURE_HISTORY_INIT);
-        let mut continuation = ContinuationHistory::new();
-        continuation.fill(CONTINUATION_INIT);
         let mut continuation_correction = ContinuationCorrectionHistory::new();
         continuation_correction.fill(CONTINUATION_CORRECTION_INIT);
         Self {
             main,
             low_ply: LowPlyHistory::new(),
             capture,
-            continuation,
             continuation_correction,
             tt_move: TtMoveHistory::new(),
             shared,
@@ -131,6 +129,13 @@ impl WorkerHistories {
     /// per-worker tables having to survive it.
     pub fn set_shared(&mut self, shared: Arc<SharedHistories>) {
         self.shared = shared;
+    }
+
+    /// `continuationHistory[in_check][capture][pc][to]` planes (init `-523`),
+    /// the node-shared table.
+    #[inline]
+    pub fn continuation(&self) -> &ContinuationHistory {
+        self.shared.continuation()
     }
 }
 
@@ -246,12 +251,12 @@ pub fn update_continuation_histories(
         }
         let prev = &stack[ss - i];
         if prev.current_move.is_ok() {
-            if hist.continuation.get_at(prev.cont_hist, pc, to) > 0 {
+            if hist.continuation().get_at(prev.cont_hist, pc, to) > 0 {
                 positive_count += 1;
             }
             let multiplier = CMHC_MULTIPLIERS[positive_count];
             let value = bonus * weight * multiplier / 65536 + 73 * (i < 2) as i32;
-            hist.continuation.update_at(prev.cont_hist, pc, to, value);
+            hist.continuation().update_at(prev.cont_hist, pc, to, value);
         }
     }
 }
@@ -552,12 +557,12 @@ mod tests {
         );
         // continuationHistory init -523, across distinct planes.
         assert_eq!(
-            hist.continuation.get_at(0, bs, to),
+            hist.continuation().get_at(0, bs, to),
             CONTINUATION_INIT as i32
         );
         let last_plane = ContinuationHistory::plane_index(true, true, bs, to);
         assert_eq!(
-            hist.continuation.get_at(last_plane, bs, to),
+            hist.continuation().get_at(last_plane, bs, to),
             CONTINUATION_INIT as i32
         );
         // correctionHistory init -5 across all four channels and both colors.
@@ -588,6 +593,66 @@ mod tests {
         );
         // ttMoveHistory init 0.
         assert_eq!(hist.tt_move.get(), 0);
+    }
+
+    // ---- node sharing of the continuation history -------------------------
+
+    /// A cell pair whose `(ss-1)` cell has an ok move and points at `plane`.
+    fn one_prev_ply_stack(plane: usize) -> Vec<SearchStackCell> {
+        let mut stack = fresh_stack(8);
+        let bp = Piece::new(PieceKind::Pawn, Color::Black);
+        stack[6].current_move =
+            Move::make(Square::new(0, 6).unwrap(), Square::new(0, 5).unwrap(), bp);
+        stack[6].cont_hist = plane;
+        stack
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn continuation_update_is_seen_by_a_worker_of_the_same_node() {
+        let shared = Arc::new(SharedHistories::new(2));
+        let mut a = WorkerHistories::with_shared(Arc::clone(&shared));
+        let b = WorkerHistories::with_shared(shared);
+        let stack = one_prev_ply_stack(9);
+        let pc = Piece::new(PieceKind::Silver, Color::Black);
+        let to = Square::new(3, 3).unwrap();
+
+        update_continuation_histories(&mut a, &stack, 7, pc, to, 1000);
+
+        let after = a.continuation().get_at(9, pc, to);
+        assert_ne!(after, CONTINUATION_INIT as i32);
+        assert_eq!(b.continuation().get_at(9, pc, to), after);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn continuation_update_is_not_seen_by_a_worker_of_another_node() {
+        let mut a = WorkerHistories::with_shared(Arc::new(SharedHistories::new(1)));
+        let b = WorkerHistories::with_shared(Arc::new(SharedHistories::new(1)));
+        let stack = one_prev_ply_stack(9);
+        let pc = Piece::new(PieceKind::Silver, Color::Black);
+        let to = Square::new(3, 3).unwrap();
+
+        update_continuation_histories(&mut a, &stack, 7, pc, to, 1000);
+
+        assert_ne!(a.continuation().get_at(9, pc, to), CONTINUATION_INIT as i32);
+        assert_eq!(b.continuation().get_at(9, pc, to), CONTINUATION_INIT as i32);
+    }
+
+    /// Per-worker tables stay private while the continuation table is shared.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn per_worker_tables_stay_private_on_a_shared_node() {
+        let shared = Arc::new(SharedHistories::new(2));
+        let mut a = WorkerHistories::with_shared(Arc::clone(&shared));
+        let b = WorkerHistories::with_shared(shared);
+        let bp = Piece::new(PieceKind::Pawn, Color::Black);
+        let m = Move::make(Square::new(4, 4).unwrap(), Square::new(4, 3).unwrap(), bp);
+
+        a.main.update(Color::Black, m, 1000);
+
+        assert_ne!(a.main.get(Color::Black, m), MAIN_HISTORY_INIT as i32);
+        assert_eq!(b.main.get(Color::Black, m), MAIN_HISTORY_INIT as i32);
     }
 
     // ---- fixtures for the update-function scenarios -----------------------
@@ -633,7 +698,7 @@ mod tests {
 
         // Pre-values are all the -523 continuation init.
         let pre: Vec<i32> = (1..=6)
-            .map(|i| hist.continuation.get_at(i, pc, to))
+            .map(|i| hist.continuation().get_at(i, pc, to))
             .collect();
 
         update_continuation_histories(&mut hist, &stack, ss, pc, to, bonus);
@@ -642,13 +707,13 @@ mod tests {
             let write = bonus * weight * 94 / 65536 + 73 * (i < 2) as i32;
             let expected = apply_gravity(pre[i - 1] as i16, write, CONTINUATION_HISTORY_D) as i32;
             assert_eq!(
-                hist.continuation.get_at(i, pc, to),
+                hist.continuation().get_at(i, pc, to),
                 expected,
                 "continuation plane {i} mismatch",
             );
         }
         assert_eq!(
-            hist.continuation.get_at(5, pc, to),
+            hist.continuation().get_at(5, pc, to),
             CONTINUATION_INIT as i32,
             "plane 5 is not updated"
         );
@@ -671,10 +736,10 @@ mod tests {
         }
         let pc = Piece::new(PieceKind::Silver, Color::Black);
         let to = Square::new(3, 3).unwrap();
-        hist.continuation.update_at(1, pc, to, 30000);
-        hist.continuation.update_at(3, pc, to, 30000);
+        hist.continuation().update_at(1, pc, to, 30000);
+        hist.continuation().update_at(3, pc, to, 30000);
         let pre: Vec<i32> = (1..=6)
-            .map(|i| hist.continuation.get_at(i, pc, to))
+            .map(|i| hist.continuation().get_at(i, pc, to))
             .collect();
         assert!(pre[0] > 0 && pre[2] > 0 && pre[1] < 0 && pre[3] < 0 && pre[5] < 0);
 
@@ -685,7 +750,7 @@ mod tests {
         {
             let write = bonus * weight * multiplier / 65536 + 73 * (i < 2) as i32;
             assert_eq!(
-                hist.continuation.get_at(i, pc, to),
+                hist.continuation().get_at(i, pc, to),
                 apply_gravity(pre[i - 1] as i16, write, CONTINUATION_HISTORY_D) as i32,
                 "continuation plane {i} mismatch",
             );
@@ -713,16 +778,16 @@ mod tests {
 
         // Planes 1,2 changed; 3..6 remain at the -523 init.
         assert_ne!(
-            hist.continuation.get_at(1, pc, to),
+            hist.continuation().get_at(1, pc, to),
             CONTINUATION_INIT as i32
         );
         assert_ne!(
-            hist.continuation.get_at(2, pc, to),
+            hist.continuation().get_at(2, pc, to),
             CONTINUATION_INIT as i32
         );
         for i in 3..=6 {
             assert_eq!(
-                hist.continuation.get_at(i, pc, to),
+                hist.continuation().get_at(i, pc, to),
                 CONTINUATION_INIT as i32,
                 "plane {i} must be untouched in check",
             );
@@ -747,12 +812,12 @@ mod tests {
         update_continuation_histories(&mut hist, &stack, ss, pc, to, 1000);
 
         assert_ne!(
-            hist.continuation.get_at(1, pc, to),
+            hist.continuation().get_at(1, pc, to),
             CONTINUATION_INIT as i32
         );
         // Plane 0 (the sentinel the other cells point at) is untouched.
         assert_eq!(
-            hist.continuation.get_at(0, pc, to),
+            hist.continuation().get_at(0, pc, to),
             CONTINUATION_INIT as i32
         );
     }
@@ -785,7 +850,7 @@ mod tests {
         let main_pre = hist.main.get(us, mv) as i16;
         let low_pre = hist.low_ply.get(2, mv) as i16;
         let pawn_pre = hist.shared.pawn_get(pk, moved, to) as i16;
-        let cont_pre = hist.continuation.get_at(3, moved, to) as i16;
+        let cont_pre = hist.continuation().get_at(3, moved, to) as i16;
 
         update_quiet_histories(&mut hist, &pos, &stack, ss, mv, bonus);
 
@@ -800,7 +865,7 @@ mod tests {
         // continuation write uses bonus*955/1024 (+73 since i==1) at plane 3.
         let cont_write = bonus * 955 / 1024 * CONTHIST_BONUSES[0].1 * 94 / 65536 + 73;
         assert_eq!(
-            hist.continuation.get_at(3, moved, to),
+            hist.continuation().get_at(3, moved, to),
             apply_gravity(cont_pre, cont_write, CONTINUATION_HISTORY_D) as i32,
         );
         // pawn write: bonus>0 ⇒ *850/1024.
@@ -1041,7 +1106,7 @@ mod tests {
 
         // (ss-1) continuation write: pc=prev_piece, to=prev_sq, plane from
         // (ss-2).cont_hist (=5), i==1 weight 520, multiplier 94, +73.
-        let pre = hist.continuation.get_at(5, prev_piece, prev_sq) as i16;
+        let pre = hist.continuation().get_at(5, prev_piece, prev_sq) as i16;
 
         update_all_stats(
             &mut hist,
@@ -1059,7 +1124,7 @@ mod tests {
 
         let write = -malus * 616 / 1024 * CONTHIST_BONUSES[0].1 * 94 / 65536 + 73;
         assert_eq!(
-            hist.continuation.get_at(5, prev_piece, prev_sq),
+            hist.continuation().get_at(5, prev_piece, prev_sq),
             apply_gravity(pre, write, CONTINUATION_HISTORY_D) as i32,
         );
     }

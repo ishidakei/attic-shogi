@@ -3250,6 +3250,40 @@ mod tests {
         assert_eq!(ws[0].thread_count(), 4);
     }
 
+    /// Workers bound to one node share one continuation history; workers bound
+    /// to different nodes do not.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn build_worker_shared_shares_continuation_history_per_node() {
+        use attic_state::{Color, Piece, PieceKind, Square};
+        let cfg = NumaConfig::from_string("0:1").unwrap();
+        let ws = build_worker_shared(&cfg, &[0, 1, 0, 1], 4);
+        let workers: Vec<WorkerHistories> = ws
+            .iter()
+            .map(|s| WorkerHistories::with_shared(Arc::clone(s)))
+            .collect();
+        let pc = Piece::new(PieceKind::Gold, Color::White);
+        let to = Square::new(2, 5).unwrap();
+        let plane = 17;
+        let init = workers[1].continuation().get_at(plane, pc, to);
+
+        workers[0].continuation().update_at(plane, pc, to, 5000);
+
+        let after = workers[0].continuation().get_at(plane, pc, to);
+        assert_ne!(after, init);
+        assert_eq!(
+            workers[2].continuation().get_at(plane, pc, to),
+            after,
+            "same node: the update is visible"
+        );
+        assert_eq!(
+            workers[1].continuation().get_at(plane, pc, to),
+            init,
+            "other node: the update is not visible"
+        );
+        assert_eq!(workers[3].continuation().get_at(plane, pc, to), init);
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)]
     fn build_worker_shared_unbound_rounds_thread_count_up() {
