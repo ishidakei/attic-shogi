@@ -20,7 +20,7 @@ use crate::bench;
 use crate::engine_options::{OverrideLine, parse_override_line};
 use crate::formatter::Formatter;
 use crate::option_profile::{ENGINE_OPTION_PROFILE_FILE, read_engine_option_profile};
-use crate::options::{OptionStore, OptionValue};
+use crate::options::{OptionError, OptionStore, OptionValue};
 use crate::parser::{Command, GoLimits, MATE_UNLIMITED_MS, PositionSfen, parse_line};
 
 /// The `id name` value. Its version tracks how far upstream YaneuraOu has been
@@ -722,7 +722,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             return self.info_string(&format!("Error : option name not found : {name}"));
         };
 
-        let value_to_store = if self.options.is_string(canonical) && value == "<empty>" {
+        let normalized = if self.options.is_string(canonical) && value == "<empty>" {
             ""
         } else {
             value.as_str()
@@ -730,12 +730,18 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // A fixed option takes no new value: its own value again is a silent
         // no-op, any other is rejected.
         let accepted = if self.options.is_fixed(canonical) {
-            if self.options.value_text(canonical).as_deref() == Some(value_to_store) {
+            if self.options.value_text(canonical) == Some(normalized) {
                 return Ok(());
             }
             false
         } else {
-            self.options.set_value(canonical, value_to_store).is_ok()
+            match self.options.set_value(canonical, &value) {
+                Ok(()) => true,
+                Err(e) => {
+                    self.report_option_rejection(&e)?;
+                    false
+                }
+            }
         };
         if !accepted {
             return self.info_string(&format!(
@@ -832,7 +838,19 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         }
         match self.options.set_value(name, value) {
             Ok(()) => Ok(()),
-            Err(e) => self.info_string(&format!("option {name} rejected: {e}")),
+            Err(OptionError::UnknownOption) => {
+                self.info_string(&format!("option {name} rejected: unknown option"))
+            }
+            Err(e) => self.report_option_rejection(&e),
+        }
+    }
+
+    /// The reference rejects empty, spin and check values silently; only a
+    /// combo miss is reported, by `Option::assign` itself.
+    fn report_option_rejection(&mut self, e: &OptionError) -> io::Result<()> {
+        match e {
+            OptionError::InvalidComboChoice { .. } => self.info_string(&e.to_string()),
+            _ => Ok(()),
         }
     }
 
@@ -2837,10 +2855,32 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn setoption_bad_int_rejected() {
+    fn setoption_rejected_spin_and_check_values_are_silent() {
         assert_eq!(
-            run_with("setoption name USI_Hash value not-a-number\nquit\n"),
-            "info string option USI_Hash rejected: value `not-a-number` is not an integer\n"
+            run_with(
+                "setoption name USI_Hash value not-a-number\n\
+                 setoption name USI_Hash value 0\n\
+                 setoption name USI_Hash value\n\
+                 setoption name USI_OwnBook value TRUE\n\
+                 quit\n"
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn setoption_unlisted_combo_value_prints_the_reference_message() {
+        assert_eq!(
+            run_with(
+                "setoption name EnteringKingRule value tryrule\n\
+                 setoption name EnteringKingRule value Nope\n\
+                 setoption name EnteringKingRule value\n\
+                 quit\n"
+            ),
+            "info string Error! : combo value not found, value = `Nope`, values = CSARule27 \
+             var NoEnteringKing var CSARule24 var CSARule24H var CSARule27 var CSARule27H \
+             var TryRule\n"
         );
     }
 

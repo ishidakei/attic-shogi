@@ -161,6 +161,60 @@ fn accepted_override_is_printed_once_across_isreadys() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
+fn override_in_a_non_canonical_spelling_is_silent_when_re_read() {
+    let dir = TempDir::new("plus");
+    write_synthetic_nn_bin(dir.path());
+    std::fs::write(dir.path().join("eval_options.txt"), "FV_SCALE +24\n").expect("write file");
+    let evaldir = dir.path().to_str().expect("utf-8 temp path");
+
+    let out = drive(&format!(
+        "usi\nsetoption name EvalDir value {evaldir}\nisready\nisready\nquit\n"
+    ));
+
+    // The second `isready` compares the file's text with the text the option
+    // was set with, so `+24` matches itself and nothing is printed for it.
+    assert_eq!(
+        out.matches("info string engine option override. name = FV_SCALE , value = +24\n")
+            .count(),
+        1,
+        "{out}"
+    );
+    assert!(!out.contains("rejected"), "{out}");
+    assert_eq!(out.matches("readyok").count(), 2, "{out}");
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn override_with_an_unlisted_combo_value_prints_the_combo_message_first() {
+    let dir = TempDir::new("combo");
+    write_synthetic_nn_bin(dir.path());
+    std::fs::write(
+        dir.path().join("eval_options.txt"),
+        "EnteringKingRule Nope\nUSI_OwnBook TRUE\n",
+    )
+    .expect("write file");
+    let evaldir = dir.path().to_str().expect("utf-8 temp path");
+
+    let out = drive(&format!(
+        "usi\nsetoption name EvalDir value {evaldir}\nisready\nquit\n"
+    ));
+
+    assert!(
+        out.contains(
+            "info string Error! : combo value not found, value = `Nope`, values = CSARule27 \
+             var NoEnteringKing var CSARule24 var CSARule24H var CSARule27 var CSARule27H \
+             var TryRule\n\
+             info string Error : engine option override rejected. name = EnteringKingRule , \
+             value = Nope\n\
+             info string Error : engine option override rejected. name = USI_OwnBook , \
+             value = TRUE\n"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
 fn rejected_override_is_an_info_string_and_leaves_the_option_settable() {
     let dir = TempDir::new("rejected");
     write_synthetic_nn_bin(dir.path());

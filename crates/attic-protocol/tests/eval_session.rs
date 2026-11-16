@@ -432,6 +432,44 @@ fn entering_king_try_rule_declares_the_king_move() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
+fn entering_king_rule_in_another_case_applies_the_rule() {
+    // The combo accepts `tryrule` and stores it as given; the rule in effect
+    // must still be TryRule, not a fallback to NoEnteringKing.
+    let dir = TempDir::new("ekr-try-lower");
+    write_synthetic_nn_bin(dir.path());
+    let evaldir = dir.path().to_str().expect("utf-8 temp path");
+
+    let session = format!(
+        "usi\n\
+         setoption name Threads value 1\n\
+         setoption name EvalDir value {evaldir}\n\
+         setoption name EnteringKingRule value tryrule\n\
+         isready\n\
+         position sfen {TRYABLE_SFEN}\n\
+         go depth 1\n\
+         quit\n"
+    );
+    let out = drive(&session);
+
+    let bestmoves = bestmove_lines(&out);
+    assert_eq!(bestmoves.len(), 1, "expected one bestmove in:\n{out}");
+    let best = bestmoves[0]
+        .split_whitespace()
+        .next()
+        .expect("bestmove token");
+    assert_eq!(best, "5b5a", "tryrule must play the king move in:\n{out}");
+    assert!(
+        !out.lines().any(|l| l.starts_with("info depth ")),
+        "the try declaration must not run a search in:\n{out}"
+    );
+    assert!(
+        !out.contains("combo value not found"),
+        "tryrule must be accepted in:\n{out}"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
 fn threads4_stop_then_quit_joins_all_workers_and_exits_cleanly() {
     // `drive` returning at all proves the join of every worker did not hang; the
     // bestmove count proves the parallel search resolves to a single reply.

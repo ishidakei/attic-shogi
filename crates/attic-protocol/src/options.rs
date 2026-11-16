@@ -46,22 +46,39 @@ pub enum OptionValue {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionError {
     UnknownOption,
+    /// An empty value for a spin, check or combo option.
+    EmptyValue,
     NotAnInteger(String),
-    OutOfRange { value: i64, min: i64, max: i64 },
+    OutOfRange {
+        value: i64,
+        min: i64,
+        max: i64,
+    },
     NotABool(String),
-    InvalidComboChoice(String),
+    /// `values` is the combo's `default D var A var B …` list after `default`,
+    /// which the reference quotes when it reports the miss.
+    InvalidComboChoice {
+        value: String,
+        values: String,
+    },
 }
 
 impl std::fmt::Display for OptionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OptionError::UnknownOption => write!(f, "unknown option"),
+            OptionError::EmptyValue => write!(f, "empty value"),
             OptionError::NotAnInteger(s) => write!(f, "value `{s}` is not an integer"),
             OptionError::OutOfRange { value, min, max } => {
                 write!(f, "value {value} out of range [{min}, {max}]")
             }
             OptionError::NotABool(s) => write!(f, "value `{s}` is not a boolean"),
-            OptionError::InvalidComboChoice(s) => write!(f, "value `{s}` is not a valid choice"),
+            OptionError::InvalidComboChoice { value, values } => {
+                write!(
+                    f,
+                    "Error! : combo value not found, value = `{value}`, values = {values}"
+                )
+            }
         }
     }
 }
@@ -439,6 +456,10 @@ pub struct OptionStore {
     /// `Threads` upper bound is computed at runtime.
     decls: Vec<OptionDecl>,
     values: BTreeMap<&'static str, OptionValue>,
+    /// Each option's value as the text that was accepted, the reference's
+    /// `currentValue`: a spin set as `+24` keeps that spelling, a combo keeps
+    /// the case it was given in.
+    texts: BTreeMap<&'static str, String>,
     /// Options locked by an override file. A fixed option ignores every later
     /// [`set_value`] silently, as the reference `Option::operator=` does.
     fixed: BTreeSet<&'static str>,
@@ -459,6 +480,7 @@ impl OptionStore {
     pub fn with_book_options(book_options: BookOptionsVersion) -> Self {
         let decls = declarations(book_options);
         let mut values = BTreeMap::new();
+        let mut texts = BTreeMap::new();
         for decl in &decls {
             let default = match decl {
                 OptionDecl::Spin { default, .. } => OptionValue::Spin(*default),
@@ -466,11 +488,13 @@ impl OptionStore {
                 OptionDecl::Check { default, .. } => OptionValue::Check(*default),
                 OptionDecl::Combo { default, .. } => OptionValue::Combo((*default).to_string()),
             };
+            texts.insert(decl.name(), render(&default));
             values.insert(decl.name(), default);
         }
         Self {
             decls,
             values,
+            texts,
             fixed: BTreeSet::new(),
             book_options,
         }
@@ -512,11 +536,12 @@ impl OptionStore {
         if self.fixed.contains(decl.name()) {
             return Ok(());
         }
-        match decl {
+        if value.is_empty() && !matches!(decl, OptionDecl::String { .. }) {
+            return Err(OptionError::EmptyValue);
+        }
+        let (parsed, text) = match decl {
             OptionDecl::Spin { min, max, .. } => {
-                let parsed: i64 = value
-                    .parse()
-                    .map_err(|_| OptionError::NotAnInteger(value.to_string()))?;
+                let parsed = parse_spin(value)?;
                 if parsed < *min || parsed > *max {
                     return Err(OptionError::OutOfRange {
                         value: parsed,
@@ -524,24 +549,36 @@ impl OptionStore {
                         max: *max,
                     });
                 }
-                self.values.insert(decl.name(), OptionValue::Spin(parsed));
+                (OptionValue::Spin(parsed), value)
             }
             OptionDecl::String { .. } => {
-                self.values
-                    .insert(decl.name(), OptionValue::String(value.to_string()));
+                let text = if value == "<empty>" { "" } else { value };
+                (OptionValue::String(text.to_string()), text)
             }
-            OptionDecl::Check { .. } => {
-                let parsed = parse_check(value)?;
-                self.values.insert(decl.name(), OptionValue::Check(parsed));
-            }
-            OptionDecl::Combo { choices, .. } => {
-                if !choices.contains(&value) {
-                    return Err(OptionError::InvalidComboChoice(value.to_string()));
+            OptionDecl::Check { .. } => (OptionValue::Check(parse_check(value)?), value),
+            OptionDecl::Combo {
+                default, choices, ..
+            } => {
+                // The reference matches case-insensitively but keeps the value
+                // as given, so a reader comparing exact spellings (the
+                // `EnteringKingRule` mapping, the `no_book` sentinel) does not
+                // recognise `csarule27` or `NO_BOOK`.
+                if !choices.iter().any(|c| c.eq_ignore_ascii_case(value)) {
+                    let mut values = (*default).to_string();
+                    for choice in *choices {
+                        values.push_str(" var ");
+                        values.push_str(choice);
+                    }
+                    return Err(OptionError::InvalidComboChoice {
+                        value: value.to_string(),
+                        values,
+                    });
                 }
-                self.values
-                    .insert(decl.name(), OptionValue::Combo(value.to_string()));
+                (OptionValue::Combo(value.to_string()), value)
             }
-        }
+        };
+        self.values.insert(decl.name(), parsed);
+        self.texts.insert(decl.name(), text.to_string());
         Ok(())
     }
 
@@ -591,14 +628,11 @@ impl OptionStore {
             .any(|d| matches!(d, OptionDecl::String { .. }) && d.name().eq_ignore_ascii_case(name))
     }
 
-    /// The current value of a declared option as USI text, `None` if `name` is
-    /// not declared.
-    pub fn value_text(&self, name: &str) -> Option<String> {
-        Some(match self.get(name)? {
-            OptionValue::Spin(v) => v.to_string(),
-            OptionValue::Check(b) => b.to_string(),
-            OptionValue::String(s) | OptionValue::Combo(s) => s.clone(),
-        })
+    /// The current value of a declared option as the text it was set with,
+    /// `None` if `name` is not declared.
+    pub fn value_text(&self, name: &str) -> Option<&str> {
+        self.get(name)?;
+        self.texts.get(name).map(String::as_str)
     }
 
     /// A declared string/combo's current value (`""` if the name is neither).
@@ -610,13 +644,38 @@ impl OptionStore {
     }
 }
 
-/// Parse a USI `check` value (`true` / `false`, case-insensitive).
+fn render(value: &OptionValue) -> String {
+    match value {
+        OptionValue::Spin(v) => v.to_string(),
+        OptionValue::Check(b) => b.to_string(),
+        OptionValue::String(s) | OptionValue::Combo(s) => s.clone(),
+    }
+}
+
+/// Parse a USI `check` value: exactly `true` or `false`, as the reference
+/// accepts.
 fn parse_check(value: &str) -> Result<bool, OptionError> {
-    match value.trim().to_ascii_lowercase().as_str() {
+    match value {
         "true" => Ok(true),
         "false" => Ok(false),
         _ => Err(OptionError::NotABool(value.to_string())),
     }
+}
+
+/// Parse a spin value as the reference's `strtoll` check does: leading C
+/// whitespace and a sign are allowed, the whole remainder must be decimal
+/// digits, and overflow is a rejection. `strtoll` reads a C string, so the
+/// text ends at the first NUL; a value starting with one converts nothing and
+/// leaves the end pointer on the terminator, which the check reads as `0`.
+fn parse_spin(value: &str) -> Result<i64, OptionError> {
+    let c_str = value.split('\0').next().unwrap_or("");
+    if c_str.is_empty() {
+        return Ok(0);
+    }
+    c_str
+        .trim_start_matches([' ', '\t', '\n', '\x0B', '\x0C', '\r'])
+        .parse()
+        .map_err(|_| OptionError::NotAnInteger(value.to_string()))
 }
 
 impl Default for OptionStore {
@@ -758,29 +817,63 @@ mod tests {
     }
 
     #[test]
-    fn set_check_and_combo() {
+    fn set_check_accepts_only_lowercase_true_and_false() {
         let mut s = OptionStore::new();
         s.set_value("USI_OwnBook", "false").unwrap();
         assert!(!s.check("USI_OwnBook"));
-        s.set_value("USI_OwnBook", "TRUE").unwrap();
+        s.set_value("USI_OwnBook", "true").unwrap();
         assert!(s.check("USI_OwnBook"));
-        assert!(matches!(
-            s.set_value("USI_OwnBook", "maybe"),
-            Err(OptionError::NotABool(_))
-        ));
+        s.set_value("USI_OwnBook", "false").unwrap();
+        for rejected in ["True", "TRUE", "maybe", " true", "true "] {
+            assert_eq!(
+                s.set_value("USI_OwnBook", rejected),
+                Err(OptionError::NotABool(rejected.to_string()))
+            );
+            assert!(!s.check("USI_OwnBook"), "`{rejected}` changed the value");
+        }
+        assert_eq!(s.set_value("USI_OwnBook", ""), Err(OptionError::EmptyValue));
+        assert_eq!(s.value_text("USI_OwnBook"), Some("false"));
+    }
 
+    #[test]
+    fn set_combo_matches_case_insensitively_and_keeps_the_given_spelling() {
+        let mut s = OptionStore::new();
         s.set_value("BookFile", "user_book1.ybb").unwrap();
         assert_eq!(s.text("BookFile"), "user_book1.ybb");
-        assert!(matches!(
-            s.set_value("BookFile", "not_listed.ybb"),
-            Err(OptionError::InvalidComboChoice(_))
-        ));
+
+        s.set_value("BookFile", "USER_BOOK2.YBB").unwrap();
+        assert_eq!(s.text("BookFile"), "USER_BOOK2.YBB");
+        assert_eq!(s.value_text("BookFile"), Some("USER_BOOK2.YBB"));
+
+        s.set_value("EnteringKingRule", "tryrule").unwrap();
+        assert_eq!(s.text("EnteringKingRule"), "tryrule");
+    }
+
+    #[test]
+    fn set_combo_rejects_an_unlisted_value_with_the_reference_message() {
+        let mut s = OptionStore::new();
+        s.set_value("BookFile", "user_book1.ybb").unwrap();
+        let err = s.set_value("BookFile", "not_listed.ybb").unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Error! : combo value not found, value = `not_listed.ybb`, values = no_book \
+             var no_book var standard_book.ybb var yaneura_book1.ybb var yaneura_book2.ybb \
+             var yaneura_book3.ybb var yaneura_book4.ybb var user_book1.ybb var user_book2.ybb \
+             var user_book3.ybb var book.ybb"
+        );
         // The reference's `.db` spellings are not offered, so they are rejected
         // like any other unlisted value and the prior value stands.
         assert!(matches!(
             s.set_value("BookFile", "user_book1.db"),
-            Err(OptionError::InvalidComboChoice(_))
+            Err(OptionError::InvalidComboChoice { .. })
         ));
+        // `var` separates the choices; it is not one.
+        assert!(matches!(
+            s.set_value("BookFile", "var"),
+            Err(OptionError::InvalidComboChoice { .. })
+        ));
+        // An empty value is turned away before the choice list is consulted.
+        assert_eq!(s.set_value("BookFile", ""), Err(OptionError::EmptyValue));
         assert_eq!(s.text("BookFile"), "user_book1.ybb");
     }
 
@@ -826,8 +919,50 @@ mod tests {
     #[test]
     fn set_spin_type_mismatch_rejects() {
         let mut s = OptionStore::new();
-        let err = s.set_value("USI_Hash", "not-a-number").unwrap_err();
-        assert!(matches!(err, OptionError::NotAnInteger(_)));
+        for rejected in [
+            "not-a-number",
+            "1.5",
+            "24x",
+            "24 ",
+            "0x10",
+            "+",
+            "  ",
+            "+-1",
+            "99999999999999999999",
+        ] {
+            let err = s.set_value("USI_Hash", rejected).unwrap_err();
+            assert!(
+                matches!(err, OptionError::NotAnInteger(_)),
+                "`{rejected}`: {err:?}"
+            );
+        }
+        assert_eq!(s.set_value("USI_Hash", ""), Err(OptionError::EmptyValue));
+        assert_eq!(s.spin("USI_Hash"), 1024);
+    }
+
+    #[test]
+    fn set_spin_reads_numbers_as_strtoll_and_keeps_the_given_text() {
+        let mut s = OptionStore::new();
+        for (text, value) in [("+24", 24), (" 25", 25), ("\t\x0B26", 26), ("-0", 0)] {
+            s.set_value("BookMoves", text).unwrap();
+            assert_eq!(s.spin("BookMoves"), value);
+            assert_eq!(s.value_text("BookMoves"), Some(text));
+        }
+        // The value ends at the first NUL, as a C string does.
+        s.set_value("BookMoves", "27\0junk").unwrap();
+        assert_eq!(s.spin("BookMoves"), 27);
+        s.set_value("BookMoves", "\0").unwrap();
+        assert_eq!(s.spin("BookMoves"), 0);
+    }
+
+    #[test]
+    fn set_string_reads_the_empty_marker_as_empty() {
+        let mut s = OptionStore::new();
+        s.set_value("BookDir", "<empty>").unwrap();
+        assert_eq!(s.text("BookDir"), "");
+        assert_eq!(s.value_text("BookDir"), Some(""));
+        s.set_value("BookDir", "").unwrap();
+        assert_eq!(s.text("BookDir"), "");
     }
 
     #[test]
@@ -854,9 +989,10 @@ mod tests {
     #[test]
     fn value_text_renders_each_type() {
         let s = OptionStore::new();
-        assert_eq!(s.value_text("FV_SCALE").as_deref(), Some("16"));
-        assert_eq!(s.value_text("USI_Ponder").as_deref(), Some("false"));
-        assert_eq!(s.value_text("EvalDir").as_deref(), Some("eval"));
+        assert_eq!(s.value_text("FV_SCALE"), Some("16"));
+        assert_eq!(s.value_text("USI_Ponder"), Some("false"));
+        assert_eq!(s.value_text("EvalDir"), Some("eval"));
+        assert_eq!(s.value_text("EnteringKingRule"), Some("CSARule27"));
         assert_eq!(s.value_text("nope"), None);
     }
 

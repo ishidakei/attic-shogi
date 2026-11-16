@@ -294,18 +294,30 @@ impl EnteringKingRule {
         "TryRule",
     ];
 
-    /// Map an option string to its rule. An unrecognised string falls back to
-    /// [`EnteringKingRule::None`], as the reference's post-assert return does.
+    /// Map an option string to its rule, ignoring ASCII case.
+    ///
+    /// The combo option accepts a choice in any case and stores it as given, so
+    /// `tryrule` must select [`EnteringKingRule::Try`]. The reference maps the
+    /// stored text case-sensitively and crashes on such a value; this port
+    /// applies the rule instead.
+    ///
+    /// The option never stores a string outside [`Self::STRINGS`], so only a
+    /// direct caller passing some other string reaches the fallback to
+    /// [`EnteringKingRule::None`].
     pub fn from_option(s: &str) -> Self {
-        match s {
-            "NoEnteringKing" => Self::None,
-            "CSARule24" => Self::Point24,
-            "CSARule24H" => Self::Point24H,
-            "CSARule27" => Self::Point27,
-            "CSARule27H" => Self::Point27H,
-            "TryRule" => Self::Try,
-            _ => Self::None,
-        }
+        const RULES: [EnteringKingRule; 6] = [
+            EnteringKingRule::None,
+            EnteringKingRule::Point24,
+            EnteringKingRule::Point24H,
+            EnteringKingRule::Point27,
+            EnteringKingRule::Point27H,
+            EnteringKingRule::Try,
+        ];
+        Self::STRINGS
+            .iter()
+            .zip(RULES)
+            .find(|(name, _)| name.eq_ignore_ascii_case(s))
+            .map_or(Self::None, |(_, rule)| rule)
     }
 }
 
@@ -759,6 +771,28 @@ mod tests {
         assert_eq!(
             entering_king_points(EnteringKingRule::Point24H, &full),
             [31, 31]
+        );
+    }
+
+    #[test]
+    fn from_option_maps_every_choice_in_any_case() {
+        let cases = [
+            ("noenteringking", EnteringKingRule::None),
+            ("csarule24", EnteringKingRule::Point24),
+            ("CSARULE24H", EnteringKingRule::Point24H),
+            ("csaRule27", EnteringKingRule::Point27),
+            ("csarule27h", EnteringKingRule::Point27H),
+            ("tryrule", EnteringKingRule::Try),
+        ];
+        for (text, rule) in cases {
+            assert_eq!(EnteringKingRule::from_option(text), rule, "{text}");
+        }
+        for (text, rule) in EnteringKingRule::STRINGS.iter().zip(cases.map(|c| c.1)) {
+            assert_eq!(EnteringKingRule::from_option(text), rule, "{text}");
+        }
+        assert_eq!(
+            EnteringKingRule::from_option("Nope"),
+            EnteringKingRule::None
         );
     }
 
