@@ -226,17 +226,6 @@ impl TTEntry {
         let depth8 = self.depth8.load(REL);
         self.depth8.store(depth8.saturating_sub(penalty), REL);
     }
-
-    /// Zero every field. Takes `&mut self`, so the writes are plain stores
-    /// under the exclusivity contract rather than atomic ops.
-    #[inline]
-    fn reset(&mut self) {
-        *self.depth8.get_mut() = 0;
-        *self.gen_bound8.get_mut() = 0;
-        *self.move16.get_mut() = 0;
-        *self.value16.get_mut() = 0;
-        *self.eval16.get_mut() = 0;
-    }
 }
 
 /// A cluster: the [`KEY_BITS`]-bit tags of its [`CLUSTER_SIZE`] entries packed
@@ -341,7 +330,7 @@ struct ClusterArray {
     /// Number of live clusters (`clusterCount`).
     len: usize,
     /// The exact [`Layout`] the block was allocated with, replayed verbatim to
-    /// [`dealloc`] on drop.
+    /// [`large_page::free_large`] on drop.
     layout: Layout,
 }
 
@@ -375,7 +364,7 @@ impl ClusterArray {
         let (raw, layout) = large_page::alloc_zeroed_large(bytes);
 
         // An all-zero bit pattern is a valid, unoccupied `Cluster`, so the
-        // zeroed block stands in for the reference's post-resize `clear()`.
+        // fresh block is an empty table before any of its pages is written.
         ClusterArray {
             ptr: raw.cast(),
             len: cluster_count,
@@ -403,11 +392,12 @@ impl Deref for ClusterArray {
 
     #[inline]
     fn deref(&self) -> &[Cluster] {
-        // SAFETY: for `len > 0`, `ptr` addresses `len` contiguous, initialised
-        // (`alloc_zeroed`) `Cluster`s within one allocation. For `len == 0` this
-        // yields an empty slice, for which `from_raw_parts` accepts any aligned
-        // non-null pointer (`NonNull::dangling` is suitably aligned). The borrow
-        // is tied to `&self`, so no `&mut` alias can coexist.
+        // SAFETY: for `len > 0`, `ptr` addresses `len` contiguous `Cluster`s
+        // within one allocation, zero-initialised by `alloc_zeroed_large`. For
+        // `len == 0` this yields an empty slice, for which `from_raw_parts`
+        // accepts any aligned non-null pointer (`NonNull::dangling` is suitably
+        // aligned). The borrow is tied to `&self`, so no `&mut` alias can
+        // coexist.
         unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
@@ -418,6 +408,41 @@ impl DerefMut for ClusterArray {
         // SAFETY: as `deref`, but the `&mut self` borrow guarantees exclusivity,
         // so handing out `&mut [Cluster]` introduces no aliasing.
         unsafe { slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
+    }
+}
+
+/// The bytes of a [`ClusterArray`], handed to the threads of
+/// [`TranspositionTable::clear_with_threads`]. The raw pointer keeps the
+/// allocation's own provenance, so the threads write through no reference.
+struct TableBytes {
+    base: NonNull<u8>,
+    len: usize,
+}
+
+// SAFETY: a `TableBytes` is only built from a `&mut TranspositionTable`, and its
+// users write disjoint ranges while that borrow lasts.
+unsafe impl Send for TableBytes {}
+unsafe impl Sync for TableBytes {}
+
+impl TableBytes {
+    /// Zero the `i`-th of `parts` equal byte ranges, the last taking the
+    /// remainder.
+    ///
+    /// # Safety
+    ///
+    /// Nothing else may access the range while this runs.
+    unsafe fn zero_part(&self, i: usize, parts: usize) {
+        let stride = self.len / parts;
+        let start = stride * i;
+        let len = if i + 1 == parts {
+            self.len - start
+        } else {
+            stride
+        };
+        // SAFETY: `start + len <= self.len`, which lies within the allocation
+        // (or is zero for an unsized table, whose dangling base is aligned);
+        // exclusivity is the caller's. Every all-zero `Cluster` is valid.
+        unsafe { self.base.as_ptr().add(start).write_bytes(0, len) };
     }
 }
 
@@ -471,46 +496,86 @@ impl TranspositionTable {
         }
     }
 
-    /// Resize the table to `mb_size` MiB and clear it
-    /// (`TranspositionTable::resize`).
+    /// Resize the table to `mb_size` MiB (`TranspositionTable::resize`),
+    /// returning whether it allocated a fresh, empty table.
     ///
     /// `clusterCount = mb_size · 1024 · 1024 / sizeof(Cluster)` is always even,
     /// which is what keeps the side-to-move fold into cluster-index bit 0 in
     /// range. A request yielding the current cluster count leaves the table
     /// untouched, as the reference does.
-    pub fn resize(&mut self, mb_size: usize) {
+    pub fn resize(&mut self, mb_size: usize) -> bool {
         let new_cluster_count = mb_size * 1024 * 1024 / size_of::<Cluster>();
         debug_assert!(new_cluster_count & 1 == 0);
 
         if new_cluster_count == self.table.len() {
-            return;
+            return false;
         }
 
         self.reallocate(mb_size);
+        true
     }
 
     /// Allocate a fresh `mb_size` MiB table even when the cluster count is
     /// unchanged — the reference's forced resize after a NUMA or thread-count
     /// change, so the pages are first-touched under the new layout.
+    ///
+    /// The fresh table reads as empty, but none of its pages is written yet:
+    /// the first [`Self::clear_with_threads`] decides which NUMA node each part
+    /// lands on.
     pub fn reallocate(&mut self, mb_size: usize) {
         let new_cluster_count = mb_size * 1024 * 1024 / size_of::<Cluster>();
         debug_assert!(new_cluster_count & 1 == 0);
         // Drop the old region first so the two never coexist in memory.
         self.table = ClusterArray::empty();
-        // A freshly allocated region is zeroed, so every entry is unoccupied;
-        // this stands in for the reference's post-resize `clear()`.
         self.table = ClusterArray::alloc(new_cluster_count);
     }
 
-    /// Zero every entry and reset the generation
-    /// (`TranspositionTable::clear`).
+    /// Zero every entry and reset the generation on the calling thread.
     pub fn clear(&mut self) {
         *self.generation8.get_mut() = 0;
-        for cluster in self.table.iter_mut() {
-            *cluster.keys.get_mut() = 0;
-            for entry in cluster.entry.iter_mut() {
-                entry.reset();
+        let bytes = self.table_bytes();
+        // SAFETY: `&mut self` excludes every other access to the table, and the
+        // range is the whole of it.
+        unsafe { bytes.zero_part(0, 1) };
+    }
+
+    /// Zero every entry with `thread_count` threads and reset the generation
+    /// (`TranspositionTable::clear`).
+    ///
+    /// Thread `i` first runs `on_thread_start(i)`, where the caller binds it as
+    /// it binds search worker `i`, then zeroes the `i`-th of `thread_count`
+    /// equal byte ranges of the table, the last range also taking the
+    /// remainder. The pages of a freshly allocated table are first written
+    /// here, so each range lands on its thread's NUMA node, and the kernel can
+    /// back it with huge pages from the first fault.
+    pub fn clear_with_threads<F>(&mut self, thread_count: usize, on_thread_start: F)
+    where
+        F: Fn(usize) + Sync,
+    {
+        *self.generation8.get_mut() = 0;
+        if self.table.is_empty() {
+            return;
+        }
+        let thread_count = thread_count.max(1);
+        let bytes = self.table_bytes();
+        std::thread::scope(|s| {
+            for i in 0..thread_count {
+                let bytes = &bytes;
+                let on_thread_start = &on_thread_start;
+                s.spawn(move || {
+                    on_thread_start(i);
+                    // SAFETY: `&mut self` excludes every access to the table
+                    // other than these threads, and their ranges are disjoint.
+                    unsafe { bytes.zero_part(i, thread_count) };
+                });
             }
+        });
+    }
+
+    fn table_bytes(&mut self) -> TableBytes {
+        TableBytes {
+            base: self.table.ptr.cast(),
+            len: self.table.len() * size_of::<Cluster>(),
         }
     }
 

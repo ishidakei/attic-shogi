@@ -3,15 +3,27 @@
 //! tables and the eval-layer network parameters all allocate through it.
 //!
 //! The policy: base alignment [`LARGE_PAGE_ALIGN`], the byte size rounded **up**
-//! to a whole multiple of it, zero-initialised storage, and on Linux a
-//! `madvise(MADV_HUGEPAGE)` hint over the whole rounded region whose return
-//! value is ignored, the hint being best-effort — exactly as the reference
-//! ignores it.
+//! to a whole multiple of it, and zero-initialised storage.
+//!
+//! On Linux the block is a fresh anonymous private mapping with a
+//! `madvise(MADV_HUGEPAGE)` hint over the whole rounded region, and allocation
+//! writes none of it. The order matters: a page written before the hint is
+//! faulted in as a 4 KiB page, and a page lands on the NUMA node of the thread
+//! that first writes it. Leaving the first write to the owner lets the
+//! transposition table's multi-threaded clear decide both. The hint's return
+//! value is ignored, the hint being best-effort, as the reference ignores it.
+//! A fresh anonymous mapping reads as zero, which is what makes the storage
+//! zero-initialised without a write.
+//!
+//! Elsewhere, and under miri (which cannot `mmap` or `madvise`), the block comes
+//! from the global allocator's `alloc_zeroed`.
 //!
 //! Both containers construct their storage zeroed, so the element type must
 //! have a valid all-zero bit pattern; that is what [`Zeroable`] captures.
 
-use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
+use std::alloc::{Layout, handle_alloc_error};
+#[cfg(not(all(target_os = "linux", not(miri))))]
+use std::alloc::{alloc_zeroed, dealloc};
 use std::fmt;
 use std::mem::{align_of, size_of};
 use std::ops::{Deref, DerefMut};
@@ -71,30 +83,88 @@ pub(crate) fn alloc_zeroed_large(min_bytes: usize) -> (NonNull<u8>, Layout) {
     let layout = Layout::from_size_align(size, LARGE_PAGE_ALIGN)
         .expect("large-page allocation size/alignment is valid");
 
-    // SAFETY: `layout` has non-zero size (`min_bytes >= 1` ⇒ `size >=
-    // LARGE_PAGE_ALIGN`). `alloc_zeroed` returns a `LARGE_PAGE_ALIGN`-aligned,
-    // fully zeroed block.
-    let raw = unsafe { alloc_zeroed(layout) };
-    let ptr = match NonNull::new(raw) {
-        Some(p) => p,
+    match alloc_zeroed_block(layout) {
+        Some(ptr) => (ptr, layout),
         None => handle_alloc_error(layout),
+    }
+}
+
+/// Map `layout.size()` bytes on a `layout.align()` boundary: reserve the size
+/// plus one alignment unit with no access, map the read-write region over the
+/// first aligned address inside the reservation, then unmap the slack on both
+/// sides. A plain `mmap` guarantees only page alignment, and a huge page can
+/// back only a range aligned to its own size.
+#[cfg(all(target_os = "linux", not(miri)))]
+fn alloc_zeroed_block(layout: Layout) -> Option<NonNull<u8>> {
+    use libc::{
+        MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_PRIVATE, PROT_NONE, PROT_READ, PROT_WRITE,
+        c_void, madvise, mmap, munmap,
     };
 
-    // miri has no kernel to hint and refuses the `libc` call as an unsupported
-    // foreign function. Dropping the hint there changes no behaviour: its return
-    // value is discarded either way, and it cannot affect the allocation's
-    // contents or address.
-    #[cfg(all(target_os = "linux", not(miri)))]
-    {
-        // SAFETY: `ptr`/`size` describe the live allocation just returned.
-        // `madvise` only adjusts kernel paging policy for that range; it neither
-        // reads nor writes the memory and cannot invalidate it.
-        unsafe {
-            libc::madvise(ptr.as_ptr() as *mut libc::c_void, size, libc::MADV_HUGEPAGE);
-        }
+    let size = layout.size();
+    let align = layout.align();
+    let reservation_size = size.checked_add(align)?;
+
+    // SAFETY: an anonymous mapping at a kernel-chosen address aliases nothing.
+    let reservation = unsafe {
+        mmap(
+            ptr::null_mut(),
+            reservation_size,
+            PROT_NONE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    };
+    if reservation == MAP_FAILED {
+        return None;
     }
 
-    (ptr, layout)
+    let prefix = (reservation as usize).next_multiple_of(align) - reservation as usize;
+    let suffix = reservation_size - prefix - size;
+    // SAFETY: `prefix < align`, so the aligned address and the `size` bytes after
+    // it lie inside the reservation.
+    let aligned = unsafe { reservation.cast::<u8>().add(prefix) }.cast::<c_void>();
+
+    // SAFETY: `MAP_FIXED` replaces part of the reservation this function owns,
+    // and nothing else.
+    let mapped = unsafe {
+        mmap(
+            aligned,
+            size,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+            -1,
+            0,
+        )
+    };
+    if mapped == MAP_FAILED {
+        // SAFETY: the whole reservation is still this function's own mapping.
+        unsafe { munmap(reservation, reservation_size) };
+        return None;
+    }
+
+    // SAFETY: the prefix and the suffix are the unused ends of the reservation,
+    // disjoint from the `size` bytes at `mapped`. `madvise` only adjusts the
+    // kernel's paging policy for that range; it neither reads nor writes it.
+    unsafe {
+        if prefix != 0 {
+            munmap(reservation, prefix);
+        }
+        if suffix != 0 {
+            munmap(mapped.cast::<u8>().add(size).cast(), suffix);
+        }
+        madvise(mapped, size, libc::MADV_HUGEPAGE);
+    }
+
+    NonNull::new(mapped.cast())
+}
+
+#[cfg(not(all(target_os = "linux", not(miri))))]
+fn alloc_zeroed_block(layout: Layout) -> Option<NonNull<u8>> {
+    // SAFETY: `layout` has non-zero size: `rounded_size` of a non-zero request
+    // is at least `LARGE_PAGE_ALIGN`.
+    NonNull::new(unsafe { alloc_zeroed(layout) })
 }
 
 /// Free a block returned by [`alloc_zeroed_large`].
@@ -104,8 +174,22 @@ pub(crate) fn alloc_zeroed_large(min_bytes: usize) -> (NonNull<u8>, Layout) {
 /// `ptr` must have come from [`alloc_zeroed_large`] with exactly `layout`, and
 /// must not be freed more than once.
 pub(crate) unsafe fn free_large(ptr: NonNull<u8>, layout: Layout) {
-    // SAFETY: contract delegated to the caller (see the doc comment).
-    unsafe { dealloc(ptr.as_ptr(), layout) }
+    #[cfg(all(target_os = "linux", not(miri)))]
+    {
+        // SAFETY: by the caller's contract the `layout.size()` bytes at `ptr`
+        // are exactly one live mapping made by `alloc_zeroed_block`.
+        let rc = unsafe { libc::munmap(ptr.as_ptr().cast(), layout.size()) };
+        assert!(
+            rc == 0,
+            "munmap failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    #[cfg(not(all(target_os = "linux", not(miri))))]
+    {
+        // SAFETY: contract delegated to the caller (see the doc comment).
+        unsafe { dealloc(ptr.as_ptr(), layout) }
+    }
 }
 
 /// A large-page-backed, zero-initialised `[T]` — the analogue of `Box<[T]>`,
@@ -191,8 +275,8 @@ impl<T: Zeroable> Deref for LargePageArray<T> {
 
     #[inline]
     fn deref(&self) -> &[T] {
-        // SAFETY: for `len > 0`, `ptr` addresses `len` contiguous, initialised
-        // (`alloc_zeroed`) `T` within one allocation. For `len == 0` this yields
+        // SAFETY: for `len > 0`, `ptr` addresses `len` contiguous `T` within one
+        // allocation, zero-initialised by `alloc_zeroed_large`. For `len == 0` this yields
         // an empty slice, for which `from_raw_parts` accepts any aligned non-null
         // pointer (`NonNull::dangling` is suitably aligned). The borrow is tied
         // to `&self`, so no `&mut` alias can coexist.
@@ -265,9 +349,9 @@ impl<T: Zeroable> Deref for LargePageBox<T> {
 
     #[inline]
     fn deref(&self) -> &T {
-        // SAFETY: `ptr` addresses one initialised (`alloc_zeroed`) `T` within a
-        // live allocation; the borrow is tied to `&self`, so no `&mut` alias can
-        // coexist.
+        // SAFETY: `ptr` addresses one `T` within a live allocation,
+        // zero-initialised by `alloc_zeroed_large`; the borrow is tied to
+        // `&self`, so no `&mut` alias can coexist.
         unsafe { self.ptr.as_ref() }
     }
 }

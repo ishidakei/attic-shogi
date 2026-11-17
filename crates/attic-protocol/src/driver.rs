@@ -242,6 +242,10 @@ pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
     /// at an unchanged size and its pages are first-touched under the new
     /// layout.
     hash_needs_reallocation: bool,
+    /// Whether a search may have written the transposition table since it was
+    /// last cleared, so `usinewgame` can skip clearing a table that `isready`
+    /// has just allocated and cleared.
+    tt_written: bool,
     /// Whether the resource options have been applied once. The reference
     /// creates no workers before that, so until then the allocation line
     /// reports zero threads, although [`Self::pool`] already exists here.
@@ -328,6 +332,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             numa_policy: "auto".to_string(),
             pending_numa: None,
             hash_needs_reallocation: false,
+            tt_written: false,
             resources_applied: false,
             numa_bound,
             worker_shared,
@@ -466,13 +471,34 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         let mb = self.options.spin("USI_Hash").max(1) as usize;
         let tt = Arc::get_mut(&mut self.tt)
             .expect("no search worker holds the TT during a USI_Hash resize");
-        if std::mem::take(&mut self.hash_needs_reallocation) {
+        let allocated = if std::mem::take(&mut self.hash_needs_reallocation) {
             tt.reallocate(mb);
+            true
         } else {
-            tt.resize(mb);
+            tt.resize(mb)
+        };
+        // A fresh table reads as empty, but its pages are not yet written; the
+        // reference's `isready` clear is what first writes them.
+        if allocated {
+            self.clear_tt();
         }
         self.resources_applied = true;
         rebuild
+    }
+
+    /// Clear the transposition table with one thread per search worker, each
+    /// bound as that worker is, as the reference clears it.
+    fn clear_tt(&mut self) {
+        let config = &self.numa_config;
+        let bound = &self.numa_bound;
+        Arc::get_mut(&mut self.tt)
+            .expect("no search worker holds the TT during a clear")
+            .clear_with_threads(self.pool.size(), |i| {
+                if let Some(&node) = bound.get(i) {
+                    config.bind_current_thread_to_numa_node(node);
+                }
+            });
+        self.tt_written = false;
     }
 
     /// Recompute the worker → NUMA-node binding for `requested` workers under
@@ -924,9 +950,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     fn handle_usinewgame(&mut self) {
         self.finish_search_join();
         self.pos = Position::startpos();
-        Arc::get_mut(&mut self.tt)
-            .expect("no search worker holds the TT during usinewgame")
-            .clear();
+        if self.tt_written {
+            self.clear_tt();
+        }
         // `rebuild_pool` below swaps in the freshly built node table set, so
         // cloning the current handle here avoids a throwaway allocation.
         self.histories = Some(WorkerHistories::with_shared(Arc::clone(
@@ -1206,6 +1232,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // The main histories are lent take-and-return and reclaimed on join;
         // helper histories live in the pool threads.
         let tt = Arc::clone(&self.tt);
+        self.tt_written = true;
         let histories = self
             .histories
             .take()

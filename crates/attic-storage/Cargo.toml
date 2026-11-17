@@ -10,8 +10,8 @@ publish = false
 # both, adapts between them.
 [dependencies]
 
-# `madvise(MADV_HUGEPAGE)` over the transposition-table allocation, mirroring
-# the reference's `aligned_large_pages_alloc`. `cfg(unix)`-gated so non-Unix
+# `mmap` / `madvise(MADV_HUGEPAGE)` / `munmap` for the large-page allocations,
+# mirroring the reference's `aligned_large_pages_alloc`. `cfg(unix)`-gated so non-Unix
 # targets never pull it in.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

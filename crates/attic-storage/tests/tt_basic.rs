@@ -455,6 +455,79 @@ fn clear_zeroes_entries_and_generation() {
     assert!(!tt.probe(k, 0, any).0, "clear empties every entry");
 }
 
+/// Fill `tt` (sized at 1 MiB) so that every cluster holds entries and the
+/// generation is non-zero.
+fn fill_every_cluster(tt: &mut TranspositionTable) {
+    tt.new_search();
+    for hi in 0..(1u64 << 15) {
+        for side in 0..2u8 {
+            for frag in 1..=3u16 {
+                store(tt, key(hi, frag), side, 5, true, Bound::Exact, 9, frag, 5);
+            }
+        }
+    }
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn clear_with_threads_empties_every_entry_at_any_thread_count() {
+    let mut empty = TranspositionTable::new();
+    empty.resize(1);
+    let empty_sum = empty.checksum();
+
+    let mut tt = TranspositionTable::new();
+    tt.resize(1);
+    // Thread counts that do and do not divide the table's byte size, and one
+    // whose stride is not a whole number of clusters.
+    for threads in [1usize, 2, 3, 7, 64] {
+        fill_every_cluster(&mut tt);
+        assert_ne!(tt.checksum(), empty_sum);
+
+        tt.clear_with_threads(threads, |_| {});
+        assert_eq!(tt.generation(), 0, "{threads} threads: generation reset");
+        assert_eq!(
+            tt.checksum(),
+            empty_sum,
+            "{threads} threads: every entry cleared",
+        );
+    }
+
+    fill_every_cluster(&mut tt);
+    tt.clear();
+    assert_eq!(tt.checksum(), empty_sum, "single-thread clear");
+}
+
+#[test]
+fn clear_with_threads_starts_each_thread_once() {
+    use std::sync::Mutex;
+
+    let mut tt = TranspositionTable::new();
+    tt.resize(1);
+    let started = Mutex::new(Vec::new());
+    tt.clear_with_threads(5, |i| started.lock().unwrap().push(i));
+    let mut started = started.into_inner().unwrap();
+    started.sort_unstable();
+    assert_eq!(started, vec![0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn clear_with_threads_on_an_unsized_table_is_a_no_op() {
+    let mut tt = TranspositionTable::new();
+    tt.new_search();
+    tt.clear_with_threads(4, |_| {});
+    assert_eq!(tt.cluster_count(), 0);
+    assert_eq!(tt.generation(), 0);
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn resize_reports_whether_it_allocated() {
+    let mut tt = TranspositionTable::new();
+    assert!(tt.resize(1));
+    assert!(!tt.resize(1));
+    assert!(tt.resize(2));
+}
+
 #[test]
 fn new_search_wraps_within_five_bits() {
     let mut tt = TranspositionTable::new();
@@ -581,18 +654,26 @@ fn many_resizes_do_not_leak_or_corrupt() {
 }
 
 /// A best-effort transparent-huge-page uptake diagnostic, reporting the
-/// `AnonHugePages` figure `/proc/self/smaps` gives for the TT's mapping. It
-/// never fails the suite: THP availability is environmental.
+/// `AnonHugePages` figure `/proc/self/smaps` gives for the TT's mapping right
+/// after the allocation and again after a multi-threaded clear has written it.
+/// It never fails the suite: THP availability is environmental.
 #[test]
 #[cfg(target_os = "linux")]
 #[cfg_attr(miri, ignore)]
 fn thp_uptake_diagnostic_over_64mib() {
-    use std::fs;
-
     let mut tt = TranspositionTable::new();
     tt.resize(64); // large enough that the kernel can back it with huge pages
     let base = tt.backing_ptr_addr();
     assert_ne!(base, 0);
+
+    report_anon_huge_pages("after allocation", base);
+    tt.clear_with_threads(2, |_| {});
+    report_anon_huge_pages("after a 2-thread clear", base);
+}
+
+#[cfg(target_os = "linux")]
+fn report_anon_huge_pages(when: &str, base: usize) {
+    use std::fs;
 
     let smaps = match fs::read_to_string("/proc/self/smaps") {
         Ok(s) => s,
@@ -630,8 +711,8 @@ fn thp_uptake_diagnostic_over_64mib() {
 
     match anon_huge_kb {
         Some(kb) => eprintln!(
-            "THP diagnostic: TT region at {base:#x} backed by {kb} kB AnonHugePages \
-             (0 means THP disabled or not yet faulted in)"
+            "THP diagnostic ({when}): TT region at {base:#x} backed by {kb} kB \
+             AnonHugePages (0 means THP disabled or not yet faulted in)"
         ),
         None => eprintln!(
             "THP diagnostic: no AnonHugePages line found for TT region at {base:#x} \
