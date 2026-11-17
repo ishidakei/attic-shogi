@@ -365,7 +365,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                 Command::SetOption { name, value } => self.handle_setoption(&name, &value)?,
                 Command::UsiNewGame => self.handle_usinewgame(),
                 Command::Position { sfen, moves } => self.handle_position(sfen, &moves)?,
-                Command::Go(limits) => self.handle_go(limits)?,
+                Command::Go(limits) => self.handle_go(limits, None)?,
                 Command::Stop => self.handle_stop(),
                 Command::GameOver => self.handle_gameover(),
                 Command::PonderHit => self.handle_ponderhit()?,
@@ -1001,7 +1001,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         }
     }
 
-    fn handle_go(&mut self, limits: GoLimits) -> io::Result<()> {
+    /// `start_time` is the instant the search's clock starts from; `None`
+    /// starts it once the previous search has been joined.
+    fn handle_go(&mut self, limits: GoLimits, start_time: Option<Instant>) -> io::Result<()> {
         self.finish_search_join();
 
         self.last_go = Some(limits.clone());
@@ -1015,7 +1017,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // Rewound under Stochastic_Ponder, so read after the rewind above.
         let game_ply = self.pos.ply() as i32;
 
-        let Some(job) = self.prepare_coordinator_job(limits, false) else {
+        let Some(job) = self.prepare_coordinator_job(limits, false, start_time) else {
             self.info_string("no eval network loaded; run isready")?;
             return self.bestmove("resign");
         };
@@ -1068,10 +1070,12 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     /// notice appropriate to its context. `disable_pv_interval` mirrors the
     /// reference `limits.disablePvInterval`: it forces the per-iteration PV
     /// interval to zero so every iteration prints, and is set only by `bench`.
+    /// `start_time` is the search's clock origin, `None` meaning now.
     fn prepare_coordinator_job(
         &mut self,
         mut limits: GoLimits,
         disable_pv_interval: bool,
+        start_time: Option<Instant>,
     ) -> Option<CoordinatorJob<W>> {
         // The reference's mutable global `NNUE::FV_SCALE`. Written at the start
         // of every search, so a `setoption` issued mid-search leaves the running
@@ -1110,7 +1114,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // `go rtime`; a `TimeControl` is installed for those and for
         // `go movetime`, and is `None` otherwise.
         let us = self.pos.side_to_move();
-        let now = Instant::now();
+        let now = start_time.unwrap_or_else(Instant::now);
         let use_time_management = limits.mate.is_none()
             && limits.movetime.is_none()
             && limits.depth.is_none()
@@ -1344,7 +1348,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     /// from the final `info nodes`. A position with no network loaded resigns and
     /// contributes 0 nodes.
     fn bench_run_one(&mut self, limits: GoLimits) -> io::Result<u64> {
-        let Some(job) = self.prepare_coordinator_job(limits, true) else {
+        let Some(job) = self.prepare_coordinator_job(limits, true, None) else {
             self.info_string("no eval network loaded; run isready")?;
             self.bestmove("resign")?;
             return Ok(0);
@@ -1435,7 +1439,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         let stochastic = self.stochastic_ponder_rewound
             && self.search.as_ref().is_some_and(|a| a.ponder.is_some());
         if stochastic {
-            return self.stochastic_ponderhit();
+            return self.stochastic_ponderhit(Instant::now());
         }
 
         if let Some(active) = &self.search {
@@ -1451,7 +1455,11 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 
     /// Stochastic_Ponder `ponderhit`. The rewound search's output is suppressed
     /// before it is stopped, so exactly one `bestmove` reaches the GUI.
-    fn stochastic_ponderhit(&mut self) -> io::Result<()> {
+    ///
+    /// The restarted search's clock starts at `arrival`, the instant the
+    /// `ponderhit` was received, as in the reference: the time spent stopping
+    /// the rewound search and restoring the position counts against the move.
+    fn stochastic_ponderhit(&mut self, arrival: Instant) -> io::Result<()> {
         if let Some(active) = &self.search {
             active.suppress.store(true, Ordering::Relaxed);
         }
@@ -1465,7 +1473,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 
         if let Some(mut go) = self.last_go.clone() {
             go.ponder = false;
-            return self.handle_go(go);
+            return self.handle_go(go, Some(arrival));
         }
         Ok(())
     }
@@ -3957,5 +3965,128 @@ mod tests {
         assert_eq!(driver.options.text("EvalDir"), "");
         let out = apply_overrides(&mut driver, &output, &["EvalDir <empty>"]);
         assert_eq!(out, "");
+    }
+
+    /// An all-zero SFNN-1536 network file: every position evaluates to 0.
+    fn zero_network_bytes() -> Vec<u8> {
+        const ARCH: &str = "ModelType=SFNNWithoutPsqt;Features=HalfKA_hm(Friend)[73305->1536x2],Network=AffineTransform[1<-32](ClippedReLU[32](AffineTransform[32<-15](ClippedReLU[15](AffineTransform[15<-3072](InputSlice[3072(0:3072)]))))){LayerStack=9}";
+        fn leb128_zeros(out: &mut Vec<u8>, count: usize) {
+            out.extend_from_slice(b"COMPRESSED_LEB128");
+            out.extend_from_slice(&(count as u32).to_le_bytes());
+            out.resize(out.len() + count, 0);
+        }
+        let mut out = Vec::new();
+        for word in [0x7AF3_2F16u32, 0x3C20_3B32, ARCH.len() as u32] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        out.extend_from_slice(ARCH.as_bytes());
+        out.extend_from_slice(&0x5F13_4AB8u32.to_le_bytes());
+        leb128_zeros(&mut out, 1_536);
+        leb128_zeros(&mut out, 1_536 * 73_305);
+        for _ in 0..9 {
+            out.extend_from_slice(&0x6333_718Au32.to_le_bytes());
+            // Each layer's biases (`i32`) then weights (`i8`, padded input).
+            for (outputs, inputs) in [(16, 1_536), (32, 32), (1, 32)] {
+                out.resize(out.len() + outputs * 4 + outputs * inputs, 0);
+            }
+        }
+        out
+    }
+
+    /// Feed one USI line to `driver`'s handler for it.
+    fn exec<R: BufRead>(driver: &mut UsiDriver<R, Vec<u8>>, line: &str) {
+        match parse_line(line) {
+            Command::SetOption { name, value } => driver.handle_setoption(&name, &value),
+            Command::IsReady => driver.handle_isready(),
+            Command::Position { sfen, moves } => driver.handle_position(sfen, &moves),
+            Command::Go(limits) => driver.handle_go(limits, None),
+            _ => panic!("no handler wired for {line:?}"),
+        }
+        .expect("a write to a Vec cannot fail");
+    }
+
+    /// The `time` field of every PV `info` line in `out`.
+    fn pv_info_times(out: &str) -> Vec<u64> {
+        out.lines()
+            .filter(|l| l.starts_with("info depth "))
+            .map(|l| {
+                let mut tokens = l.split_whitespace().skip_while(|&t| t != "time");
+                tokens.next();
+                tokens
+                    .next()
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or_else(|| panic!("PV info line without a time: {l:?}"))
+            })
+            .collect()
+    }
+
+    /// The search a Stochastic_Ponder `ponderhit` restarts keeps its clock from
+    /// the instant the `ponderhit` arrived, not from when the restart was
+    /// issued. The arrival is injected ten seconds in the past, so every PV line
+    /// of the restarted search reports at least that much elapsed time; a clock
+    /// started at the restart would report a few milliseconds.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn stochastic_ponderhit_restart_clock_starts_at_arrival() {
+        let dir =
+            std::env::temp_dir().join(format!("driver-ponderhit-arrival-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(dir.join("nn.bin"), zero_network_bytes()).expect("write nn.bin");
+
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let mut driver = UsiDriver::new(io::empty(), Arc::clone(&output));
+        for line in [
+            "setoption name Threads value 1",
+            &format!("setoption name EvalDir value {}", dir.display()),
+            "setoption name Stochastic_Ponder value true",
+            "setoption name PvInterval value 0",
+            "isready",
+            "position startpos moves 7g7f",
+            "go ponder btime 800 wtime 800",
+        ] {
+            exec(&mut driver, line);
+        }
+        assert!(
+            shared_output(&output).contains("readyok"),
+            "the synthetic network must load: {}",
+            shared_output(&output)
+        );
+        assert!(driver.stochastic_ponder_rewound);
+
+        // Retire the rewound search here, so every PV line written after the
+        // mark belongs to the restarted one.
+        if let Some(active) = &driver.search {
+            active.suppress.store(true, Ordering::Relaxed);
+        }
+        driver.finish_search_join();
+        let mark = shared_output(&output).len();
+
+        let arrival = Instant::now()
+            .checked_sub(Duration::from_secs(10))
+            .expect("the monotonic clock is past ten seconds");
+        driver.stochastic_ponderhit(arrival).expect("restart");
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !shared_output(&output)[mark..].contains("bestmove") {
+            assert!(
+                Instant::now() < deadline,
+                "the restarted search must finish: {}",
+                shared_output(&output)
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        driver.finish_search_join();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let out = shared_output(&output);
+        let times = pv_info_times(&out[mark..]);
+        assert!(
+            !times.is_empty(),
+            "the restarted search printed no PV: {out}"
+        );
+        assert!(
+            times.iter().all(|&t| t >= 10_000),
+            "every PV line must count from the ponderhit arrival: {times:?}\n{out}"
+        );
     }
 }
