@@ -36,13 +36,11 @@ pub const ENGINE_AUTHOR: &str = "Kei Ishida <ishida.kei@gmail.com>";
 const SEARCH_MAX_DEPTH: i32 = 245;
 
 // isready keep-alive.
-/// Stop-flag poll interval of the keep-alive helper.
-const KEEP_ALIVE_POLL_INTERVAL: Duration = Duration::from_millis(100);
-/// Polls between bare keep-alive newlines: `50 * 100ms = 5s`. A GUI reads the
-/// periodic empty line as a sign the engine is alive and does not time out
-/// while the `USI_Hash` allocation and the ~215 MiB `nn.bin` load run between
-/// `isready` and `readyok`.
-const KEEP_ALIVE_TICKS_PER_NEWLINE: u32 = 50;
+/// Period of the bare keep-alive newlines. A GUI reads the periodic empty line
+/// as a sign the engine is alive and does not time out while the `USI_Hash`
+/// allocation and the ~215 MiB `nn.bin` load run between `isready` and
+/// `readyok`.
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(5);
 
 // --- Reference USI score conversion (`format_score`). ---
 /// `VALUE_MATE`.
@@ -263,9 +261,9 @@ pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
     /// entry clones the one loaded instance, with it each points at its *system*
     /// node's replica.
     worker_networks: Vec<Arc<Search>>,
-    /// Poll interval of the `isready` keep-alive helper thread, overridable so a
-    /// test can drive it faster than the reference cadence.
-    keep_alive_poll: Duration,
+    /// Newline period of the `isready` keep-alive helper thread, overridable so
+    /// a test can drive it faster than the reference cadence.
+    keep_alive_interval: Duration,
 }
 
 impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
@@ -337,15 +335,14 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             numa_bound,
             worker_shared,
             worker_networks: Vec::new(),
-            keep_alive_poll: KEEP_ALIVE_POLL_INTERVAL,
+            keep_alive_interval: KEEP_ALIVE_INTERVAL,
         }
     }
 
-    /// Override the `isready` keep-alive poll interval. The newline still fires
-    /// only after [`KEEP_ALIVE_TICKS_PER_NEWLINE`] polls, so this scales the
-    /// whole cadence rather than just the poll.
-    pub fn with_keep_alive_poll(mut self, poll: Duration) -> Self {
-        self.keep_alive_poll = poll;
+    /// Override the period of the `isready` keep-alive newlines (5 s by
+    /// default).
+    pub fn with_keep_alive_interval(mut self, interval: Duration) -> Self {
+        self.keep_alive_interval = interval;
         self
     }
 
@@ -813,7 +810,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // here the heavy work is the whole block, so the keep-alive brackets all
         // of it.
         let outcome = {
-            let _keep_alive = KeepAlive::spawn(Arc::clone(&self.writer), self.keep_alive_poll);
+            let _keep_alive = KeepAlive::spawn(Arc::clone(&self.writer), self.keep_alive_interval);
             self.isready_heavy_job()?
         };
 
@@ -1701,54 +1698,71 @@ fn emit_info_string<W: Write>(writer: &Arc<Mutex<W>>, msg: &str) {
 }
 
 /// A running keep-alive: a helper thread emitting a bare newline every
-/// [`KEEP_ALIVE_TICKS_PER_NEWLINE`] polls so a GUI does not time out while the
-/// heavy `isready` initialisation runs. Dropping the guard stops and joins the
-/// thread, so the join runs whether the wrapped work returns normally or bails
-/// out early via `?` — the reference's `SCOPE_EXIT`.
+/// `interval` so a GUI does not time out while the heavy `isready`
+/// initialisation runs. Dropping the guard stops and joins the thread, so the
+/// join runs whether the wrapped work returns normally or bails out early via
+/// `?` — the reference's `SCOPE_EXIT`.
+///
+/// Start and stop are both signalled through a condition variable, so neither
+/// waits out a sleep: the helper's wait between newlines ends the moment the
+/// guard is dropped.
 ///
 /// Reference: `Engine::run_heavy_job`.
 struct KeepAlive {
-    /// Set on drop to stop the helper (`thread_end`).
-    stop: Arc<AtomicBool>,
+    /// The helper's flags, and the condition variable both sides wait on.
+    shared: Arc<(Mutex<KeepAliveFlags>, Condvar)>,
     /// `Some` until the guard is dropped; taken to join exactly once.
     handle: Option<JoinHandle<()>>,
+}
+
+/// The flags [`KeepAlive`] and its helper thread exchange under one mutex.
+#[derive(Default)]
+struct KeepAliveFlags {
+    /// Set by the helper once it runs (`thread_started`).
+    started: bool,
+    /// Set on drop to stop the helper (`thread_end`).
+    end: bool,
 }
 
 impl KeepAlive {
     /// Spawn the helper thread and block until it has actually started. The
     /// heavy work must run *after* this returns so a CPU-bound job cannot delay
-    /// the helper's first tick; the reference spins on a `thread_started` flag
+    /// the helper's first tick; the reference waits on a `thread_started` flag
     /// for the same reason.
-    fn spawn<W: Write + Send + 'static>(writer: Arc<Mutex<W>>, poll: Duration) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let started = Arc::new(AtomicBool::new(false));
+    fn spawn<W: Write + Send + 'static>(writer: Arc<Mutex<W>>, interval: Duration) -> Self {
+        let shared = Arc::new((Mutex::new(KeepAliveFlags::default()), Condvar::new()));
         let handle = thread::spawn({
-            let stop = Arc::clone(&stop);
-            let started = Arc::clone(&started);
+            let shared = Arc::clone(&shared);
             move || {
-                started.store(true, Ordering::Release);
-                let mut count: u32 = 0;
-                while !stop.load(Ordering::Acquire) {
-                    thread::sleep(poll);
-                    count += 1;
-                    if count >= KEEP_ALIVE_TICKS_PER_NEWLINE {
-                        count = 0;
-                        // A bare newline with no `info string` prefix, holding
-                        // the output lock so it cannot interleave mid-line with
-                        // the heavy work's own output.
-                        let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
-                        let _ = Formatter::new(&mut *guard).raw_line("");
+                let (lock, cv) = &*shared;
+                let mut flags = lock.lock().unwrap_or_else(|e| e.into_inner());
+                flags.started = true;
+                cv.notify_all();
+                loop {
+                    flags = cv
+                        .wait_timeout_while(flags, interval, |f| !f.end)
+                        .unwrap_or_else(|e| e.into_inner())
+                        .0;
+                    if flags.end {
+                        break;
                     }
+                    // A bare newline with no `info string` prefix, holding the
+                    // output lock so it cannot interleave mid-line with the
+                    // heavy work's own output.
+                    let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = Formatter::new(&mut *guard).raw_line("");
                 }
             }
         });
-        // Finer than the reference's 100 ms spin, so wrapping a fast `isready`
-        // adds no perceptible latency.
-        while !started.load(Ordering::Acquire) {
-            thread::sleep(Duration::from_millis(1));
-        }
+        let (lock, cv) = &*shared;
+        drop(
+            cv.wait_while(lock.lock().unwrap_or_else(|e| e.into_inner()), |f| {
+                !f.started
+            })
+            .unwrap_or_else(|e| e.into_inner()),
+        );
         Self {
-            stop,
+            shared,
             handle: Some(handle),
         }
     }
@@ -1756,7 +1770,9 @@ impl KeepAlive {
 
 impl Drop for KeepAlive {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        let (lock, cv) = &*self.shared;
+        lock.lock().unwrap_or_else(|e| e.into_inner()).end = true;
+        cv.notify_all();
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -2803,9 +2819,8 @@ mod tests {
 
     /// Block until the shared writer holds at least `want` bare newlines.
     ///
-    /// [`KeepAlive`] promises a newline every [`KEEP_ALIVE_TICKS_PER_NEWLINE`]
-    /// polls, not once per fixed span of wall time: on a loaded machine each
-    /// poll's sleep overruns, so the first newline can land arbitrarily late.
+    /// On a loaded machine the helper's timed wait overruns, so the first
+    /// newline can land arbitrarily later than its interval.
     /// Waiting for the newline rather than for a duration that ought to cover it
     /// keeps the wait honest — the deadline below is long enough that only a
     /// helper which never writes at all can trip it.
@@ -2843,8 +2858,7 @@ mod tests {
         // this also asserts no keep-alive newline interleaves mid-line.
         let writer = Arc::new(Mutex::new(Vec::<u8>::new()));
         {
-            // 1 ms poll → a bare newline every 50 polls.
-            let keep_alive = KeepAlive::spawn(Arc::clone(&writer), Duration::from_millis(1));
+            let keep_alive = KeepAlive::spawn(Arc::clone(&writer), Duration::from_millis(50));
             wait_for_bare_newlines(&writer, 1);
             // Wait for a newline after the job's line too, so the interleaving
             // check has helper output on both sides of it.
@@ -2878,9 +2892,8 @@ mod tests {
             // There is nothing to wait for here — the claim is that the helper
             // has *not* ticked — so the window before its first tick has to be
             // wide enough to survive the main thread being descheduled. The
-            // default cadence puts that tick 5 s out while `Drop`'s join still
-            // waits out at most one poll.
-            let _keep_alive = KeepAlive::spawn(Arc::clone(&writer), KEEP_ALIVE_POLL_INTERVAL);
+            // default cadence puts that tick 5 s out.
+            let _keep_alive = KeepAlive::spawn(Arc::clone(&writer), KEEP_ALIVE_INTERVAL);
         }
         let out = shared_output(&writer);
         assert_eq!(
@@ -2888,6 +2901,31 @@ mod tests {
             0,
             "a job that finishes before the first tick emits no newline: {out:?}"
         );
+    }
+
+    #[test]
+    fn keep_alive_starts_and_stops_without_waiting_out_a_sleep() {
+        // An hour-long interval: a helper that slept out its period before
+        // looking at the stop flag would hang the test outright. The bound is
+        // one-sided — any helper that sleeps even 50 ms per start or stop
+        // needs at least `CYCLES * 50ms` here however fast the machine is,
+        // while a condition-variable wake leaves the whole second as slack for
+        // a loaded machine.
+        const CYCLES: u32 = 20;
+        let writer = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let started = Instant::now();
+        for _ in 0..CYCLES {
+            drop(KeepAlive::spawn(
+                Arc::clone(&writer),
+                Duration::from_secs(3600),
+            ));
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < CYCLES * Duration::from_millis(50),
+            "{CYCLES} keep-alive start/stop cycles took {elapsed:?}"
+        );
+        assert_eq!(bare_newline_count(&shared_output(&writer)), 0);
     }
 
     #[test]

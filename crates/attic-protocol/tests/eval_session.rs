@@ -203,8 +203,9 @@ fn synthetic_network_session_matches_direct_search_choice() {
 #[test]
 #[cfg_attr(miri, ignore)]
 fn isready_keep_alive_emits_bare_newline_during_heavy_load() {
-    // With a very short injected poll the real heavy work here — the `nn.bin`
-    // load and the 1024 MiB table zeroing — spans many keep-alive ticks.
+    // With a very short injected interval the real heavy work here — the
+    // `nn.bin` load and the 1024 MiB table zeroing — spans many keep-alive
+    // ticks.
     let dir = TempDir::new("keepalive");
     write_synthetic_nn_bin(dir.path());
     let evaldir = dir.path().to_str().expect("utf-8 temp path");
@@ -217,7 +218,7 @@ fn isready_keep_alive_emits_bare_newline_during_heavy_load() {
     );
     let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
     let driver = UsiDriver::new(input.as_bytes(), std::sync::Arc::clone(&output))
-        .with_keep_alive_poll(std::time::Duration::from_micros(100));
+        .with_keep_alive_interval(std::time::Duration::from_millis(5));
     driver.run().expect("driver run");
     let out = String::from_utf8(output.lock().expect("output lock").clone()).expect("utf-8");
 
