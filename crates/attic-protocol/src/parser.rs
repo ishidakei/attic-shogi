@@ -14,7 +14,9 @@ pub enum PositionSfen {
 /// does not act on, so the parse is lossless. Each field has the integer type
 /// the reference engine reads it into, so a value it accepts (a negative
 /// increment, a negative `nodes` wrapping to a huge count) is accepted here
-/// with the same meaning.
+/// with the same meaning. A zero is kept as given: the reference reads a zero
+/// limit as no limit, and the driver applies that only after it has seeded
+/// `depth` and `nodes` from their options, which an explicit zero overrides.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GoLimits {
     pub depth: Option<i32>,
@@ -155,10 +157,14 @@ fn parse_position<'a>(line: &str, parts: impl Iterator<Item = &'a str>) -> Comma
 /// non-numeric or out-of-range number is a [`Command::CriticalError`], as is a
 /// `go mate` budget that is not a whole integer word.
 ///
-/// Words this port does not support make the line [`Command::Unknown`], but
-/// only once the rest of the line has been read: the reference skips them and
-/// still refuses a malformed number after them. `searchmoves` ends the parse,
-/// as it takes every remaining word in the reference.
+/// A word that is not a key is skipped and the line is still searched, as in
+/// the reference: `go nodes 12abc` is `nodes 12`, `go btime 1.5` is `btime 1`.
+/// `searchmoves`, which this port does not support, makes the line
+/// [`Command::Unknown`] at once, since the reference takes every remaining
+/// word as a move. A `perft` with a nonzero depth, which the reference answers
+/// with a move count instead of a search, makes the line
+/// [`Command::Unknown`] too, but only once the rest of the line has been read,
+/// so a malformed number after it is still refused.
 fn parse_go(raw: &str, trimmed: &str) -> Command {
     let mut args = ArgStream {
         rest: &trimmed["go".len()..],
@@ -168,7 +174,7 @@ fn parse_go(raw: &str, trimmed: &str) -> Command {
         reason: format!("Invalid argument for '{key}'"),
     };
     let mut limits = GoLimits::default();
-    let mut unsupported = false;
+    let mut perft = false;
     while let Some(key) = args.word() {
         match key {
             "searchmoves" => return Command::Unknown(trimmed.to_string()),
@@ -194,10 +200,11 @@ fn parse_go(raw: &str, trimmed: &str) -> Command {
                 Some(v) => limits.nodes = Some(v),
                 None => return critical(key),
             },
-            // `go perft` is a reference engine feature this port lacks; its
-            // depth is still read so a malformed one is refused the same way.
+            // `go perft` is a reference engine feature this port lacks. A
+            // later `perft` overwrites the depth, and a zero one is not a
+            // perft, so the reference searches.
             "perft" => match args.integer::<i32>() {
-                Some(_) => unsupported = true,
+                Some(depth) => perft = depth != 0,
                 None => return critical(key),
             },
             "movetime" | "wtime" | "btime" | "winc" | "binc" | "byoyomi" | "rtime" => {
@@ -215,10 +222,10 @@ fn parse_go(raw: &str, trimmed: &str) -> Command {
                 };
                 *field = Some(v);
             }
-            _ => unsupported = true,
+            _ => {}
         }
     }
-    if unsupported {
+    if perft {
         return Command::Unknown(trimmed.to_string());
     }
     for t in [&mut limits.wtime, &mut limits.btime, &mut limits.movetime]
@@ -536,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn go_with_unknown_subtoken_is_unknown() {
+    fn go_searchmoves_is_unknown() {
         assert_eq!(
             parse_line("go searchmoves 7g7f"),
             Command::Unknown("go searchmoves 7g7f".to_string())
@@ -603,10 +610,107 @@ mod tests {
     }
 
     #[test]
-    fn go_malformed_value_after_unsupported_word_is_critical() {
+    fn go_malformed_value_after_skipped_word_is_critical() {
         assert_eq!(
             parse_line("go movestogo btime x"),
             critical("go movestogo btime x", "btime")
+        );
+        assert_eq!(
+            parse_line("go perft 3 btime x"),
+            critical("go perft 3 btime x", "btime")
+        );
+    }
+
+    #[test]
+    fn go_skips_a_word_after_a_number() {
+        let expected = GoLimits {
+            nodes: Some(12),
+            ..Default::default()
+        };
+        assert_eq!(parse_line("go nodes 12abc"), Command::Go(expected));
+    }
+
+    #[test]
+    fn go_skips_a_word_between_two_keys() {
+        let expected = GoLimits {
+            depth: Some(2),
+            nodes: Some(1000),
+            ..Default::default()
+        };
+        assert_eq!(
+            parse_line("go depth 2 abc nodes 1000"),
+            Command::Go(expected.clone())
+        );
+        assert_eq!(
+            parse_line("go movestogo 40 depth 2 nodes 1000"),
+            Command::Go(expected)
+        );
+    }
+
+    #[test]
+    fn go_reads_a_fraction_as_its_integer_part() {
+        let expected = GoLimits {
+            btime: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(parse_line("go btime 1.5"), Command::Go(expected));
+    }
+
+    #[test]
+    fn go_keeps_zero_limits_as_given() {
+        let expected = GoLimits {
+            depth: Some(0),
+            nodes: Some(0),
+            movetime: Some(0),
+            wtime: Some(0),
+            btime: Some(0),
+            winc: Some(0),
+            binc: Some(0),
+            byoyomi: Some(0),
+            mate: Some(0),
+            rtime: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(
+            parse_line(
+                "go depth 0 nodes 0 movetime 0 wtime 0 btime 0 winc 0 binc 0 byoyomi 0 mate 0 rtime 0"
+            ),
+            Command::Go(expected)
+        );
+        let depth = GoLimits {
+            depth: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(parse_line("go depth 0"), Command::Go(depth));
+        let movetime = GoLimits {
+            movetime: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(parse_line("go movetime 0"), Command::Go(movetime));
+    }
+
+    #[test]
+    fn go_keeps_a_negative_depth() {
+        let expected = GoLimits {
+            depth: Some(-1),
+            ..Default::default()
+        };
+        assert_eq!(parse_line("go depth -1"), Command::Go(expected));
+    }
+
+    #[test]
+    fn go_perft_zero_is_a_search() {
+        let expected = GoLimits {
+            depth: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(parse_line("go perft 0 depth 3"), Command::Go(expected));
+        assert_eq!(
+            parse_line("go perft 3 perft 0 depth 3"),
+            Command::Go(GoLimits {
+                depth: Some(3),
+                ..Default::default()
+            })
         );
     }
 
@@ -680,10 +784,6 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(parse_line("go btime +100depth 3"), Command::Go(expected));
-        assert_eq!(
-            parse_line("go btime 1.5"),
-            Command::Unknown("go btime 1.5".to_string())
-        );
     }
 
     #[test]
@@ -691,6 +791,10 @@ mod tests {
         assert_eq!(
             parse_line("go perft 3"),
             Command::Unknown("go perft 3".to_string())
+        );
+        assert_eq!(
+            parse_line("go perft 0 perft -2"),
+            Command::Unknown("go perft 0 perft -2".to_string())
         );
     }
 

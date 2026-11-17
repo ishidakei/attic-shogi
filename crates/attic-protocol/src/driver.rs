@@ -1094,6 +1094,13 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                 limits.nodes = Some(nl as u64);
             }
         }
+        // The reference tests these limits for nonzero, so a zero one, given
+        // on the `go` line or not, sets no limit; an explicit zero still wins
+        // over the option above.
+        limits.depth = limits.depth.filter(|&d| d != 0);
+        limits.nodes = limits.nodes.filter(|&n| n != 0);
+        limits.movetime = limits.movetime.filter(|&t| t != 0);
+        limits.mate = limits.mate.filter(|&m| m != 0);
 
         // The per-worker handles are resolved alongside `eval`, so a loaded
         // `eval` always has a network for every worker.
@@ -1189,7 +1196,8 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             time,
         };
         let depth = match limits.depth {
-            Some(d) => d.clamp(1, SEARCH_MAX_DEPTH),
+            // A negative depth runs no iteration, as in the reference.
+            Some(d) => d.min(SEARCH_MAX_DEPTH),
             None => SEARCH_MAX_DEPTH,
         };
 

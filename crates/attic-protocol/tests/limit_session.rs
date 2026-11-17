@@ -229,6 +229,120 @@ fn nodes_limit_matches_go_nodes() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
+fn explicit_zero_depth_and_nodes_override_the_options_as_no_limit() {
+    // A zero `depth` or `nodes` on the `go` line sets no limit, and it still
+    // wins over a nonzero `DepthLimit` / `NodesLimit`.
+    let dir = TempDir::new("zero-override");
+    write_synthetic_nn_bin(dir.path());
+    let e = dir.path().to_str().unwrap();
+
+    let h = start_ready(e, &[DETERMINISTIC_PV]);
+    go_and_wait(&h, "position startpos", "go nodes 3000", 1);
+    h.send("usinewgame");
+    h.send("setoption name DepthLimit value 2");
+    go_and_wait(&h, "position startpos", "go depth 0 nodes 3000", 2);
+    h.send("usinewgame");
+    h.send("setoption name DepthLimit value 0");
+    go_and_wait(&h, "position startpos", "go depth 3", 3);
+    h.send("usinewgame");
+    h.send("setoption name NodesLimit value 50");
+    go_and_wait(&h, "position startpos", "go nodes 0 depth 3", 4);
+    let out = h.quit_join();
+
+    let s = go_summaries(&out);
+    assert_eq!(s.len(), 4, "four searches in:\n{out}");
+    assert!(
+        !s[0].starts_with("info depth 1 ") && !s[0].starts_with("info depth 2 "),
+        "go nodes 3000 must search past depth 2:\n{out}"
+    );
+    assert_eq!(
+        s[0], s[1],
+        "go depth 0 must lift DepthLimit 2 and match go nodes 3000:\n{out}"
+    );
+    assert_eq!(
+        s[2], s[3],
+        "go nodes 0 must lift NodesLimit 50 and match go depth 3:\n{out}"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn zero_movetime_and_mate_set_no_limit() {
+    // A zero `movetime` or `mate` budget sets no limit, so the search runs to
+    // the given depth instead of stopping at once.
+    let dir = TempDir::new("zero-movetime");
+    write_synthetic_nn_bin(dir.path());
+    let e = dir.path().to_str().unwrap();
+
+    let h = start_ready(e, &[DETERMINISTIC_PV]);
+    go_and_wait(&h, "position startpos", "go depth 3", 1);
+    h.send("usinewgame");
+    go_and_wait(&h, "position startpos", "go movetime 0 depth 3", 2);
+    h.send("usinewgame");
+    go_and_wait(&h, "position startpos", "go mate 0 depth 3", 3);
+    let out = h.quit_join();
+
+    let s = go_summaries(&out);
+    assert_eq!(s.len(), 3, "three searches in:\n{out}");
+    assert!(
+        s[0].starts_with("info depth 3 "),
+        "go depth 3 must complete depth 3:\n{out}"
+    );
+    assert_eq!(s[0], s[1], "go movetime 0 must set no limit:\n{out}");
+    assert_eq!(s[0], s[2], "go mate 0 must set no limit:\n{out}");
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn negative_depth_runs_no_iteration() {
+    // The iterative-deepening loop is never entered, so the reply carries the
+    // first root move unsearched, as the reference's does.
+    let dir = TempDir::new("negative-depth");
+    write_synthetic_nn_bin(dir.path());
+    let e = dir.path().to_str().unwrap();
+
+    let h = start_ready(e, &[DETERMINISTIC_PV]);
+    go_and_wait(&h, "position startpos", "go depth -3", 1);
+    let out = h.quit_join();
+
+    let s = go_summaries(&out);
+    assert_eq!(s.len(), 1, "one search in:\n{out}");
+    assert_eq!(
+        s[0], "info depth 1 multipv 1 score cp 0 nodes 0 hashfull 0 pv 1g1f\nbestmove 1g1f",
+        "go depth -3 must not search:\n{out}"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
+fn go_with_a_skipped_word_searches() {
+    let dir = TempDir::new("skipped-word");
+    write_synthetic_nn_bin(dir.path());
+    let e = dir.path().to_str().unwrap();
+
+    let h = start_ready(e, &[DETERMINISTIC_PV]);
+    go_and_wait(&h, "position startpos", "go depth 2", 1);
+    h.send("usinewgame");
+    go_and_wait(&h, "position startpos", "go depth 2abc", 2);
+    h.send("usinewgame");
+    go_and_wait(&h, "position startpos", "go movestogo 40 depth 2", 3);
+    let out = h.quit_join();
+
+    assert!(
+        !out.contains("unknown command"),
+        "a skipped word must not make the line unknown in:\n{out}"
+    );
+    let s = go_summaries(&out);
+    assert_eq!(s.len(), 3, "three searches in:\n{out}");
+    assert_eq!(s[0], s[1], "go depth 2abc must be go depth 2:\n{out}");
+    assert_eq!(
+        s[0], s[2],
+        "go movestogo 40 depth 2 must be go depth 2:\n{out}"
+    );
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
 fn max_moves_to_draw_adjudicates_a_draw_past_the_horizon() {
     // A small `MaxMovesToDraw` makes every interior node adjudicate a draw
     // before the mate is seen, collapsing the reported score from `mate` to a
