@@ -6,7 +6,7 @@
 //! than only through LMR re-search deepening, so it exercises the singular
 //! family — multi-cut pruning, the margin extensions, the negative extensions —
 //! end to end. It also newly reaches internal iterative reduction and the
-//! `depth > 5` disjunct of the non-PV early TT cutoff.
+//! `depth > 4` disjunct of the non-PV early TT cutoff.
 //!
 //! ## What `startpos` at depth 8 is sensitive to
 //!

@@ -3,6 +3,6 @@
   "depth": 3,
   "bestmove": "B*4a",
   "score": { "cp": 5375 },
-  "nodes": 412,
+  "nodes": 414,
   "pv": ["B*4a", "2c2d", "4a5b+"]
 }

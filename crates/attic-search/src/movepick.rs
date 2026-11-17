@@ -1556,8 +1556,8 @@ mod tests {
         // (N-1g-2e) is illegal. That knight move also gives direct check to the
         // White king on 3g, so it scores the +16384 direct-check bonus; every
         // other quiet scores the uniform `clear()` value
-        //   2*0 + 2*(-1238) + 5*(-523) = -5091.
-        // At depth 1 the `QUIET_INIT` limit is `-3560 * 1 = -3560`: the -5091
+        //   2*0 + 2*(-1338) + 5*(-586) = -5606.
+        // At depth 1 the `QUIET_INIT` limit is `-3560 * 1 = -3560`: the -5606
         // quiets fall *below* it (never promoted by `partial_insertion_sort`),
         // while the illegal knight move at 11293 clears it and is promoted.
         //

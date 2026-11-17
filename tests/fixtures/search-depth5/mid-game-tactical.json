@@ -2,7 +2,7 @@
   "sfen": "l7l/1r1sg2k1/2nppgsp1/p1p3p1p/1p2N4/2P1P1P2/PPSP1PB1P/3GG1SR1/LN2K3L b BNPp 1",
   "depth": 5,
   "bestmove": "B*4a",
-  "score": { "cp": 5424 },
-  "nodes": 703,
-  "pv": ["B*4a", "3c2d", "4a5b+"]
+  "score": { "cp": 5935 },
+  "nodes": 715,
+  "pv": ["B*4a", "3c2d", "4a5b+", "5c5d", "5e4c+"]
 }

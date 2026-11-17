@@ -106,7 +106,7 @@ impl CapturePieceToHistory {
         Self::default()
     }
 
-    /// Overwrite every entry with `v`; the reference's init is `-678`.
+    /// Overwrite every entry with `v`; the reference's init is `-742`.
     pub fn fill(&mut self, v: i16) {
         self.table.iter_mut().for_each(|e| *e = v);
     }
@@ -201,7 +201,7 @@ impl PieceToHistory {
         Self::default()
     }
 
-    /// Overwrite every entry with `v`; the reference's init is `-523`.
+    /// Overwrite every entry with `v`; the reference's init is `-586`.
     pub fn fill(&mut self, v: i16) {
         self.table.iter_mut().for_each(|e| *e = v);
     }
@@ -243,7 +243,7 @@ impl LowPlyHistory {
         Self::default()
     }
 
-    /// Overwrite every entry with `v`; the reference's init is `98`.
+    /// Overwrite every entry with `v`; the reference's init is `102`.
     pub fn fill(&mut self, v: i16) {
         self.table.iter_mut().for_each(|e| *e = v);
     }
@@ -288,10 +288,10 @@ impl CorrChannel {
 }
 
 /// Reference `clear()` init values of the shared tables: correction entries
-/// `-5`, pawn entries `-1238`, continuation entries `-523`.
+/// `-5`, pawn entries `-1338`, continuation entries `-586`.
 const CORRECTION_INIT: i16 = -5;
-const PAWN_INIT: i16 = -1238;
-const CONTINUATION_INIT: i16 = -523;
+const PAWN_INIT: i16 = -1338;
+const CONTINUATION_INIT: i16 = -586;
 
 /// [`apply_gravity`] on an atomic entry: a plain relaxed load-modify-store
 /// rather than a CAS loop, because the reference leaves its read-modify-write
@@ -532,7 +532,7 @@ impl ContinuationHistory {
         Self::default()
     }
 
-    /// Overwrite every entry with `v`; the reference's init is `-523`.
+    /// Overwrite every entry with `v`; the reference's init is `-586`.
     pub fn fill(&self, v: i16) {
         for e in self.table.iter() {
             e.store(v, Ordering::Relaxed);
@@ -632,17 +632,17 @@ mod shared_tests {
         let _ = SharedHistories::new(0);
     }
 
-    /// Init values: pawn `-1238`, correction `-5`, continuation `-523`, across
+    /// Init values: pawn `-1338`, correction `-5`, continuation `-586`, across
     /// distinct slots.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn init_values() {
         let sh = SharedHistories::new(1);
-        assert_eq!(sh.pawn_get(0, bp(), to()), -1238);
-        assert_eq!(sh.pawn_get(0xFFFF, bp(), to()), -1238);
+        assert_eq!(sh.pawn_get(0, bp(), to()), -1338);
+        assert_eq!(sh.pawn_get(0xFFFF, bp(), to()), -1338);
         let last_plane = ContinuationHistory::plane_index(true, true, bp(), to());
-        assert_eq!(sh.continuation().get_at(0, bp(), to()), -523);
-        assert_eq!(sh.continuation().get_at(last_plane, bp(), to()), -523);
+        assert_eq!(sh.continuation().get_at(0, bp(), to()), -586);
+        assert_eq!(sh.continuation().get_at(last_plane, bp(), to()), -586);
         for &color in &[Color::Black, Color::White] {
             for &ch in &CHANNELS {
                 assert_eq!(sh.correction_get(0, color, ch), -5);

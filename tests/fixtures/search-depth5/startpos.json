@@ -1,8 +1,8 @@
 {
   "sfen": "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1",
   "depth": 5,
-  "bestmove": "7g7f",
-  "score": { "cp": 132 },
-  "nodes": 2277,
-  "pv": ["7g7f", "3c3d"]
+  "bestmove": "2g2f",
+  "score": { "cp": 117 },
+  "nodes": 2901,
+  "pv": ["2g2f", "9c9d"]
 }

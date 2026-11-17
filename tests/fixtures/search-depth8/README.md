@@ -8,7 +8,7 @@ activate at depth ≥ 6 — chiefly the **singular-extension family** (its guard
 `!rootNode && depth >= 6 + ss->ttPv` firing directly at interior nodes: the
 singular search, multi-cut pruning, double/triple-margin extensions, and
 negative extensions), internal iterative reduction (`depth >= 6`, including the
-`priorReduction <= 3` term), and the `depth > 5` disjunct of the non-PV early TT
+`priorReduction <= 3` term), and the `depth > 4` disjunct of the non-PV early TT
 cutoff — and, via the cumulative node count, every depth-1..7 iteration
 transitively.
 

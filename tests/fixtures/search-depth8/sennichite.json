@@ -3,7 +3,7 @@
   "moves": ["5h4h", "5b4b", "4h5h", "4b5b", "5h4h", "5b4b", "4h5h", "4b5b", "5h4h", "5b4b", "4h5h", "4b5b"],
   "depth": 8,
   "bestmove": "5h6g",
-  "score": { "cp": 363 },
-  "nodes": 4766,
-  "pv": ["5h6g", "5b6c", "6g5f", "6c7d", "5f5e", "P*5c"]
+  "score": { "cp": 513 },
+  "nodes": 2291,
+  "pv": ["5h6g", "5b6c", "6g5f", "6c5d", "P*5e", "5d4d", "5f6e", "4d3d"]
 }
