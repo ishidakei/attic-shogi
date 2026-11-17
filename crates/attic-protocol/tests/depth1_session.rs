@@ -10,9 +10,11 @@
 //! the test prints a notice and passes and the default `cargo test` run stays
 //! green everywhere.
 
+mod common;
+
 use std::path::PathBuf;
 
-use attic_protocol::UsiDriver;
+use common::StreamHarness;
 use serde::Deserialize;
 
 fn eval_dir() -> PathBuf {
@@ -38,14 +40,6 @@ struct ScoreJson {
     cp: Option<i32>,
     #[serde(default)]
     mate: Option<i32>,
-}
-
-fn drive(input: &str) -> String {
-    let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-    let driver = UsiDriver::new(input.as_bytes(), std::sync::Arc::clone(&output));
-    driver.run().expect("driver run");
-    let bytes = output.lock().expect("output lock").clone();
-    String::from_utf8(bytes).expect("utf-8")
 }
 
 /// The token following `key` in a whitespace-tokenised `info` line.
@@ -76,17 +70,18 @@ fn depth1_session_matches_reference_startpos_fixture() {
 
     let eval_dir_arg = dir.to_str().expect("utf-8 eval dir");
     // A fixture-node assertion must run on one worker: helpers pollute the
-    // shared TT, and the default is 4.
-    let session = format!(
-        "usi\n\
-         setoption name Threads value 1\n\
-         setoption name EvalDir value {eval_dir_arg}\n\
-         isready\n\
-         position startpos\n\
-         go depth 1\n\
-         quit\n"
-    );
-    let out = drive(&session);
+    // shared TT, and the default is 4. The `quit` waits for the `bestmove`: it
+    // stops a running search, and the first stop check lands on the search's
+    // first node.
+    let h = StreamHarness::start();
+    h.send("usi");
+    h.send("setoption name Threads value 1");
+    h.send(&format!("setoption name EvalDir value {eval_dir_arg}"));
+    h.send("isready");
+    h.send("position startpos");
+    h.send("go depth 1");
+    h.wait_until(60_000, |o| o.lines().any(|l| l.starts_with("bestmove ")));
+    let out = h.quit_join();
 
     assert!(
         out.contains("readyok\n"),

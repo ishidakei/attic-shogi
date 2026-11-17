@@ -156,6 +156,8 @@ struct SearchState {
     /// reference never touches `previousTimeReduction`, so the persisted value
     /// must stay put.
     time_state: Option<(Value, Value, Option<f64>)>,
+    /// The main worker's `callsCnt` down-counter as the search left it.
+    calls_cnt: i32,
 }
 
 pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
@@ -197,6 +199,11 @@ pub struct UsiDriver<R: BufRead, W: Write + Send + 'static> {
     best_previous_score: Value,
     best_previous_average_score: Value,
     previous_time_reduction: f64,
+    /// The reference `SearchManager::callsCnt`: the main worker's `check_time`
+    /// down-counter, resumed by each `go` and reset to `0` by `usinewgame`. It
+    /// decides where a node-limited search stops, so a `go nodes` result
+    /// depends on the searches before it in the game.
+    calls_cnt: i32,
     /// The root game ply of the last completed real search. At the next search
     /// start an odd `last_game_ply - game_ply` means the side to move
     /// alternated — e.g. a Stochastic_Ponder rewind — and flips the sign of the
@@ -311,6 +318,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             best_previous_score: VALUE_INFINITE,
             best_previous_average_score: VALUE_INFINITE,
             previous_time_reduction: 0.85,
+            calls_cnt: 0,
             last_game_ply: 0,
             last_position: (PositionSfen::StartPos, Vec::new()),
             last_go: None,
@@ -393,8 +401,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
 
     /// If a search worker is running, request its stop and join it, reclaiming
     /// the session-owned histories. Idempotent, and setting the stop flag is
-    /// harmless once the worker has finished naturally: a short fixed-depth
-    /// search that never reached a `check_time` checkpoint completes regardless.
+    /// harmless once the worker has finished naturally. A search still running
+    /// is stopped at its next `check_time` checkpoint, so a caller that needs a
+    /// fixed-depth result waits for the `bestmove` before calling this.
     ///
     /// Joining also drops the worker's `Arc` clone of the transposition table,
     /// so afterwards `Arc::get_mut` (used by `resize` / `clear`) succeeds.
@@ -406,6 +415,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
                 .join()
                 .expect("search worker thread must not panic");
             self.histories = Some(state.histories);
+            self.calls_cnt = state.calls_cnt;
             // Carry the finished search's time-management outputs forward.
             if let Some((score, avg, tr)) = state.time_state {
                 self.best_previous_score = score;
@@ -926,6 +936,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         self.best_previous_score = VALUE_INFINITE;
         self.best_previous_average_score = VALUE_INFINITE;
         self.previous_time_reduction = 0.85;
+        self.calls_cnt = 0;
         // The `last_position` default is the reference's `"position startpos"`.
         self.last_game_ply = 0;
         self.last_position = (PositionSfen::StartPos, Vec::new());
@@ -992,6 +1003,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             SearchState {
                 histories: outcome.histories,
                 time_state: outcome.time_state,
+                calls_cnt: outcome.calls_cnt,
             }
         });
 
@@ -1268,6 +1280,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
             control,
             stop,
             histories,
+            calls_cnt: self.calls_cnt,
             helper_slots,
             helper_shared,
             helper_networks,
@@ -1305,6 +1318,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // Bench uses fixed depth / nodes / movetime, so `time_state` is
         // irrelevant to it.
         self.histories = Some(outcome.histories);
+        self.calls_cnt = outcome.calls_cnt;
         Ok(outcome.nodes)
     }
 
@@ -2279,6 +2293,8 @@ struct CoordinatorJob<W: Write + Send + 'static> {
     control: SearchControl,
     stop: Arc<AtomicBool>,
     histories: WorkerHistories,
+    /// The main worker's `callsCnt` to resume.
+    calls_cnt: i32,
     helper_slots: Vec<Arc<HelperSlot>>,
     /// Each helper's node-shared correction / pawn tables, aligned with
     /// `helper_slots`. The main worker's own handle lives inside `histories`.
@@ -2323,11 +2339,13 @@ struct CoordinatorJob<W: Write + Send + 'static> {
 /// aggregate searched-node total (0 for the short-circuits, and the value
 /// `bench` accumulates), and the time-management carry-forward, whose third
 /// element is `None` for a short-circuited `go` — see
-/// [`SearchState::time_state`].
+/// [`SearchState::time_state`]. A short-circuit hands `calls_cnt` back as it
+/// came in, the search never having run.
 struct CoordinatedOutcome {
     histories: WorkerHistories,
     nodes: u64,
     time_state: Option<(Value, Value, Option<f64>)>,
+    calls_cnt: i32,
 }
 
 /// The time-management carry-forward for a SKIP_SEARCH short-circuit — a book
@@ -2351,6 +2369,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
         control,
         stop,
         histories,
+        calls_cnt,
         helper_slots,
         helper_shared,
         helper_networks,
@@ -2394,6 +2413,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
             histories,
             nodes: 0,
             time_state: skip_search_carry(),
+            calls_cnt,
         };
     }
     // Point and `None` rules yield `Move::win()`, emitted as the bare `win`
@@ -2409,6 +2429,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
             histories,
             nodes: 0,
             time_state: skip_search_carry(),
+            calls_cnt,
         };
     }
 
@@ -2443,6 +2464,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
                 histories,
                 nodes: 0,
                 time_state: skip_search_carry(),
+                calls_cnt,
             };
         }
     }
@@ -2482,6 +2504,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     let net = search.network();
     let mut qs = QSearch::with_histories(net, &tt, histories);
     qs.set_control(control);
+    qs.set_calls_cnt(calls_cnt);
     qs.set_node_tally(Arc::clone(&node_slots), 0);
     qs.set_best_move_tally(Arc::clone(&bmc_slots), 0);
     qs.set_entering_king(entering_king);
@@ -2603,9 +2626,11 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
         emit_bestmove(&writer, &bm);
     }
 
+    let calls_cnt = qs.calls_cnt();
     CoordinatedOutcome {
         histories: qs.into_histories(),
         nodes: total_nodes,
+        calls_cnt,
         time_state: Some((
             out_best_previous_score,
             out_best_previous_average_score,
@@ -3317,6 +3342,7 @@ mod tests {
         let handle = std::thread::spawn(|| SearchState {
             histories: WorkerHistories::new(),
             time_state: skip_search_carry(),
+            calls_cnt: 0,
         });
         driver.search = Some(ActiveSearch {
             handle,
@@ -3349,6 +3375,7 @@ mod tests {
         let handle = std::thread::spawn(|| SearchState {
             histories: WorkerHistories::new(),
             time_state: Some((10, 20, Some(1.25))),
+            calls_cnt: 0,
         });
         driver.search = Some(ActiveSearch {
             handle,

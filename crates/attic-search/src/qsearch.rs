@@ -322,10 +322,11 @@ pub struct QSearchOutcome {
 /// checks — the reference `SearchManager::callsCnt` reset value, reading
 /// `Instant::now()` per node being too costly.
 ///
-/// The counter is seeded to this value rather than the reference's `0`, so that
-/// the **first** checkpoint lands after a full interval and a short fixed-depth
-/// search never reaches one. An asynchronously set stop flag then cannot
-/// perturb the fixed-depth parity path.
+/// The counter itself is session state, as in the reference: it starts at `0`
+/// on a new game, so the first interior node of the first `go` checks at once,
+/// and each later `go` resumes it where the previous one left it (see
+/// [`QSearch::set_calls_cnt`]). Where a node-limited search stops therefore
+/// depends on every `go` before it in the game.
 const CHECK_INTERVAL: i32 = 512;
 
 /// The shared ponder state for one `go ponder` — the reference
@@ -755,7 +756,7 @@ impl<'a> QSearch<'a> {
             max_moves_to_draw: MAX_MOVES_TO_DRAW,
             generate_all_legal_moves: false,
             mate_mode: false,
-            calls_cnt: CHECK_INTERVAL,
+            calls_cnt: 0,
             stopped: false,
             best_move_changes: 0.0,
             stop_on_ponderhit: false,
@@ -780,6 +781,17 @@ impl<'a> QSearch<'a> {
     /// Install the time / node / stop [`SearchControl`] for the coming search.
     pub fn set_control(&mut self, control: SearchControl) {
         self.control = control;
+    }
+
+    /// Resume the `callsCnt` down-counter the previous `go` left — see
+    /// [`CHECK_INTERVAL`]. A fresh worker starts at `0`.
+    pub fn set_calls_cnt(&mut self, calls_cnt: i32) {
+        self.calls_cnt = calls_cnt;
+    }
+
+    /// The `callsCnt` down-counter as the search left it, for the next `go`.
+    pub fn calls_cnt(&self) -> i32 {
+        self.calls_cnt
     }
 
     /// Install the entering-king declaration config for this `go`. Every worker
@@ -914,15 +926,18 @@ impl<'a> QSearch<'a> {
     /// The reference `SearchManager::check_time`: count down and, once per
     /// [`Self::calls_reset`] calls, consult the stop flag, then the time and
     /// node stops.
+    ///
+    /// The count runs on after the search has stopped, as the reference's does,
+    /// because the next `go` resumes it.
     fn check_time(&mut self) {
-        if self.stopped {
-            return;
-        }
         self.calls_cnt -= 1;
         if self.calls_cnt > 0 {
             return;
         }
         self.calls_cnt = self.calls_reset();
+        if self.stopped {
+            return;
+        }
 
         // The reference reads a per-worker atomic `nodes` at each checkpoint;
         // this port publishes at the checkpoint rather than per node.
@@ -1015,7 +1030,6 @@ impl<'a> QSearch<'a> {
         self.read_tt = read_tt;
         self.root_us = pos.side_to_move();
         self.stopped = false;
-        self.calls_cnt = CHECK_INTERVAL;
 
         for cell in self.stack.iter_mut() {
             cell.current_move = Move::none();
@@ -1175,14 +1189,6 @@ impl<'a> QSearch<'a> {
     /// The core recursive qsearch.
     fn qsearch(&mut self, pos: &mut Position, ply: i32, mut alpha: Value, beta: Value) -> Value {
         let pv_node = self.pv_node;
-
-        // The reference only checks in the interior `search`; polling here too
-        // bounds the abort latency inside a deep leaf tree. On abort the return
-        // value is discarded, the interior caller unwinding on its own check.
-        self.check_time();
-        if self.stopped {
-            return VALUE_DRAW;
-        }
 
         // -----------------------------------------------------------------
         // Step 1. Initialize node.
@@ -1414,12 +1420,6 @@ impl<'a> QSearch<'a> {
             pos.undo_move(mv, undo);
             self.pop_accumulator();
 
-            // An abort inside this child's subtree makes `value` untrustworthy,
-            // so it must not be folded in.
-            if self.stopped {
-                return best_value;
-            }
-
             // Step 8. New best move.
             if value > best_value {
                 best_value = value;
@@ -1573,10 +1573,7 @@ impl QSearch<'_> {
         self.nodes = 0;
         self.sel_depth = 0;
         self.last_iteration_pv.clear();
-        // The counter is seeded so that the first checkpoint lands a full
-        // interval in; see [`CHECK_INTERVAL`].
         self.stopped = false;
-        self.calls_cnt = CHECK_INTERVAL;
         // Fresh time-management bookkeeping for this `go`.
         self.best_move_changes = 0.0;
         self.stop_on_ponderhit = false;
@@ -2422,7 +2419,6 @@ impl QSearch<'_> {
         self.root_depth = depth;
         self.last_iteration_pv.clear();
         self.stopped = false;
-        self.calls_cnt = CHECK_INTERVAL;
         for cell in self.stack.iter_mut() {
             let mut pv = std::mem::take(&mut cell.pv);
             pv.clear();
