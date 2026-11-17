@@ -488,10 +488,11 @@ pub struct QSearch<'a> {
     /// accumulator half per (perspective, own-king square), so a `do_move` whose
     /// own king moved diffs against that cached half instead of summing all 40
     /// feature columns from the FT biases. Value-invariant — see
-    /// [`Accumulator::derive_into_cached`]. Allocated once per worker (~0.5 MiB)
-    /// and never touched off the `push_accumulator` path; never shared between
-    /// Lazy-SMP workers, so it needs no synchronisation.
-    finny: Box<FinnyCache>,
+    /// [`Accumulator::derive_into_cached`]. Allocated once per worker (~0.5 MiB
+    /// of entries on large pages) and never touched off the `push_accumulator`
+    /// path; never shared between Lazy-SMP workers, so it needs no
+    /// synchronisation.
+    finny: FinnyCache,
     /// Test-only: when set, [`Self::static_eval`] asserts the differential
     /// accumulator equals a from-scratch [`attic_eval::evaluate`] at every
     /// evaluation point (the accumulator-equivalence test). Off by default, so
