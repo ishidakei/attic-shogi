@@ -147,9 +147,11 @@ impl NetworkStack {
 ///
 /// Every parameter array — `ft_biases`, the ~215 MiB `ft_weights`, and all nine
 /// stacks' FC weights and biases — lives in **one** large-page allocation, as
-/// the reference's `make_unique_large_page<NnueNetworks>` does. The public
-/// parameter fields are 64-byte-aligned views into it, meeting what the AVX-512
-/// kernels require.
+/// the reference's long-lived network copy does. The loader decodes the file
+/// straight into this allocation, so there is no intermediate network buffer;
+/// the reference reads into an ordinary aligned temporary instead, keeping
+/// short-lived allocations off large pages. The public parameter fields are
+/// 64-byte-aligned views into it, meeting what the AVX-512 kernels require.
 #[derive(Debug)]
 pub struct NnueNetwork {
     pub header: NetHeader,

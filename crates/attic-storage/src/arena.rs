@@ -1,6 +1,6 @@
 //! One large-page allocation carved into many 64-byte-aligned typed sub-arrays,
-//! the shape the reference gets from `make_unique_large_page<NnueNetworks>` and
-//! `make_unique_large_page<Search::Worker>`.
+//! the shape the reference gets from `make_unique_large_page` for its long-lived
+//! network copy and for `Search::Worker`.
 //!
 //! # The self-referential shape
 //!
