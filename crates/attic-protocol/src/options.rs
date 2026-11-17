@@ -525,11 +525,13 @@ impl OptionStore {
         }
     }
 
+    /// Set a declared option, matching `name` case-insensitively (ASCII) as the
+    /// reference `OptionsMap` does; the value is stored under the canonical name.
     pub fn set_value(&mut self, name: &str, value: &str) -> Result<(), OptionError> {
         let decl = self
             .decls
             .iter()
-            .find(|d| d.name() == name)
+            .find(|d| d.name().eq_ignore_ascii_case(name))
             .ok_or(OptionError::UnknownOption)?;
         // A fixed option silently ignores the assignment — no mutation, no
         // error, no output.
@@ -1017,6 +1019,24 @@ mod tests {
         let mut s = OptionStore::new();
         let err = s.set_value("Nonexistent", "x").unwrap_err();
         assert_eq!(err, OptionError::UnknownOption);
+    }
+
+    #[test]
+    fn set_value_matches_the_name_case_insensitively() {
+        let mut s = OptionStore::new();
+        s.set_value("usi_hash", "16").unwrap();
+        assert_eq!(s.spin("USI_Hash"), 16);
+        s.set_value("THREADS", "1").unwrap();
+        assert_eq!(s.spin("Threads"), 1);
+        assert_eq!(s.value_text("Threads"), Some("1"));
+        assert_eq!(
+            s.set_value("USI_Hashh", "16").unwrap_err(),
+            OptionError::UnknownOption
+        );
+        assert_eq!(
+            s.set_value("USI Hash", "16").unwrap_err(),
+            OptionError::UnknownOption
+        );
     }
 
     #[test]

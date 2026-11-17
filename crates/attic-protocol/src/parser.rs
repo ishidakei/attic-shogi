@@ -309,30 +309,17 @@ macro_rules! signed_stream_integer {
 signed_stream_integer!(i32, i64);
 
 fn parse_setoption<'a>(parts: impl Iterator<Item = &'a str>) -> Command {
-    // USI: setoption name <NAME> [value <VALUE...>]
-    // Per the protocol, NAME is a single token (option names contain no spaces),
-    // and everything after `value` is the value (joined back with single spaces).
-    let tokens: Vec<&str> = parts.collect();
-    let mut iter = tokens.iter();
-    let Some(&kw) = iter.next() else {
-        return Command::Unknown(format!("setoption {}", tokens.join(" ")));
-    };
-    if kw != "name" {
-        return Command::Unknown(format!("setoption {}", tokens.join(" ")));
-    }
-    let Some(&name) = iter.next() else {
-        return Command::Unknown(format!("setoption {}", tokens.join(" ")));
-    };
-    let rest: Vec<&str> = iter.copied().collect();
-    let value = match rest.as_slice() {
-        [] => String::new(),
-        ["value"] => String::new(),
-        ["value", rest @ ..] => rest.join(" "),
-        _ => return Command::Unknown(format!("setoption {}", tokens.join(" "))),
-    };
+    // USI: setoption name <NAME...> [value <VALUE...>]
+    // Read as the reference reads it: the first token is skipped whatever it
+    // is, the name is every token up to the first `value`, and the value is
+    // everything after it, each joined back with single spaces. A line with no
+    // name therefore sets the empty name, which is reported as unknown.
+    let mut parts = parts.skip(1);
+    let name: Vec<&str> = parts.by_ref().take_while(|&t| t != "value").collect();
+    let value: Vec<&str> = parts.collect();
     Command::SetOption {
-        name: name.to_string(),
-        value,
+        name: name.join(" "),
+        value: value.join(" "),
     }
 }
 
@@ -392,6 +379,42 @@ mod tests {
             Command::SetOption {
                 name: "UsiNewGameThing".to_string(),
                 value: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_setoption_name_up_to_the_first_value_word() {
+        assert_eq!(
+            parse_line("setoption name No  Such Option value 1 value 2"),
+            Command::SetOption {
+                name: "No Such Option".to_string(),
+                value: "1 value 2".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_setoption_without_a_name_as_the_empty_name() {
+        for line in ["setoption", "setoption name", "setoption name value 5"] {
+            assert_eq!(
+                parse_line(line),
+                Command::SetOption {
+                    name: String::new(),
+                    value: if line.ends_with('5') { "5" } else { "" }.to_string(),
+                },
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_setoption_skipping_the_first_word_whatever_it_is() {
+        assert_eq!(
+            parse_line("setoption nmae Threads value 2"),
+            Command::SetOption {
+                name: "Threads".to_string(),
+                value: "2".to_string(),
             }
         );
     }

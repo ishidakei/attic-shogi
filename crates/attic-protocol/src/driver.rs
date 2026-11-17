@@ -874,9 +874,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         }
         match self.options.set_value(name, value) {
             Ok(()) => Ok(()),
-            Err(OptionError::UnknownOption) => {
-                self.info_string(&format!("option {name} rejected: unknown option"))
-            }
+            // The reference prints this bare, without `info string`.
+            Err(OptionError::UnknownOption) => Formatter::new(&mut *self.lock_writer())
+                .raw_line(&format!("No such option: {name}")),
             Err(e) => self.report_option_rejection(&e),
         }
     }
@@ -2905,11 +2905,40 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn setoption_unknown_option_rejected() {
+    fn setoption_unknown_option_prints_the_reference_line() {
         assert_eq!(
-            run_with("setoption name Nonexistent value foo\nquit\n"),
-            "info string option Nonexistent rejected: unknown option\n"
+            run_with(
+                "setoption name Nonexistent value foo\n\
+                 setoption name No  Such Option value 1\n\
+                 setoption name USI_Hashh value 16\n\
+                 setoption name\n\
+                 quit\n"
+            ),
+            "No such option: Nonexistent\n\
+             No such option: No Such Option\n\
+             No such option: USI_Hashh\n\
+             No such option: \n"
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn setoption_name_is_matched_case_insensitively() {
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let mut d = UsiDriver::new(&b""[..], Arc::clone(&output));
+        for line in [
+            "setoption name usi_hash value 16",
+            "setoption name THREADS value 1",
+        ] {
+            let Command::SetOption { name, value } = parse_line(line) else {
+                panic!("{line} parses as setoption");
+            };
+            d.handle_setoption(&name, &value).unwrap();
+        }
+        assert!(output.lock().unwrap().is_empty());
+        assert_eq!(d.options.spin("USI_Hash"), 16);
+        assert_eq!(d.options.value_text("USI_Hash"), Some("16"));
+        assert_eq!(d.options.spin("Threads"), 1);
     }
 
     #[test]
