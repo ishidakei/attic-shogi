@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use attic_eval::{Backend, NnueNetwork, active_backend, evaluate, load_network};
+use attic_eval::{NnueNetwork, active_backend, evaluate, load_network};
 use attic_state::{Position, parse_sfen, parse_usi_move};
 
 const TOLERANCE: i32 = 0;
@@ -103,10 +103,11 @@ fn position_for(fixture: &EvalFixture) -> Position {
 }
 
 /// Backend selection is a compile-time decision, so a VNNI-capable CPU running
-/// a scalar build means the build was not made for its host. On a CPU without
-/// VNNI this only logs the scalar path.
+/// a scalar `-C target-cpu=native` build means the build was not made for its
+/// host. Any other build only logs the backend it compiled: under a fixed
+/// baseline such as `x86-64-v3` the scalar backend is correct on any CPU.
 fn assert_simd_path_selected() {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_cpu_native, target_arch = "x86_64"))]
     {
         let has_vnni = std::arch::is_x86_feature_detected!("avx512f")
             && std::arch::is_x86_feature_detected!("avx512bw")
@@ -114,7 +115,7 @@ fn assert_simd_path_selected() {
         if has_vnni {
             assert_eq!(
                 active_backend(),
-                Backend::Avx512Vnni,
+                attic_eval::Backend::Avx512Vnni,
                 "CPU reports AVX-512 VNNI but this build compiled the scalar \
                  backend — check that `-C target-cpu=native` is in effect",
             );
@@ -125,9 +126,9 @@ fn assert_simd_path_selected() {
             );
         }
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(all(target_cpu_native, target_arch = "x86_64")))]
     eprintln!(
-        "eval parity running on the scalar backend ({:?}): non-x86_64 target",
+        "eval parity running on the {:?} backend: the build's target features select it",
         active_backend()
     );
 }
