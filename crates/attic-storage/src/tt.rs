@@ -721,16 +721,16 @@ impl TranspositionTable {
         let cluster = &self.table[ci];
         let keys = cluster.keys.load(REL);
 
-        for i in 0..CLUSTER_SIZE {
+        for (i, entry) in cluster.entry.iter().enumerate() {
             if Cluster::tag(keys, i) != key21 {
                 continue;
             }
-            let data = cluster.entry[i].read();
+            let data = entry.read();
             if data.move16 != 0 && !rebuilds(data.move16) {
                 continue;
             }
             return (
-                cluster.entry[i].is_occupied(),
+                entry.is_occupied(),
                 data,
                 TtSlot {
                     cluster: ci,

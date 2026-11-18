@@ -187,14 +187,13 @@ fn tables_match_independent_reference_derivation() {
         refs.no_pawns
     );
 
-    for pc in 1..32usize {
+    for (pc, ref_row) in refs.psq.iter().enumerate().skip(1) {
         let Some((promoted, color, kind)) = decode_ref_piece(pc) else {
             continue;
         };
-        for sq_idx in 0..Square::COUNT {
+        for (sq_idx, &reference) in ref_row.iter().enumerate() {
             let sq = Square::from_index(sq_idx as u8).unwrap();
             let port = port_psq(promoted, color, kind, sq);
-            let reference = refs.psq[pc][sq_idx];
             assert_eq!(
                 port, reference,
                 "psq mismatch at reference code {pc} ({promoted:?} {color:?} {kind:?}), \
@@ -204,10 +203,9 @@ fn tables_match_independent_reference_derivation() {
     }
 
     for color in [Color::Black, Color::White] {
-        for pr in 1..=7usize {
+        for (pr, &reference) in refs.hand[color.index()].iter().enumerate().skip(1) {
             let kind = ref_piece_type_to_kind(pr).unwrap();
             let port = crate::key::hand_step(color, kind);
-            let reference = refs.hand[color.index()][pr];
             assert_eq!(
                 port, reference,
                 "hand mismatch at {color:?} reference PieceType {pr} ({kind:?}): \
@@ -233,10 +231,10 @@ fn compose_key(pos: &Position, refs: &RefTables) -> u64 {
 
     let mut hand_key = 0u64;
     for color in [Color::Black, Color::White] {
-        for pr in 1..=7usize {
+        for (pr, &step) in refs.hand[color.index()].iter().enumerate().skip(1) {
             let kind = ref_piece_type_to_kind(pr).unwrap();
             let n = pos.hand(color).count(kind) as u64;
-            hand_key = hand_key.wrapping_add(refs.hand[color.index()][pr].wrapping_mul(n));
+            hand_key = hand_key.wrapping_add(step.wrapping_mul(n));
         }
     }
 
