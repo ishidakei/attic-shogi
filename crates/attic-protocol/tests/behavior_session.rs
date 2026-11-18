@@ -152,6 +152,107 @@ fn draw_value_white_shifts_a_white_to_move_root() {
     );
 }
 
+/// Assert `cp` lies within a pawn's width of `expected`, which is far tighter
+/// than the gaps between the draw values the Stochastic_Ponder test sets.
+fn assert_near(cp: i64, expected: i64, what: &str, out: &str) {
+    assert!(
+        (cp - expected).abs() <= 50,
+        "{what}: expected ~{expected} cp, got {cp} in:\n{out}"
+    );
+}
+
+/// Under Stochastic_Ponder a rewound search roots at the position before the
+/// opponent's move, so the root side to move is the opponent; the draw value is
+/// still taken from our own colour and is `+draw_value` for us. Every other
+/// search takes it from the root side to move. Draw values are set apart
+/// (Black 300, White -500), so each search's adjudicated root score names the
+/// option and the sign it used.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn stochastic_ponder_rewound_search_takes_the_draw_value_from_our_colour() {
+    let dir = TempDir::new("dv-stochastic");
+    write_synthetic_nn_bin(dir.path());
+    let e = dir.path().to_str().unwrap();
+    let black_root = format!("position sfen {STARTPOS_PLY_100_BLACK}");
+    let white_root = format!("position sfen {STARTPOS_PLY_100_BLACK} moves 2g2f");
+
+    let h = start_ready(
+        e,
+        1,
+        &[
+            "setoption name MaxMovesToDraw value 50".to_string(),
+            "setoption name Stochastic_Ponder value true".to_string(),
+            "setoption name PvInterval value 0".to_string(),
+            "setoption name DrawValueBlack value 300".to_string(),
+            "setoption name DrawValueWhite value -500".to_string(),
+        ],
+    );
+
+    // A plain `go` on a White-to-move root: White's value.
+    go_and_wait(&h, &white_root, "go depth 2", 1);
+    let plain_out = h.output();
+    let plain_cp = last_score_cp(&plain_out).expect("a cp score for the plain go");
+    assert_near(plain_cp, -500, "plain go", &plain_out);
+
+    // A `go ponder` with no move to rewind ponders the Black-to-move root in
+    // place: Black's value.
+    let mark = h.output().len();
+    h.send(&black_root);
+    h.send("go ponder btime 1000 wtime 1000");
+    assert!(
+        h.wait_until(30_000, |o| o[mark..].contains("info depth 2 ")),
+        "the in-place ponder must print a second iteration:\n{}",
+        h.output()
+    );
+    let in_place = h.output()[mark..].to_string();
+    let in_place_cp = last_score_cp(&in_place).expect("a cp score for the in-place ponder");
+    assert_near(
+        in_place_cp,
+        300,
+        "go ponder with nothing to rewind",
+        &in_place,
+    );
+    h.send("stop");
+    assert!(
+        h.wait_until(30_000, |o| bestmove_lines(o).len() == 2),
+        "stop must release the in-place ponder's bestmove:\n{}",
+        h.output()
+    );
+
+    // The same `go ponder` one move deep rewinds to the Black-to-move root while
+    // we are White: White's value, negated for the Black root.
+    let mark = h.output().len();
+    h.send(&white_root);
+    h.send("go ponder btime 1000 wtime 1000");
+    assert!(
+        h.wait_until(30_000, |o| o[mark..].contains("info depth 2 ")),
+        "the rewound ponder must print a second iteration:\n{}",
+        h.output()
+    );
+    let rewound = h.output()[mark..].to_string();
+    let rewound_cp = last_score_cp(&rewound).expect("a cp score for the rewound ponder");
+    assert_near(rewound_cp, 500, "rewound stochastic ponder", &rewound);
+
+    // The search `ponderhit` restarts roots at the real White-to-move position:
+    // White's value again.
+    let mark = h.output().len();
+    h.send("ponderhit");
+    assert!(
+        h.wait_until(30_000, |o| bestmove_lines(o).len() == 3),
+        "the restarted search must emit one bestmove:\n{}",
+        h.output()
+    );
+    let end = h.quit_join();
+    let restarted = end[mark..].to_string();
+    let restarted_cp = last_score_cp(&restarted).expect("a cp score for the restarted search");
+    assert_near(
+        restarted_cp,
+        -500,
+        "search restarted by ponderhit",
+        &restarted,
+    );
+}
+
 #[test]
 #[cfg_attr(miri, ignore)]
 fn resign_value_resigns_a_lost_position_but_default_plays() {

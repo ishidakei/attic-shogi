@@ -1014,7 +1014,9 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // Rewound under Stochastic_Ponder, so read after the rewind above.
         let game_ply = self.pos.ply() as i32;
 
-        let Some(job) = self.prepare_coordinator_job(limits, false, start_time) else {
+        let Some(job) =
+            self.prepare_coordinator_job(limits, false, self.stochastic_ponder_rewound, start_time)
+        else {
             self.info_string("no eval network loaded; run isready")?;
             return self.bestmove("resign");
         };
@@ -1067,11 +1069,15 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     /// notice appropriate to its context. `disable_pv_interval` mirrors the
     /// reference `limits.disablePvInterval`: it forces the per-iteration PV
     /// interval to zero so every iteration prints, and is set only by `bench`.
+    /// `stochastic_ponder_rewound` mirrors the reference
+    /// `limits.stochasticPonderRewound`: the root is the position before the
+    /// opponent's move, so the root side to move is not us.
     /// `start_time` is the search's clock origin, `None` meaning now.
     fn prepare_coordinator_job(
         &mut self,
         mut limits: GoLimits,
         disable_pv_interval: bool,
+        stochastic_ponder_rewound: bool,
         start_time: Option<Instant>,
     ) -> Option<CoordinatorJob<W>> {
         // The reference's mutable global `NNUE::FV_SCALE`. Written at the start
@@ -1281,14 +1287,27 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
         // does.
         let max_moves_to_draw = remap_max_moves_to_draw(self.options.spin("MaxMovesToDraw"));
 
-        // `drawValueTable[REPETITION_DRAW][us]` for the root side to move; the
-        // search negates it for the opponent, the reference's symmetric
-        // `±draw_value`.
-        let draw_option = match self.pos.side_to_move() {
+        // The option is chosen by our own colour, which is the root side to
+        // move except in a rewound search, where the root side is the
+        // opponent. The search takes `drawValueTable[REPETITION_DRAW]` for the
+        // root side and negates it for the other, so a rewound root gets
+        // `-draw_value`, the reference's symmetric `±draw_value` around us.
+        let root_side = self.pos.side_to_move();
+        let us = if stochastic_ponder_rewound {
+            root_side.flip()
+        } else {
+            root_side
+        };
+        let draw_option = match us {
             attic_state::Color::Black => self.options.spin("DrawValueBlack"),
             attic_state::Color::White => self.options.spin("DrawValueWhite"),
         };
-        let draw_contempt: Value = (draw_option as Value) * PAWN_VALUE / 100;
+        let draw_value: Value = (draw_option as Value) * PAWN_VALUE / 100;
+        let draw_contempt = if stochastic_ponder_rewound {
+            -draw_value
+        } else {
+            draw_value
+        };
 
         // The post-search resign threshold in centipawns, consumed at emit
         // time.
@@ -1345,7 +1364,7 @@ impl<R: BufRead, W: Write + Send + 'static> UsiDriver<R, W> {
     /// from the final `info nodes`. A position with no network loaded resigns and
     /// contributes 0 nodes.
     fn bench_run_one(&mut self, limits: GoLimits) -> io::Result<u64> {
-        let Some(job) = self.prepare_coordinator_job(limits, true, None) else {
+        let Some(job) = self.prepare_coordinator_job(limits, true, false, None) else {
             self.info_string("no eval network loaded; run isready")?;
             self.bestmove("resign")?;
             return Ok(0);
