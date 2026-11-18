@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn from_slice_preserves_bytes_and_aligns() {
-        let src: Vec<i16> = (0..1000i32).map(|i| (i - 500) as i16).collect();
+        let src = Vec::from_fn(1000, |i| i as i16 - 500);
         let buf = LargePageArray::<i16>::from_slice(&src);
         assert_eq!(buf.as_ptr() as usize % LARGE_PAGE_ALIGN, 0);
         assert_eq!(&*buf, &src[..]);

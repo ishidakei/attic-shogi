@@ -108,7 +108,7 @@ pub fn parse_line(input: &str) -> Command {
         "quit" => Command::Quit,
         "setoption" => parse_setoption(parts),
         "position" => parse_position(trimmed, parts),
-        "go" => parse_go(input.strip_suffix('\n').unwrap_or(input), trimmed),
+        "go" => parse_go(input.trim_suffix('\n'), trimmed),
         "stop" => Command::Stop,
         // `gameover [result]`: the trailing win/lose/draw token is optional and
         // ignored — the command is handled identically to `stop`.

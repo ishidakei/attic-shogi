@@ -551,8 +551,8 @@ mod tests {
 
         let mut pa = Prng::from_entropy();
         let mut pb = Prng::from_entropy();
-        let sa: Vec<u64> = (0..4).map(|_| pa.rand(u64::MAX)).collect();
-        let sb: Vec<u64> = (0..4).map(|_| pb.rand(u64::MAX)).collect();
+        let sa = Vec::from_fn(4, |_| pa.rand(u64::MAX));
+        let sb = Vec::from_fn(4, |_| pb.rand(u64::MAX));
         assert_ne!(sa, sb, "two entropy-seeded streams must diverge");
     }
 
@@ -562,7 +562,7 @@ mod tests {
     fn injected_seed_reproduces_exactly() {
         let seq = |seed| {
             let mut p = Prng::new(seed);
-            (0..8).map(|_| p.rand(1000)).collect::<Vec<_>>()
+            Vec::from_fn(8, |_| p.rand(1000))
         };
         assert_eq!(seq(12345), seq(12345), "same seed => identical sequence");
         assert_ne!(seq(1), seq(2), "different seeds => different sequences");

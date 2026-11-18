@@ -719,17 +719,15 @@ mod shared_tests {
     #[test]
     fn racing_gravity_updates_are_data_race_free() {
         let cell = Arc::new(AtomicI16::new(-523));
-        let handles: Vec<_> = (0..2)
-            .map(|t| {
-                let cell = Arc::clone(&cell);
-                std::thread::spawn(move || {
-                    for i in 0..50i32 {
-                        let bonus = if (i + t) % 2 == 0 { 9000 } else { -7000 };
-                        apply_gravity_atomic(&cell, bonus, CONTINUATION_HISTORY_D);
-                    }
-                })
+        let handles = Vec::from_fn(2, |t| {
+            let cell = Arc::clone(&cell);
+            std::thread::spawn(move || {
+                for i in 0..50 {
+                    let bonus = if (i + t) % 2 == 0 { 9000 } else { -7000 };
+                    apply_gravity_atomic(&cell, bonus, CONTINUATION_HISTORY_D);
+                }
             })
-            .collect();
+        });
         for h in handles {
             h.join().expect("update thread must not panic");
         }
@@ -745,19 +743,17 @@ mod shared_tests {
     fn concurrent_updates_terminate_within_limit() {
         let sh = Arc::new(SharedHistories::new(2));
         let key = 12_345u64;
-        let handles: Vec<_> = (0..2)
-            .map(|t| {
-                let sh = Arc::clone(&sh);
-                std::thread::spawn(move || {
-                    for i in 0..20_000i32 {
-                        let bonus = if (i + t) % 2 == 0 { 5000 } else { -5000 };
-                        sh.pawn_update(key, bp(), to(), bonus);
-                        sh.correction_update(key, Color::White, CorrChannel::Minor, bonus);
-                        sh.continuation().update_at(7, bp(), to(), bonus);
-                    }
-                })
+        let handles = Vec::from_fn(2, |t| {
+            let sh = Arc::clone(&sh);
+            std::thread::spawn(move || {
+                for i in 0..20_000 {
+                    let bonus = if (i + t) % 2 == 0 { 5000 } else { -5000 };
+                    sh.pawn_update(key, bp(), to(), bonus);
+                    sh.correction_update(key, Color::White, CorrChannel::Minor, bonus);
+                    sh.continuation().update_at(7, bp(), to(), bonus);
+                }
             })
-            .collect();
+        });
         for h in handles {
             h.join().expect("update thread must not panic");
         }

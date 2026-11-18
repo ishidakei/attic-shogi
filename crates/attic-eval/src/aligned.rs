@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn from_slice_preserves_bytes_and_aligns() {
-        let src: Vec<i8> = (0..200i32).map(|i| (i - 100) as i8).collect();
+        let src = Vec::from_fn(200, |i| (i as i32 - 100) as i8);
         let buf = Aligned64::<i8>::from_slice(&src);
         assert_aligned(&buf);
         assert_eq!(&*buf, &src[..]);
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn from_vec_and_from_iter_match() {
-        let v: Vec<i32> = (0..50).map(|i| i * 3 - 7).collect();
+        let v = Vec::from_fn(50, |i| i as i32 * 3 - 7);
         let from_vec = Aligned64::<i32>::from(v.clone());
         let from_iter: Aligned64<i32> = v.iter().copied().collect();
         assert_aligned(&from_vec);

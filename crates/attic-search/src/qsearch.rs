@@ -720,21 +720,17 @@ impl<'a> QSearch<'a> {
             // the buffer on the hot path. Built as a `Vec` because
             // `SearchStackCell` is not `Copy`, then converted without a stack
             // copy.
-            stack: (0..STACK_LEN)
-                .map(|_| {
-                    let mut cell = SearchStackCell::default();
-                    cell.pv.reserve_exact(MAX_PLY as usize + 1);
-                    cell
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice()
-                .try_into()
-                .map_err(|_| ())
-                .expect("STACK_LEN cells collected"),
+            stack: Vec::from_fn(STACK_LEN, |_| {
+                let mut cell = SearchStackCell::default();
+                cell.pv.reserve_exact(MAX_PLY as usize + 1);
+                cell
+            })
+            .into_boxed_slice()
+            .try_into()
+            .map_err(|_| ())
+            .expect("STACK_LEN cells collected"),
             // `Accumulator` is not `Clone`, so the slots are built individually.
-            acc_stack: (0..ACC_LEN)
-                .map(|_| Accumulator::new())
-                .collect::<Vec<_>>()
+            acc_stack: Vec::from_fn(ACC_LEN, |_| Accumulator::new())
                 .into_boxed_slice()
                 .try_into()
                 .map_err(|_| ())
@@ -4352,7 +4348,7 @@ mod tests {
         let net = zero_net();
         let table = fresh_tt();
 
-        let slots: Arc<Vec<AtomicU64>> = Arc::new((0..4).map(|_| AtomicU64::new(0)).collect());
+        let slots: Arc<Vec<AtomicU64>> = Arc::new(Vec::from_fn(4, |_| AtomicU64::new(0)));
         slots[0].store(2, Ordering::Relaxed);
         slots[1].store(3, Ordering::Relaxed);
         slots[2].store(0, Ordering::Relaxed);

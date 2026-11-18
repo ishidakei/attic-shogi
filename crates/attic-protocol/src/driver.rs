@@ -2548,12 +2548,10 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
     }
 
     // Index 0 is the main worker, `1..` the helpers.
-    let node_slots: Arc<Vec<AtomicU64>> =
-        Arc::new((0..n_threads).map(|_| AtomicU64::new(0)).collect());
+    let node_slots: Arc<Vec<AtomicU64>> = Arc::new(Vec::from_fn(n_threads, |_| AtomicU64::new(0)));
     // Each worker bumps its own slot at the root; the main worker folds them all
     // each iteration.
-    let bmc_slots: Arc<Vec<AtomicU64>> =
-        Arc::new((0..n_threads).map(|_| AtomicU64::new(0)).collect());
+    let bmc_slots: Arc<Vec<AtomicU64>> = Arc::new(Vec::from_fn(n_threads, |_| AtomicU64::new(0)));
 
     // Index `h` in `helper_slots` is worker `h + 1`.
     for (h, slot) in helper_slots.iter().enumerate() {

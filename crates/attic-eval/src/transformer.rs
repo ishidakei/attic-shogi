@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn refresh_perspective_with_no_active_features_is_the_bias_vector() {
-        let biases: Vec<i16> = (0..HIDDEN_SIZE).map(|i| (i as i16) % 17 - 8).collect();
+        let biases = Vec::from_fn(HIDDEN_SIZE, |i| (i as i16) % 17 - 8);
         let weights = vec![123i16; 4 * HIDDEN_SIZE];
         let mut out = vec![0i16; HIDDEN_SIZE];
         refresh_perspective(&mut out, &biases, &weights, &[]);
