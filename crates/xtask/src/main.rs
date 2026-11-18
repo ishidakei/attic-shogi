@@ -40,9 +40,10 @@ enum Command {
 
 #[derive(clap::Args, Debug)]
 struct BuildReferenceArgs {
-    /// Upstream Makefile target. `tournament` is the production parity binary;
-    /// `evallearn` is the variant required by `capture-perft` (registers the
-    /// `SkipLoadingEval` USI option, which the `tournament` build strips).
+    /// Upstream Makefile target. `tournament` is the production parity binary
+    /// and the build every `capture-*` subcommand runs against, `capture-perft`
+    /// included: it sends no build-specific USI option, so the default build
+    /// is enough.
     #[arg(long, value_enum, default_value_t = MakeTarget::Tournament)]
     make_target: MakeTarget,
     /// CPU target passed to the upstream Makefile.
@@ -64,7 +65,6 @@ struct BuildReferenceArgs {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum MakeTarget {
     Tournament,
-    Evallearn,
     Normal,
 }
 
@@ -72,7 +72,6 @@ impl MakeTarget {
     fn as_str(self) -> &'static str {
         match self {
             MakeTarget::Tournament => "tournament",
-            MakeTarget::Evallearn => "evallearn",
             MakeTarget::Normal => "normal",
         }
     }
