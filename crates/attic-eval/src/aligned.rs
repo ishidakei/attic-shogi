@@ -34,7 +34,8 @@ impl<T: Copy> Aligned64<T> {
             // `ALIGN` as the sentinel, so that an empty buffer still reports a
             // non-null, 64-aligned base.
             return Self {
-                ptr: NonNull::new(ALIGN as *mut T).expect("ALIGN sentinel is non-null"),
+                ptr: NonNull::new(std::ptr::without_provenance_mut(ALIGN))
+                    .expect("ALIGN sentinel is non-null"),
                 len: 0,
             };
         }

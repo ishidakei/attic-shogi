@@ -11,7 +11,8 @@ publish = false
 [dependencies]
 
 # `mmap` / `madvise(MADV_HUGEPAGE)` / `munmap` for the large-page allocations,
-# mirroring the reference's `aligned_large_pages_alloc`. `cfg(unix)`-gated so non-Unix
-# targets never pull it in.
-[target.'cfg(unix)'.dependencies]
+# mirroring the reference's `aligned_large_pages_alloc`. Gated on the same cfg as the
+# code that calls it: other targets, and miri (which cannot run a foreign call), take the
+# `std::alloc` fallback and never pull it in.
+[target.'cfg(all(target_os = "linux", not(miri)))'.dependencies]
 libc = "0.2"
