@@ -6,3 +6,7 @@ xtask = "run --quiet -p xtask --"
 # default. Applies to every profile.
 [build]
 rustflags = ["-C", "target-cpu=native"]
+
+# A release yanked or found broken in its first days never reaches Cargo.lock.
+[registry]
+global-min-publish-age = "3 days"
