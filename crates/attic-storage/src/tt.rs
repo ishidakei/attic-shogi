@@ -35,14 +35,12 @@
 //! returns `Some` only once every worker has dropped its clone. The type system
 //! therefore enforces that a resize or clear never races a probe.
 
-use std::alloc::Layout;
-use std::mem::size_of;
-use std::ops::{Deref, DerefMut};
+use std::marker::PhantomData;
+use std::mem::{size_of, size_of_val};
 use std::ptr::NonNull;
-use std::slice;
 use std::sync::atomic::{AtomicI16, AtomicU8, AtomicU16, AtomicU64, Ordering};
 
-use crate::large_page;
+use crate::large_page::{self, LargePageAlloc, Zeroable};
 
 /// The single memory ordering used for every entry field access, matching the
 /// reference's unsynchronised reads and writes.
@@ -315,116 +313,34 @@ impl Cluster {
 // regression must be a compile error.
 const _: () = assert!(size_of::<Cluster>() == 32);
 
-/// Base alignment of the cluster allocation, an alias for the shared
-/// [`crate::large_page::LARGE_PAGE_ALIGN`] the TT allocates through.
-const TT_ALLOC_ALIGN: usize = crate::large_page::LARGE_PAGE_ALIGN;
+// SAFETY: every field of a `Cluster` is an atomic integer, and an all-zero
+// cluster is a valid, unoccupied one.
+unsafe impl Zeroable for Cluster {}
 
-/// The transposition table's owned backing store: a raw, [`TT_ALLOC_ALIGN`]-
-/// aligned, zero-initialised block of [`Cluster`]s. The exposed slice covers
-/// exactly `len` clusters; the round-up tail of the allocation is not part of
-/// it.
-struct ClusterArray {
-    /// Base of the aligned allocation. Dangling (never dereferenced) when
-    /// `len == 0`; always [`TT_ALLOC_ALIGN`]-aligned otherwise.
-    ptr: NonNull<Cluster>,
-    /// Number of live clusters (`clusterCount`).
-    len: usize,
-    /// The exact [`Layout`] the block was allocated with, replayed verbatim to
-    /// [`large_page::free_large`] on drop.
-    layout: Layout,
-}
-
-// SAFETY: `ClusterArray` uniquely owns a heap block of `Cluster`, freed once in
-// `Drop`; `Cluster` is itself `Send`/`Sync`, every field being an atomic. The
-// raw `NonNull` suppresses the automatic derivation, so it is restored here.
-unsafe impl Send for ClusterArray {}
-unsafe impl Sync for ClusterArray {}
-
-impl ClusterArray {
-    /// An unsized backing store (`clusterCount == 0`), allocating nothing.
-    fn empty() -> Self {
-        ClusterArray {
-            ptr: NonNull::dangling(),
-            len: 0,
-            layout: Layout::from_size_align(0, TT_ALLOC_ALIGN)
-                .expect("TT_ALLOC_ALIGN is a valid power-of-two alignment"),
-        }
-    }
-
-    /// Allocate `cluster_count` zeroed clusters through the shared
-    /// [`crate::large_page::alloc_zeroed_large`].
-    fn alloc(cluster_count: usize) -> Self {
-        if cluster_count == 0 {
-            return Self::empty();
-        }
-
-        // A `Cluster` is 32 bytes, so the product cannot overflow for any table
-        // size the driver can request.
-        let bytes = cluster_count * size_of::<Cluster>();
-        let (raw, layout) = large_page::alloc_zeroed_large(bytes);
-
-        // An all-zero bit pattern is a valid, unoccupied `Cluster`, so the
-        // fresh block is an empty table before any of its pages is written.
-        ClusterArray {
-            ptr: raw.cast(),
-            len: cluster_count,
-            layout,
-        }
-    }
-}
-
-impl Drop for ClusterArray {
-    fn drop(&mut self) {
-        if self.len != 0 {
-            // SAFETY: `ptr` came from `large_page::alloc_zeroed_large` with
-            // exactly `layout` (an unsized store keeps `len == 0` and is
-            // skipped), and it is freed exactly once because `ClusterArray`
-            // uniquely owns the block.
-            unsafe {
-                large_page::free_large(self.ptr.cast(), self.layout);
-            }
-        }
-    }
-}
-
-impl Deref for ClusterArray {
-    type Target = [Cluster];
-
-    #[inline]
-    fn deref(&self) -> &[Cluster] {
-        // SAFETY: for `len > 0`, `ptr` addresses `len` contiguous `Cluster`s
-        // within one allocation, zero-initialised by `alloc_zeroed_large`. For
-        // `len == 0` this yields an empty slice, for which `from_raw_parts`
-        // accepts any aligned non-null pointer (`NonNull::dangling` is suitably
-        // aligned). The borrow is tied to `&self`, so no `&mut` alias can
-        // coexist.
-        unsafe { slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
-    }
-}
-
-impl DerefMut for ClusterArray {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut [Cluster] {
-        // SAFETY: as `deref`, but the `&mut self` borrow guarantees exclusivity,
-        // so handing out `&mut [Cluster]` introduces no aliasing.
-        unsafe { slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
-    }
-}
-
-/// The bytes of a [`ClusterArray`], handed to the threads of
-/// [`TranspositionTable::clear_with_threads`]. The raw pointer keeps the
-/// allocation's own provenance, so the threads write through no reference.
-struct TableBytes {
+/// The bytes of the cluster block, handed to the threads of
+/// [`TranspositionTable::clear_with_threads`] for the length of the `&mut`
+/// borrow of the table they were taken from, so that the threads write through
+/// a raw pointer rather than through a shared reference.
+struct TableBytes<'a> {
     base: NonNull<u8>,
     len: usize,
+    _table: PhantomData<&'a mut [Cluster]>,
 }
 
-// SAFETY: a `TableBytes` is only built from a `&mut TranspositionTable`, and its
-// users write disjoint ranges while that borrow lasts.
-unsafe impl Send for TableBytes {}
-unsafe impl Sync for TableBytes {}
+// SAFETY: a `TableBytes` holds the exclusive borrow of the table it was taken
+// from, and its users write disjoint ranges.
+unsafe impl Send for TableBytes<'_> {}
+unsafe impl Sync for TableBytes<'_> {}
 
-impl TableBytes {
+impl<'a> TableBytes<'a> {
+    fn new(table: &'a mut [Cluster]) -> Self {
+        TableBytes {
+            len: size_of_val(table),
+            base: NonNull::from(table).cast(),
+            _table: PhantomData,
+        }
+    }
+
     /// Zero the `i`-th of `parts` equal byte ranges, the last taking the
     /// remainder.
     ///
@@ -457,7 +373,7 @@ fn mul_hi64(a: u64, b: u64) -> u64 {
 /// [`Cluster`].
 pub struct TranspositionTable {
     /// Allocated clusters, empty until [`Self::resize`].
-    table: ClusterArray,
+    table: Box<[Cluster], LargePageAlloc>,
     /// Generation counter, bumped once per [`Self::new_search`]. Only the low
     /// [`GENERATION_BITS`] bits are significant.
     generation8: AtomicU8,
@@ -473,7 +389,7 @@ impl TranspositionTable {
     /// A fresh, empty table. Call [`Self::resize`] before use.
     pub fn new() -> Self {
         TranspositionTable {
-            table: ClusterArray::empty(),
+            table: large_page::zeroed_slice(0),
             generation8: AtomicU8::new(0),
         }
     }
@@ -526,14 +442,14 @@ impl TranspositionTable {
         let new_cluster_count = mb_size * 1024 * 1024 / size_of::<Cluster>();
         debug_assert!(new_cluster_count & 1 == 0);
         // Drop the old region first so the two never coexist in memory.
-        self.table = ClusterArray::empty();
-        self.table = ClusterArray::alloc(new_cluster_count);
+        self.table = large_page::zeroed_slice(0);
+        self.table = large_page::zeroed_slice(new_cluster_count);
     }
 
     /// Zero every entry and reset the generation on the calling thread.
     pub fn clear(&mut self) {
         *self.generation8.get_mut() = 0;
-        let bytes = self.table_bytes();
+        let bytes = TableBytes::new(&mut self.table);
         // SAFETY: `&mut self` excludes every other access to the table, and the
         // range is the whole of it.
         unsafe { bytes.zero_part(0, 1) };
@@ -557,7 +473,7 @@ impl TranspositionTable {
             return;
         }
         let thread_count = thread_count.max(1);
-        let bytes = self.table_bytes();
+        let bytes = TableBytes::new(&mut self.table);
         std::thread::scope(|s| {
             for i in 0..thread_count {
                 let bytes = &bytes;
@@ -570,13 +486,6 @@ impl TranspositionTable {
                 });
             }
         });
-    }
-
-    fn table_bytes(&mut self) -> TableBytes {
-        TableBytes {
-            base: self.table.ptr.cast(),
-            len: self.table.len() * size_of::<Cluster>(),
-        }
     }
 
     /// Bump the generation at the start of a root search
@@ -864,6 +773,9 @@ mod alloc_tests {
 
     use super::*;
 
+    /// Base alignment of the cluster allocation.
+    const TT_ALLOC_ALIGN: usize = crate::large_page::LARGE_PAGE_ALIGN;
+
     /// The alignment the current target uses, mirroring [`TT_ALLOC_ALIGN`].
     const EXPECTED_ALIGN: usize = if cfg!(target_os = "linux") {
         2 * 1024 * 1024
@@ -879,37 +791,40 @@ mod alloc_tests {
     #[test]
     fn base_pointer_is_aligned() {
         for &cc in &[2usize, 32768, 3 * 32768, 1024 * 1024 / size_of::<Cluster>()] {
-            let a = ClusterArray::alloc(cc);
+            let a = large_page::zeroed_slice::<Cluster>(cc);
             assert_eq!(
-                a.ptr.as_ptr() as usize % TT_ALLOC_ALIGN,
+                a.as_ptr() as usize % TT_ALLOC_ALIGN,
                 0,
                 "base pointer for {cc} clusters not {TT_ALLOC_ALIGN}-aligned",
             );
-            assert_eq!(a.len, cc);
+            assert_eq!(a.len(), cc);
         }
     }
 
     #[test]
-    fn allocation_size_rounds_up_to_alignment() {
-        // A byte size far below the alignment must round up to exactly one
-        // alignment unit.
-        let a = ClusterArray::alloc(2);
-        assert_eq!(a.layout.size(), TT_ALLOC_ALIGN);
-        assert_eq!(a.layout.align(), TT_ALLOC_ALIGN);
+    fn resize_exposes_exactly_the_requested_clusters() {
+        let mut tt = TranspositionTable::new();
+        assert!(tt.resize(1));
+        assert_eq!(tt.cluster_count(), 1024 * 1024 / size_of::<Cluster>());
+        assert_eq!(tt.backing_ptr_addr() % TT_ALLOC_ALIGN, 0);
+        assert!(!tt.resize(1));
 
-        // A byte size that is not a whole multiple of the alignment must round
-        // strictly up, and still cover the live clusters.
-        let cc = 32768 + 1; // 32769 * 32 B = 1 MiB + 32 B
-        let a = ClusterArray::alloc(cc);
-        let bytes = cc * size_of::<Cluster>();
-        assert_eq!(a.layout.size() % TT_ALLOC_ALIGN, 0);
-        assert!(a.layout.size() >= bytes);
-        assert!(a.layout.size() - bytes < TT_ALLOC_ALIGN);
+        // The clear writes through raw pointers taken from the table's `&mut`
+        // borrow; the table's own accesses afterwards must still be valid.
+        tt.table[0].keys.store(1, REL);
+        tt.clear_with_threads(2, |_| {});
+        assert_eq!(tt.table[0].keys.load(REL), 0);
+        tt.table[0].keys.store(1, REL);
+        tt.clear();
+        assert_eq!(tt.table[0].keys.load(REL), 0);
+
+        tt.reallocate(2);
+        assert_eq!(tt.cluster_count(), 2 * 1024 * 1024 / size_of::<Cluster>());
     }
 
     #[test]
     fn fresh_allocation_is_zeroed() {
-        let a = ClusterArray::alloc(4096);
+        let a = large_page::zeroed_slice::<Cluster>(4096);
         for cluster in a.iter() {
             assert_eq!(cluster.keys.load(REL), 0);
             for e in &cluster.entry {
@@ -924,11 +839,10 @@ mod alloc_tests {
 
     #[test]
     fn empty_backing_store_allocates_nothing() {
-        let a = ClusterArray::empty();
-        assert_eq!(a.len, 0);
-        assert!(a.is_empty());
-        let z = ClusterArray::alloc(0);
-        assert_eq!(z.len, 0);
+        let tt = TranspositionTable::new();
+        assert_eq!(tt.cluster_count(), 0);
+        assert_eq!(tt.backing_ptr_addr(), 0);
+        let z = large_page::zeroed_slice::<Cluster>(0);
         assert!(z.is_empty());
     }
 
@@ -937,8 +851,8 @@ mod alloc_tests {
         // Under a matching-layout free, repetition neither leaks nor corrupts
         // the allocator.
         for _ in 0..64 {
-            let a = ClusterArray::alloc(32768);
-            assert_eq!(a.len, 32768);
+            let a = large_page::zeroed_slice::<Cluster>(32768);
+            assert_eq!(a.len(), 32768);
             drop(a);
         }
     }

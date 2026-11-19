@@ -22,7 +22,8 @@
 use std::sync::atomic::{AtomicI16, Ordering};
 
 use attic_state::{Color, Move, Piece, Square};
-use attic_storage::{LargePageArray, LargePageBox};
+use attic_storage::LargePageAlloc;
+use attic_storage::large_page::{zeroed_box, zeroed_slice};
 
 /// Number of low-ply planes the reference keeps (`LOW_PLY_HISTORY_SIZE`):
 /// `lowPlyHistory` is indexed by `ply` for `ply < 5`.
@@ -89,13 +90,13 @@ fn captured_code(p: Piece) -> usize {
 /// `captureHistory[pc][to][type_of(captured)]` — the capture-ordering bonus for
 /// "moved piece `pc` captures a `captured`-type piece on square `to`".
 pub struct CapturePieceToHistory {
-    table: LargePageArray<i16>,
+    table: Box<[i16], LargePageAlloc>,
 }
 
 impl Default for CapturePieceToHistory {
     fn default() -> Self {
         Self {
-            table: LargePageArray::zeroed(PIECE_NB * SQ_NB * CAPTURED_NB),
+            table: zeroed_slice(PIECE_NB * SQ_NB * CAPTURED_NB),
         }
     }
 }
@@ -137,13 +138,13 @@ impl CapturePieceToHistory {
 /// move, indexed by the low 16 bits of the packed move, which encode exactly
 /// the pair the reference's `move.raw()` uses.
 pub struct ButterflyHistory {
-    table: LargePageArray<i16>,
+    table: Box<[i16], LargePageAlloc>,
 }
 
 impl Default for ButterflyHistory {
     fn default() -> Self {
         Self {
-            table: LargePageArray::zeroed(Color::COUNT * (1 << 16)),
+            table: zeroed_slice(Color::COUNT * (1 << 16)),
         }
     }
 }
@@ -226,13 +227,13 @@ impl PieceToHistory {
 /// as the reference does. Indexed like [`ButterflyHistory`] but with a ply axis
 /// instead of a colour one.
 pub struct LowPlyHistory {
-    table: LargePageArray<i16>,
+    table: Box<[i16], LargePageAlloc>,
 }
 
 impl Default for LowPlyHistory {
     fn default() -> Self {
         Self {
-            table: LargePageArray::zeroed(LOW_PLY_HISTORY_SIZE * (1 << 16)),
+            table: zeroed_slice(LOW_PLY_HISTORY_SIZE * (1 << 16)),
         }
     }
 }
@@ -325,11 +326,11 @@ pub struct SharedHistories {
     /// The node's thread count, the slot multiplier of both tables.
     thread_count: usize,
     /// Correction table, flat over `[slot][color][channel]`.
-    correction: LargePageArray<AtomicI16>,
+    correction: Box<[AtomicI16], LargePageAlloc>,
     /// `correctionHistory.get_size() - 1` — the correction slot mask.
     corr_mask: usize,
     /// Pawn table, flat over `[plane][pc][to]`.
-    pawn: LargePageArray<AtomicI16>,
+    pawn: Box<[AtomicI16], LargePageAlloc>,
     /// `pawnHistory.get_size() - 1` — the pawn slot mask.
     pawn_mask: usize,
     /// `continuationHistory[in_check][capture][pc][to]` planes.
@@ -352,9 +353,9 @@ impl SharedHistories {
         let pawn_slots = thread_count * PAWN_HISTORY_BASE_SIZE;
         let out = Self {
             thread_count,
-            correction: LargePageArray::zeroed(corr_slots * CORR_SLOT_LEN),
+            correction: zeroed_slice(corr_slots * CORR_SLOT_LEN),
             corr_mask: corr_slots - 1,
-            pawn: LargePageArray::zeroed(pawn_slots * PAWN_SLOT_LEN),
+            pawn: zeroed_slice(pawn_slots * PAWN_SLOT_LEN),
             pawn_mask: pawn_slots - 1,
             continuation: ContinuationHistory::new(),
         };
@@ -452,13 +453,14 @@ impl SharedHistories {
 pub struct ContinuationCorrectionHistory {
     /// Flat over `[plane][inner_pc][inner_to]`, with the inner dimensions fixed
     /// so that each access carries a compile-time length.
-    table: LargePageBox<[[[i16; SQ_NB]; PIECE_NB]; ContinuationCorrectionHistory::NUM_PLANES]>,
+    table:
+        Box<[[[i16; SQ_NB]; PIECE_NB]; ContinuationCorrectionHistory::NUM_PLANES], LargePageAlloc>,
 }
 
 impl Default for ContinuationCorrectionHistory {
     fn default() -> Self {
         Self {
-            table: LargePageBox::zeroed(),
+            table: zeroed_box(),
         }
     }
 }
@@ -510,13 +512,13 @@ impl ContinuationCorrectionHistory {
 /// take `&self`; updates race exactly as `apply_gravity_atomic` describes.
 pub struct ContinuationHistory {
     /// Flat over `[plane][inner_pc][inner_to]`.
-    table: LargePageArray<AtomicI16>,
+    table: Box<[AtomicI16], LargePageAlloc>,
 }
 
 impl Default for ContinuationHistory {
     fn default() -> Self {
         Self {
-            table: LargePageArray::zeroed(Self::NUM_PLANES * Self::PLANE_LEN),
+            table: zeroed_slice(Self::NUM_PLANES * Self::PLANE_LEN),
         }
     }
 }

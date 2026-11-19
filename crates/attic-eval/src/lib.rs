@@ -13,7 +13,7 @@ mod simd;
 mod transformer;
 mod types;
 
-pub use aligned::Aligned64;
+pub use aligned::Align64Alloc;
 pub use features::{
     FEATURE_DIMENSION, FeatureIndex, MAX_ACTIVE_FEATURES, MoveDelta, PerspectiveDelta,
     active_features, active_features_both, requires_full_refresh,

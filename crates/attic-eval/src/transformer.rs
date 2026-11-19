@@ -27,7 +27,7 @@
 
 use attic_state::{Color, Move, Position};
 
-use crate::aligned::Aligned64;
+use crate::aligned::{self, Align64Alloc};
 use crate::features::{
     FeatureIndex, MoveDelta, active_features, changed_indices, requires_full_refresh,
 };
@@ -44,7 +44,7 @@ pub const FT_OUTPUT_DIMS: usize = FC_0_INPUT_DIMS;
 #[derive(Debug)]
 pub struct Accumulator {
     /// Indexed by [`Color::index`]; see the module head on the layout.
-    perspectives: [Aligned64<i16>; Color::COUNT],
+    perspectives: [Box<[i16], Align64Alloc>; Color::COUNT],
 }
 
 impl Accumulator {
@@ -52,8 +52,8 @@ impl Accumulator {
     pub fn new() -> Self {
         Accumulator {
             perspectives: [
-                Aligned64::<i16>::zeroed(HIDDEN_SIZE),
-                Aligned64::<i16>::zeroed(HIDDEN_SIZE),
+                aligned::defaulted(HIDDEN_SIZE),
+                aligned::defaulted(HIDDEN_SIZE),
             ],
         }
     }

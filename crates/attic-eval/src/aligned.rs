@@ -1,110 +1,67 @@
-//! 64-byte-aligned heap buffer for NNUE weight/bias data, so that the AVX-512
+//! 64-byte-aligning allocator for NNUE weight/bias data, so that the AVX-512
 //! kernels' unaligned 512-bit loads never split a cache line.
 
-use std::alloc::{self, Layout};
-use std::fmt;
-use std::ops::{Deref, DerefMut};
+use std::alloc::{AllocError, Allocator, Global, Layout};
 use std::ptr::NonNull;
 
 /// Cache-line size assumed by the AVX-512 NNUE kernels.
 const ALIGN: usize = 64;
 
-/// A heap-allocated `[T]` whose base pointer is 64-byte aligned (`T: Copy`).
-pub struct Aligned64<T: Copy> {
-    /// Non-null for every length; a length of 0 leaves a dangling but aligned
-    /// sentinel.
-    ptr: NonNull<T>,
-    len: usize,
+/// The global allocator with every block's alignment raised to at least 64
+/// bytes. A non-empty `Box<[T], Align64Alloc>` is a `Box<[T]>` whose base
+/// pointer is cache-line aligned; an empty one allocates nothing, and its
+/// dangling base is aligned for `T` only.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Align64Alloc;
+
+/// `layout` with its alignment raised to [`ALIGN`]; the size is unchanged, so
+/// every call to the global allocator sees one and the same layout for a block.
+fn raised(layout: Layout) -> Result<Layout, AllocError> {
+    layout.align_to(ALIGN).map_err(|_| AllocError)
 }
 
-// SAFETY: uniquely owns its allocation like `Box<[T]>`, so `Send`/`Sync` when `T` is.
-unsafe impl<T: Copy + Send> Send for Aligned64<T> {}
-unsafe impl<T: Copy + Sync> Sync for Aligned64<T> {}
-
-impl<T: Copy> Aligned64<T> {
-    /// `Layout` for `len` elements at 64-byte alignment.
-    fn layout(len: usize) -> Layout {
-        Layout::from_size_align(len * std::mem::size_of::<T>(), ALIGN)
-            .expect("NNUE buffer layout overflow")
+// SAFETY: every method forwards to `Global` with the same raised layout, so a
+// block is freed by `Global` with exactly the layout it was allocated with, and
+// the returned block meets the caller's (weaker) alignment as well. A zero-size
+// request gets `Global`'s dangling, now 64-aligned, pointer, which `Global`'s
+// `deallocate` accepts.
+unsafe impl Allocator for Align64Alloc {
+    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        Global.allocate(raised(layout)?)
     }
 
-    /// Allocates a zeroed, 64-byte-aligned buffer of `len` elements.
-    pub fn zeroed(len: usize) -> Self {
-        if len == 0 {
-            // `ALIGN` as the sentinel, so that an empty buffer still reports a
-            // non-null, 64-aligned base.
-            return Self {
-                ptr: NonNull::new(std::ptr::without_provenance_mut(ALIGN))
-                    .expect("ALIGN sentinel is non-null"),
-                len: 0,
-            };
-        }
-        let layout = Self::layout(len);
-        // SAFETY: len > 0 non-ZST layout; alloc_zeroed gives a 64-aligned block of valid zero bytes.
-        let raw = unsafe { alloc::alloc_zeroed(layout) } as *mut T;
-        let ptr = NonNull::new(raw).unwrap_or_else(|| alloc::handle_alloc_error(layout));
-        Self { ptr, len }
+    fn allocate_zeroed(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+        Global.allocate_zeroed(raised(layout)?)
     }
 
-    /// Copies `src` into a fresh 64-byte-aligned buffer of the same length.
-    pub fn from_slice(src: &[T]) -> Self {
-        let mut buf = Self::zeroed(src.len());
-        // SAFETY: buf holds src.len() elements disjoint from src; T: Copy makes a bytewise copy valid.
-        unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), buf.ptr.as_ptr(), src.len()) };
-        buf.len = src.len();
-        buf
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        let layout = raised(layout).expect("a layout that allocated raises again");
+        // SAFETY: `ptr` came from `allocate`/`allocate_zeroed` above, which got
+        // it from `Global` with this same raised layout.
+        unsafe { Global.deallocate(ptr, layout) }
     }
 }
 
-impl<T: Copy> Deref for Aligned64<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &[T] {
-        // SAFETY: ptr addresses len contiguous initialised T (dangling-but-aligned when len == 0).
-        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
-    }
+/// A 64-byte-aligned `[T]` holding a copy of `src`.
+#[cfg(test)]
+pub(crate) fn from_slice<T: Copy>(src: &[T]) -> Box<[T], Align64Alloc> {
+    let mut v = Vec::with_capacity_in(src.len(), Align64Alloc);
+    v.extend_from_slice(src);
+    v.into_boxed_slice()
 }
 
-impl<T: Copy> DerefMut for Aligned64<T> {
-    fn deref_mut(&mut self) -> &mut [T] {
-        // SAFETY: see `deref`; `&mut self` guarantees exclusive access.
-        unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
-    }
-}
-
-impl<T: Copy> Drop for Aligned64<T> {
-    fn drop(&mut self) {
-        if self.len != 0 {
-            // SAFETY: ptr came from alloc_zeroed with this exact layout; T: Copy has no destructor.
-            unsafe { alloc::dealloc(self.ptr.as_ptr() as *mut u8, Self::layout(self.len)) };
-        }
-    }
-}
-
-impl<T: Copy> From<Vec<T>> for Aligned64<T> {
-    fn from(v: Vec<T>) -> Self {
-        Self::from_slice(&v)
-    }
-}
-
-impl<T: Copy> FromIterator<T> for Aligned64<T> {
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        let v: Vec<T> = iter.into_iter().collect();
-        Self::from_slice(&v)
-    }
-}
-
-impl<T: Copy + fmt::Debug> fmt::Debug for Aligned64<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&**self, f)
-    }
+/// A 64-byte-aligned `[T]` of `len` default values.
+pub(crate) fn defaulted<T: Copy + Default>(len: usize) -> Box<[T], Align64Alloc> {
+    let mut v = Vec::with_capacity_in(len, Align64Alloc);
+    v.resize(len, T::default());
+    v.into_boxed_slice()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn assert_aligned<T: Copy>(buf: &Aligned64<T>) {
+    fn assert_aligned<T>(buf: &[T]) {
         assert_eq!(
             buf.as_ptr() as usize % ALIGN,
             0,
@@ -113,9 +70,9 @@ mod tests {
     }
 
     #[test]
-    fn zeroed_is_aligned_and_zero() {
+    fn defaulted_is_aligned_and_zero() {
         for len in [1usize, 7, 15, 16, 17, 1_536, 24_576] {
-            let buf = Aligned64::<i16>::zeroed(len);
+            let buf = defaulted::<i16>(len);
             assert_eq!(buf.len(), len);
             assert_aligned(&buf);
             assert!(buf.iter().all(|&x| x == 0));
@@ -125,39 +82,35 @@ mod tests {
     #[test]
     fn from_slice_preserves_bytes_and_aligns() {
         let src = Vec::from_fn(200, |i| (i as i32 - 100) as i8);
-        let buf = Aligned64::<i8>::from_slice(&src);
+        let buf = from_slice(&src);
         assert_aligned(&buf);
         assert_eq!(&*buf, &src[..]);
     }
 
     #[test]
-    fn from_vec_and_from_iter_match() {
-        let v = Vec::from_fn(50, |i| i as i32 * 3 - 7);
-        let from_vec = Aligned64::<i32>::from(v.clone());
-        let from_iter: Aligned64<i32> = v.iter().copied().collect();
-        assert_aligned(&from_vec);
-        assert_aligned(&from_iter);
-        assert_eq!(&*from_vec, &v[..]);
-        assert_eq!(&*from_iter, &v[..]);
-    }
-
-    #[test]
-    fn empty_is_valid_and_aligned() {
-        let buf = Aligned64::<i16>::zeroed(0);
-        assert_eq!(buf.len(), 0);
-        assert!(buf.is_empty());
-        assert_aligned(&buf);
-        let from_empty: Aligned64<i16> = Vec::<i16>::new().into();
-        assert!(from_empty.is_empty());
+    fn empty_is_valid() {
+        assert!(defaulted::<i16>(0).is_empty());
+        assert!(from_slice::<i16>(&[]).is_empty());
     }
 
     #[test]
     fn deref_mut_allows_in_place_fill() {
-        let mut buf = Aligned64::<i32>::zeroed(64);
+        let mut buf = defaulted::<i32>(64);
         for (i, slot) in buf.iter_mut().enumerate() {
             *slot = i as i32;
         }
         assert_aligned(&buf);
         assert_eq!(buf[63], 63);
+    }
+
+    #[test]
+    fn a_grown_vec_stays_aligned() {
+        let mut v = Vec::new_in(Align64Alloc);
+        for i in 0..1000u16 {
+            v.push(i);
+            assert_aligned(&v);
+        }
+        v.shrink_to_fit();
+        assert_aligned(&v);
     }
 }

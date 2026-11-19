@@ -208,7 +208,8 @@ mod tests {
         NnueNetworkBuilder, evaluate,
     };
     use attic_state::{Move, Position, format_usi_move, parse_sfen};
-    use attic_storage::LargePageArray;
+    use attic_storage::LargePageAlloc;
+    use attic_storage::large_page::zeroed_slice;
 
     // The HalfKA_hm2 feature-plane geometry, mirroring `attic-eval`: a feature
     // index is `E_KING_PERIOD * sq_k_code + p_adj`, with board-piece planes at
@@ -227,7 +228,7 @@ mod tests {
     /// active feature columns, and whose only nonzero FC weights route the two
     /// live lanes through the shortcut, so that the network output is
     /// `transformed[LANE_A] + transformed[LANE_B]`.
-    fn net_with_ft(ft_weights: LargePageArray<i16>) -> NnueNetwork {
+    fn net_with_ft(ft_weights: Box<[i16], LargePageAlloc>) -> NnueNetwork {
         let header = NetHeader {
             version: 0,
             hash: 0,
@@ -245,16 +246,16 @@ mod tests {
     }
 
     /// All-zero feature-transformer weights: every position evaluates to 0.
-    fn zeroed_ft() -> LargePageArray<i16> {
-        LargePageArray::zeroed(HIDDEN_SIZE * NUM_FEATURES)
+    fn zeroed_ft() -> Box<[i16], LargePageAlloc> {
+        zeroed_slice(HIDDEN_SIZE * NUM_FEATURES)
     }
 
     /// A material-counting FT: only board-piece features contribute, so the
     /// network output increases strictly with the number of pieces on the board.
     /// A capture moves a piece to a hand and so lowers the child's eval, which
     /// negation turns into the most attractive move.
-    fn material_ft(w: i16) -> LargePageArray<i16> {
-        let mut ft = LargePageArray::<i16>::zeroed(HIDDEN_SIZE * NUM_FEATURES);
+    fn material_ft(w: i16) -> Box<[i16], LargePageAlloc> {
+        let mut ft = zeroed_slice::<i16>(HIDDEN_SIZE * NUM_FEATURES);
         for f in 0..NUM_FEATURES {
             if (BOARD_LO..BOARD_HI).contains(&(f % E_KING_PERIOD)) {
                 ft[f * HIDDEN_SIZE + LANE_A] = w;
@@ -268,8 +269,8 @@ mod tests {
     /// evals vary richly across siblings and the argmax tests have something to
     /// discriminate. The weights stay small enough to keep the accumulator lanes
     /// under the output transform's clamp.
-    fn patterned_ft() -> LargePageArray<i16> {
-        let mut ft = LargePageArray::<i16>::zeroed(HIDDEN_SIZE * NUM_FEATURES);
+    fn patterned_ft() -> Box<[i16], LargePageAlloc> {
+        let mut ft = zeroed_slice::<i16>(HIDDEN_SIZE * NUM_FEATURES);
         for f in 0..NUM_FEATURES {
             ft[f * HIDDEN_SIZE + LANE_A] = (f % 4 + 1) as i16;
             ft[f * HIDDEN_SIZE + LANE_B] = (f % 5 + 1) as i16;

@@ -38,7 +38,8 @@
 //! nobody, so Lazy SMP needs no locking. Its entry table lives on large pages.
 
 use attic_state::{Color, Position, Square};
-use attic_storage::{LargePageBox, Zeroable};
+use attic_storage::large_page::zeroed_box;
+use attic_storage::{LargePageAlloc, Zeroable};
 
 use crate::features::{
     DiffScratch, FeatureIndex, MAX_ACTIVE_FEATURES, active_features_into, changed_indices_into,
@@ -81,7 +82,7 @@ pub struct FinnyCache {
     /// `[perspective][own king square]`, over the raw 81 squares. The bucket key
     /// must be the untouched king square rather than the mirrored `sq_k_code`:
     /// two mirror-equivalent squares generate different index sets.
-    entries: LargePageBox<FinnyTable>,
+    entries: Box<FinnyTable, LargePageAlloc>,
     /// Identity of the network the entries were built against; see
     /// [`network_token`]. `None` until the first rebuild.
     token: Option<NetworkToken>,
@@ -112,7 +113,7 @@ impl FinnyCache {
     /// path.
     pub fn new() -> Self {
         FinnyCache {
-            entries: LargePageBox::zeroed(),
+            entries: zeroed_box(),
             token: None,
             scratch_active: Vec::with_capacity(MAX_ACTIVE_FEATURES),
             diff: DiffScratch::default(),

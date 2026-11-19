@@ -12,7 +12,7 @@ pub mod tt;
 
 pub use arena::{ARENA_SUB_ALIGN, ArenaLayout, ArenaSlice, LargePageArena, Section};
 pub use book::{Book, BookError, BookMove};
-pub use large_page::{LARGE_PAGE_ALIGN, LargePageArray, LargePageBox, Zeroable};
+pub use large_page::{LARGE_PAGE_ALIGN, LargePageAlloc, Zeroable};
 pub use tt::{
     Bound, DEFAULT_HASH_MB, DEPTH_NONE, Depth, TTData, TTWriter, TranspositionTable, TtSlot,
     VALUE_NONE, Value,
