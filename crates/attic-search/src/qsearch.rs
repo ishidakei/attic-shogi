@@ -3560,7 +3560,7 @@ mod tests {
         FC_0_PADDED_INPUT_DIMS, HIDDEN_SIZE, HIDDEN1_DIMS, NetHeader, NnueNetwork,
         NnueNetworkBuilder,
     };
-    use attic_state::{Piece, PieceKind, Square, parse_sfen};
+    use attic_state::{Piece, PieceKind, Square, format_usi_move, parse_sfen};
     use attic_storage::{Bound, TTData, TranspositionTable};
 
     // A network whose every position evaluates to 0, so that the qsearch
@@ -4220,6 +4220,67 @@ mod tests {
         assert_eq!(data.move16, move16_of(p.mate_1ply().unwrap()));
     }
 
+    // Black to move with a 1-ply bishop-drop mate (B*2b), the rook on 2c
+    // guarding the bishop.
+    const MATE_IN_1_DROP: &str = "7nk/8l/7R1/9/9/9/9/9/K8 b R2B4G4S3N3L18P 1";
+
+    /// A mate found by the 1-ply probe at `ply` is `mate_in(ply + 1)` from the
+    /// root, so the entry must hold the distance from the node itself,
+    /// `mate_in(1)`; otherwise a revisit at the same ply reads back a mate
+    /// `ply` plies shorter.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn qsearch_mate_1ply_at_an_inner_ply_stores_the_distance_from_the_node() {
+        let p = pos(MATE_IN_1_DROP);
+        assert!(!p.in_check());
+        assert_eq!(p.mate_1ply().map(format_usi_move).as_deref(), Some("B*2b"));
+
+        let net = zero_net();
+        let mut table = fresh_tt();
+        let at_ply_4 = |table: &TranspositionTable| {
+            let mut q = QSearch::new(&net, table);
+            q.root_us = p.side_to_move();
+            q.pv_node = false;
+            q.read_tt = true;
+            q.qsearch(&mut p.clone(), 4, 0, 1)
+        };
+
+        assert_eq!(at_ply_4(&table), mate_in(5));
+        let (found, data) = probe_root(&mut table, &p);
+        assert!(found);
+        assert_eq!(data.bound, Bound::Exact);
+        assert_eq!(data.value, mate_in(1));
+
+        // The revisit takes the TT cutoff and reports the same distance.
+        assert_eq!(at_ply_4(&table), mate_in(5));
+    }
+
+    /// The main search's 1-ply mate store, under the same contract as
+    /// qsearch's.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn search_mate_1ply_at_an_inner_ply_stores_the_distance_from_the_node() {
+        let p = pos(MATE_IN_1_DROP);
+        let net = zero_net();
+        let mut table = fresh_tt();
+        let at_ply_4 = |table: &TranspositionTable| {
+            let mut q = QSearch::new(&net, table);
+            q.root_us = p.side_to_move();
+            q.draw_contempt = DRAW_VALUE_OPTION_DEFAULT * PAWN_VALUE / 100;
+            q.read_tt = true;
+            q.root_depth = 1;
+            q.search(&mut p.clone(), 4, 0, 1, 1, true, false, None, None)
+        };
+
+        assert_eq!(at_ply_4(&table), mate_in(5));
+        let (found, data) = probe_root(&mut table, &p);
+        assert!(found);
+        assert_eq!(data.bound, Bound::Exact);
+        assert_eq!(data.value, mate_in(1));
+
+        assert_eq!(at_ply_4(&table), mate_in(5));
+    }
+
     // -----------------------------------------------------------------
     // Repetition draws + the ±1 dither.
     // -----------------------------------------------------------------
@@ -4618,6 +4679,27 @@ mod tests {
         // A falling line, as for the best-move effort.
         assert_eq!(interpolate(75800.0, 75800.0, 104510.0, 0.969, 0.5), 0.969);
         assert!((interpolate(104510.0, 75800.0, 104510.0, 0.969, 0.5) - 0.5).abs() < 1e-12);
+    }
+
+    /// Every node of a root search is made under one of the root moves, so
+    /// when every root move is kept as a line their efforts add up to the
+    /// search's node count. Sampling the count after the root move's own node
+    /// would leave one node out of each root move's effort per search.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn root_move_efforts_add_up_to_the_node_count() {
+        let net = zero_net();
+        let table = fresh_tt();
+        let p = pos("lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1");
+        let root_moves = generate_root_moves(&p, false);
+        let lines = root_moves.len();
+        let mut q = QSearch::new(&net, &table);
+        q.set_multi_pv(lines);
+        let result = q.run_worker(&p, root_moves, 2);
+        assert_eq!(result.pv_lines.len(), lines);
+        assert!(result.nodes > lines as u64);
+        let effort: u64 = result.pv_lines.iter().map(|rm| rm.effort).sum();
+        assert_eq!(effort, result.nodes);
     }
 
     #[test]
@@ -5278,6 +5360,26 @@ mod tests {
         let mut rms = scored_lines([30, 20, mated_in(6)]);
         settle_aborted_line(&mut rms, 1, 2);
         assert!(!rms[2].is_inexact());
+    }
+
+    /// The bound printed for a line comes from that line's own flags, so a
+    /// fail high of the first line still reads `lowerbound` while the second
+    /// line is the one being searched.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn multipv_line_other_than_the_searched_one_keeps_its_bound() {
+        let net = zero_net();
+        let table = fresh_tt();
+        let q = QSearch::new(&net, &table);
+        let root = pos("lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1");
+        let mut rms = scored_lines([40, 30, 10]);
+        rms[0].inexact_lower = true;
+        rms[1].inexact_upper = true;
+
+        let infos = q.build_pv_infos(&root, &rms, 4, 2, 0);
+        assert_eq!(infos.len(), 2);
+        assert_eq!(infos[0].bound, PvBound::Lower);
+        assert_eq!(infos[1].bound, PvBound::Upper);
     }
 
     #[test]

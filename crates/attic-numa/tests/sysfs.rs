@@ -115,6 +115,24 @@ fn l3_scan_skips_cpus_without_shared_cpu_list() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
+fn l3_scan_follows_sparse_cpu_numbers() {
+    // The node holds cpus 0-1 and 4-5, and cpus 2-3 do not exist. The scan
+    // walks the CPUs the system config knows, so the gap does not end it
+    // before the second L3 domain.
+    let o = opts("l3_sparse_cpu_numbers", all_cpus(6), 6);
+    let system = NumaConfig::from_sysfs(&NumaAutoPolicy::SystemNuma, true, &o);
+    assert_eq!(system.num_cpus(), 4);
+    assert_eq!(system.nodes()[0], set(&[0, 1, 4, 5]));
+
+    let cfg = NumaConfig::from_sysfs(&NumaAutoPolicy::L3Domains, true, &o);
+    assert_eq!(cfg.num_cpus(), 4);
+    assert_eq!(cfg.num_numa_nodes(), 2);
+    assert_eq!(cfg.nodes()[0], set(&[0, 1]));
+    assert_eq!(cfg.nodes()[1], set(&[4, 5]));
+}
+
+#[test]
+#[cfg_attr(miri, ignore)]
 fn bundled_l3_merges_within_system_node() {
     let o = opts("two_node_l3", all_cpus(8), 8);
     let cfg = NumaConfig::from_sysfs(&NumaAutoPolicy::BundledL3 { bundle_size: 4 }, true, &o);

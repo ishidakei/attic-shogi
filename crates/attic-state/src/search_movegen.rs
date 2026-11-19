@@ -1702,6 +1702,17 @@ mod tests {
         v.into_iter().map(|e| e.mv).collect()
     }
 
+    /// A transposition-table entry may carry no move, so the check must refuse
+    /// the special moves at its entry rather than decode a square from them.
+    #[test]
+    fn pseudo_legal_refuses_special_moves() {
+        let p = pos("lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1");
+        for m in [Move::none(), Move::null(), Move::resign(), Move::win()] {
+            assert!(!p.pseudo_legal(m, false), "{m:?}");
+            assert!(!p.pseudo_legal(m, true), "{m:?}");
+        }
+    }
+
     fn captures(p: &Position) -> Vec<Move> {
         let mut v = Vec::new();
         p.generate_captures(false, &mut v);

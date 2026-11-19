@@ -293,6 +293,16 @@ mod tests {
         assert_eq!(LargePageAlloc.allocate(layout), Err(AllocError));
     }
 
+    /// A block larger than the address space cannot be mapped. The failure is
+    /// an `Err`, so no caller ever builds a value in an unmapped block.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn an_unmappable_block_is_refused() {
+        let layout = Layout::from_size_align(1 << 62, LARGE_PAGE_ALIGN).unwrap();
+        assert_eq!(LargePageAlloc.allocate(layout), Err(AllocError));
+        assert_eq!(LargePageAlloc.allocate_zeroed(layout), Err(AllocError));
+    }
+
     #[test]
     fn a_block_freed_with_any_fitting_size_round_trips() {
         let request = Layout::from_size_align(LARGE_PAGE_ALIGN + 3, 8).unwrap();

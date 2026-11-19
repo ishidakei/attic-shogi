@@ -798,6 +798,54 @@ mod tests {
         assert_eq!(pos, payload.len());
     }
 
+    /// `i32::MIN` takes five bytes, its last one shifted by 28. The decoder
+    /// accumulates in an `i64`, so the value comes out whole; the `i16` block
+    /// reader then refuses it as out of range rather than truncating it.
+    #[test]
+    fn leb128_decoder_reads_a_five_byte_value_and_the_block_rejects_it() {
+        let int32_min = [0x80, 0x80, 0x80, 0x80, 0x78];
+        let mut pos = 0usize;
+        assert_eq!(
+            read_signed_leb128(&int32_min, &mut pos).unwrap(),
+            i64::from(i32::MIN)
+        );
+        assert_eq!(pos, int32_min.len());
+
+        let mut block = LEB128_MAGIC.to_vec();
+        block.extend_from_slice(&(int32_min.len() as u32).to_le_bytes());
+        block.extend_from_slice(&int32_min);
+        let mut out = [0i16; 2];
+        let err = read_leb128_i16_into(&mut ByteReader::new(&block), &mut out).unwrap_err();
+        assert!(
+            matches!(&err, NnueError::InvalidFormat { reason } if reason.contains("out of i16 range")),
+            "expected an out-of-range rejection, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn leb128_decoder_rejects_truncated_and_over_long_values() {
+        let mut pos = 0usize;
+        assert!(read_signed_leb128(&[0x80, 0x80], &mut pos).is_err());
+        let mut pos = 0usize;
+        assert!(read_signed_leb128(&[0x80; 11], &mut pos).is_err());
+    }
+
+    /// A block whose payload holds fewer values than it declares is refused,
+    /// as is one that declares more bytes than the file holds.
+    #[test]
+    fn leb128_block_rejects_a_short_payload() {
+        let mut block = LEB128_MAGIC.to_vec();
+        block.extend_from_slice(&1u32.to_le_bytes());
+        block.push(0x00);
+        let mut out = [0i16; 2];
+        assert!(read_leb128_i16_into(&mut ByteReader::new(&block), &mut out).is_err());
+
+        let mut block = LEB128_MAGIC.to_vec();
+        block.extend_from_slice(&4u32.to_le_bytes());
+        block.extend_from_slice(&[0x00, 0x00]);
+        assert!(read_leb128_i16_into(&mut ByteReader::new(&block), &mut out).is_err());
+    }
+
     #[test]
     fn sha256_matches_nist_empty_vector() {
         let digest = sha256::digest(b"");
