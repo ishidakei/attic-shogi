@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 # Search layer: may depend on Evaluation, Storage, and State, never on Protocol.
 # It owns the transposition table, including widening and validating stored
 # moves against a `Position`.

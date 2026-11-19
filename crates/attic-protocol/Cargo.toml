@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 # Protocol layer: may import Search, Storage, and State, never Evaluation
 # directly.
 [dependencies]

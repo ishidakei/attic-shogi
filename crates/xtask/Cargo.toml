@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 attic-state = { path = "../attic-state", default-features = false }

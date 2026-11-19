@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 # The `[[test]]` below is not auto-discovered: it lives one directory down.
 [[test]]
 name = "parity_perft"

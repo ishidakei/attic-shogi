@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 # Storage layer: a substrate, depending on std and utility crates only and
 # importing no other workspace crate. The transposition table therefore speaks
 # in primitives rather than State-layer types, and the Search layer, which owns

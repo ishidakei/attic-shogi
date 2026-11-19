@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 # Evaluation layer: may import State and Storage, never Protocol or Search.
 [dependencies]
 attic-state = { path = "../attic-state", default-features = false }

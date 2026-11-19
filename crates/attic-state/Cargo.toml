@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 
 # `quick-draw` mirrors upstream's `ENABLE_QUICK_DRAW`, which the reference's

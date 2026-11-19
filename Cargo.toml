@@ -9,6 +9,9 @@ edition = "2024"
 # fix, or addition. The USI `id name` derives from it.
 version = "9.96.0"
 
+[workspace.lints.cargo]
+unused_dependencies = "deny"
+
 # Fat LTO and a single codegen unit trade link time for run-time speed (~+7% NPS
 # together with the `-C target-cpu=native` in `.cargo/config.toml`).
 # `panic = "abort"` matches the reference build, compiled `-fno-exceptions
