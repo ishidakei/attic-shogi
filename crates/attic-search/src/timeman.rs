@@ -20,6 +20,20 @@ use crate::book::Prng;
 /// planning the time budget.
 const MOVE_HORIZON: i32 = 160;
 
+/// The bound, either sign, that [`TimeManagement::init`] clamps every `go`
+/// clock value to before any arithmetic: 1000 days in milliseconds, far above
+/// any real time control.
+///
+/// The reference formulas overflow `i64` on values near its range (`go btime
+/// 9223372036854775807 byoyomi 1000`): a panic in a debug build, a wrapped,
+/// near-instant budget in a release one. Below the bound the clamp is the
+/// identity, so every real clock gets the reference budget bit for bit. At the
+/// bound the largest intermediate is about 2000 times the bound (`SlowMover`
+/// at its maximum of 1000% applied to a remaining time of up to two bounds),
+/// some 10^14, far inside `i64`. The option fields of [`TimeInput`] are
+/// assumed within their USI ranges and are not clamped.
+pub const MAX_CLOCK_MS: i64 = 1000 * 24 * 60 * 60 * 1000;
+
 /// The raw inputs [`TimeManagement::init`] needs. Primitive rather than the
 /// protocol's own limit type, so that Search does not depend on Protocol.
 #[derive(Clone, Copy, Debug)]
@@ -101,6 +115,16 @@ impl TimeManagement {
             max_moves_to_draw,
             start_time,
         } = input;
+        // Negative values keep their reference meaning down to the bound: the
+        // protocol forbids them, but the reference reads them as given.
+        let clock = |t: i64| t.clamp(-MAX_CLOCK_MS, MAX_CLOCK_MS);
+        let (time_us, inc_us, byoyomi_us, movetime, rtime) = (
+            clock(time_us),
+            clock(inc_us),
+            clock(byoyomi_us),
+            clock(movetime),
+            clock(rtime),
+        );
 
         let mut tm = TimeManagement {
             start_time,
@@ -706,6 +730,106 @@ mod tests {
         tm.search_end = 0;
         tm.set_search_end(500);
         assert_eq!(tm.search_end, 1880);
+    }
+
+    /// The budget fields, for comparing two `init` results.
+    fn budget(tm: &TimeManagement) -> (i64, i64, i64, i64, bool) {
+        (
+            tm.minimum(),
+            tm.optimum(),
+            tm.maximum(),
+            tm.remain_time,
+            tm.is_final_push,
+        )
+    }
+
+    /// Every clock shape `init` distinguishes, with each `go` value set to `v`.
+    fn clock_shapes(v: i64) -> Vec<TimeInput> {
+        let ponder = TimeInput {
+            usi_ponder: true,
+            ..base()
+        };
+        vec![
+            TimeInput {
+                time_us: v,
+                byoyomi_us: 1000,
+                ..base()
+            },
+            TimeInput {
+                time_us: 60_000,
+                inc_us: v,
+                ..base()
+            },
+            TimeInput {
+                byoyomi_us: v,
+                ..base()
+            },
+            TimeInput {
+                time_us: v,
+                inc_us: v,
+                byoyomi_us: v,
+                ..ponder
+            },
+            TimeInput {
+                time_us: v,
+                slow_mover: 1000,
+                round_up_to_fullsecond: false,
+                ..base()
+            },
+            TimeInput {
+                movetime: v,
+                ..base()
+            },
+            TimeInput { rtime: v, ..base() },
+        ]
+    }
+
+    #[test]
+    fn extreme_clock_values_are_clamped_to_the_bound() {
+        for v in [MAX_CLOCK_MS, -MAX_CLOCK_MS] {
+            let extreme = if v > 0 { i64::MAX } else { i64::MIN };
+            for beyond in [v + v.signum(), extreme] {
+                for (at, past) in clock_shapes(v).iter().zip(&clock_shapes(beyond)) {
+                    assert_eq!(budget(&init(past)), budget(&init(at)), "{past:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clock_at_the_bound_gives_a_bounded_budget() {
+        // Hand-computed as in `byoyomi_10min_plus_10s`, with the main clock at
+        // the bound.
+        let tm = init(&TimeInput {
+            time_us: MAX_CLOCK_MS,
+            byoyomi_us: 1_000,
+            ..base()
+        });
+        // remain_time = 86400000000 + 1000 - 1120 = 86399999880.
+        // MTG = 89; minimum_time = 1880.
+        // remain_estimate = 86400000000 + 1000*89 - 90*1000 = 86399999000.
+        // t1 = 1880 + 86399999000/89 = 1880 + 970786505 = 970788385.
+        assert_eq!(tm.minimum(), 1880);
+        assert_eq!(tm.optimum(), 970_788_385);
+        assert!(tm.maximum() > tm.optimum() && tm.maximum() <= tm.remain_time);
+        assert!(!tm.is_final_push);
+    }
+
+    #[test]
+    fn clock_below_the_bound_is_not_clamped() {
+        // One below the bound still enters the formulas as given: the budget
+        // differs from the one at the bound.
+        let below = init(&TimeInput {
+            time_us: MAX_CLOCK_MS - 89_000,
+            byoyomi_us: 1_000,
+            ..base()
+        });
+        let at = init(&TimeInput {
+            time_us: MAX_CLOCK_MS,
+            byoyomi_us: 1_000,
+            ..base()
+        });
+        assert_eq!(below.optimum(), at.optimum() - 1000);
     }
 
     #[test]
