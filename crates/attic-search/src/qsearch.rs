@@ -1286,12 +1286,13 @@ impl<'a> QSearch<'a> {
                 // 🌈 1-ply mate check, only when the TT missed.
                 if let Some(mate_move) = pos.mate_1ply() {
                     best_value = mate_in(ply + 1);
-                    let tt_pv = self.stack[Self::si(ply)].tt_pv;
+                    // The quiescence search never sets the stack cell's
+                    // `tt_pv`, so it would hold another node's flag.
                     self.tt_store(
                         tt_slot,
                         pos_key,
                         value_to_tt(best_value, ply),
-                        tt_pv,
+                        pv_hit,
                         Bound::Exact,
                         DEPTH_QS,
                         move16_of(mate_move),
@@ -4253,6 +4254,34 @@ mod tests {
 
         // The revisit takes the TT cutoff and reports the same distance.
         assert_eq!(at_ply_4(&table), mate_in(5));
+    }
+
+    /// The 1-ply mate store takes its PV flag from this node's table probe.
+    /// The stack cell's `tt_pv` is left over from a main-search node at the
+    /// same ply, so a `true` there must not reach the entry.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn qsearch_mate_1ply_store_ignores_a_stale_stack_tt_pv() {
+        let p = pos(MATE_IN_1_DROP);
+        let net = zero_net();
+        let mut table = fresh_tt();
+        let value = {
+            let mut q = QSearch::new(&net, &table);
+            q.root_us = p.side_to_move();
+            q.pv_node = false;
+            q.read_tt = true;
+            q.stack[QSearch::si(4)].tt_pv = true;
+            q.qsearch(&mut p.clone(), 4, 0, 1)
+        };
+
+        assert_eq!(value, mate_in(5));
+        let (found, data) = probe_root(&mut table, &p);
+        assert!(found);
+        assert_eq!(data.bound, Bound::Exact);
+        assert!(
+            !data.is_pv,
+            "the stack cell's stale tt_pv reached the entry"
+        );
     }
 
     /// The main search's 1-ply mate store, under the same contract as

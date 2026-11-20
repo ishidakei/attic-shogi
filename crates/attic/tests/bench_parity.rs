@@ -1,4 +1,4 @@
-//! `bench` node counts against the reference engine (YaneuraOu @ d7303660,
+//! `bench` node counts against the reference engine (YaneuraOu @ 2deff5b2,
 //! built with `cargo xtask build-reference` and run as
 //! `YaneuraOu-by-gcc bench 1024 1 <limit> default <depth|nodes>` against the
 //! same `nn.bin`). Every expected figure below is the reference's output, not
@@ -108,8 +108,8 @@ fn nodes_1m_bench_stops_where_the_reference_does() {
     assert_bench(
         "nodes_1m_bench_stops_where_the_reference_does",
         "bench 1024 1 1000000 default nodes",
-        &[1_000_164, 1_000_151, 1_000_248, 1_000_408],
-        4_000_971,
+        &[1_000_164, 1_000_774, 1_000_276, 1_000_080],
+        4_001_294,
     );
 }
 
@@ -120,8 +120,8 @@ fn nodes_100k_bench_stops_where_the_reference_does() {
     assert_bench(
         "nodes_100k_bench_stops_where_the_reference_does",
         "bench 1024 1 100000 default nodes",
-        &[100_052, 100_024, 100_096, 100_075],
-        400_247,
+        &[100_052, 100_097, 100_105, 100_124],
+        400_378,
     );
 }
 
