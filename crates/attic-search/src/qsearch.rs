@@ -888,9 +888,6 @@ impl<'a> QSearch<'a> {
         self.control.ponder.as_ref().is_some_and(|p| p.is_active())
     }
 
-    /// Copy the shared [`PonderSignal`]'s stamped ponderhit instant into
-    /// `tm.ponderhitTime` the first time the ponder flag is observed clear — this
-    /// port's stand-in for the reference writing it on the USI thread.
     fn fold_best_move_changes(&mut self, tot: &mut f64) {
         match &self.best_move_tally {
             Some((slots, 0)) => {
@@ -906,6 +903,14 @@ impl<'a> QSearch<'a> {
         }
     }
 
+    /// Copy the shared [`PonderSignal`]'s stamped ponderhit instant into
+    /// `tm.ponderhitTime` the first time the ponder flag is observed clear — this
+    /// port's stand-in for the reference writing it on the USI thread.
+    ///
+    /// The time manager is initialised on the driver thread before `go` returns,
+    /// and so before a `ponderhit` can be read, and the instant is held apart
+    /// from it until this copy. A `ponderhit` that arrives before the search
+    /// starts is therefore never overwritten by the initialisation.
     fn sync_ponderhit(&mut self) {
         if self.ponderhit_synced {
             return;

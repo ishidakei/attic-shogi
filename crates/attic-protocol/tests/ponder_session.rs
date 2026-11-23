@@ -125,6 +125,40 @@ fn ponderhit_continues_and_emits_one_bestmove() {
     assert_legal_after(&[], &sole_bestmove(&out));
 }
 
+// The `ponderhit` reaches the driver in the same read as `go ponder`, so it is
+// handled before the search thread has run. Its instant must survive the
+// search start: the search then ends inside the byoyomi counted from it.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn ponderhit_before_the_search_starts_keeps_its_budget() {
+    let dir = TempDir::new("ponder-hit-early");
+    write_synthetic_nn_bin(dir.path());
+    let e = dir.path().to_str().unwrap();
+
+    let h = start_ready(e, &[]);
+    h.send("position startpos");
+    let t = Instant::now();
+    h.send("go ponder btime 0 wtime 0 byoyomi 3000\nponderhit");
+    assert!(
+        h.wait_until(30_000, |o| bestmove_lines(o).len() == 1),
+        "an immediate ponderhit must yield exactly one bestmove:\n{}",
+        h.output()
+    );
+    let elapsed = t.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(3000),
+        "the search overran the byoyomi counted from the ponderhit: {elapsed:?}"
+    );
+    // The byoyomi less `NetworkDelay2` is the maximum, so a search that keeps
+    // the budget runs well past a second rather than stopping at once.
+    assert!(
+        elapsed >= Duration::from_millis(1000),
+        "the search stopped long before its budget: {elapsed:?}"
+    );
+    let out = h.quit_join();
+    assert_legal_after(&[], &sole_bestmove(&out));
+}
+
 #[test]
 #[cfg_attr(miri, ignore)]
 fn stop_on_ponderhit_stops_promptly_after_a_late_ponderhit() {
