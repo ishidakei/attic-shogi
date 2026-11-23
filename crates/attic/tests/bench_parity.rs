@@ -1,4 +1,4 @@
-//! `bench` node counts against the reference engine (YaneuraOu @ 2deff5b2,
+//! `bench` node counts against the reference engine (YaneuraOu @ 6578554c,
 //! built with `cargo xtask build-reference` and run as
 //! `YaneuraOu-by-gcc bench 1024 1 <limit> default <depth|nodes>` against the
 //! same `nn.bin`). Every expected figure below is the reference's output, not

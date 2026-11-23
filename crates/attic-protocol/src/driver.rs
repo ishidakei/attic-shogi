@@ -60,6 +60,17 @@ fn to_cp(v: Value) -> Value {
     100 * v / PAWN_VALUE
 }
 
+/// The reference `USIEngine::cp_to_value`: the inverse of [`to_cp`], except that
+/// a value already in the mate range is passed through unscaled. The bound is
+/// the reference's `VALUE_MATE_IN_MAX_PLY`, which has the same value.
+fn cp_to_value(v: Value) -> Value {
+    if v.abs() < VALUE_TB_WIN_IN_MAX_PLY {
+        PAWN_VALUE * v / 100
+    } else {
+        v
+    }
+}
+
 /// Format a search value the way the reference USI layer does: a mate distance
 /// for decisive scores, else centipawns.
 fn format_score(v: Value) -> String {
@@ -2426,15 +2437,24 @@ struct CoordinatedOutcome {
     calls_cnt: i32,
 }
 
-/// The time-management carry-forward for a SKIP_SEARCH short-circuit — a book
-/// hit, declaration win, resign, or no legal move.
+/// The time-management carry-forward for a SKIP_SEARCH short-circuit other than
+/// a book hit ([`book_hit_carry`]) — a declaration win, resign, or no legal move.
 ///
 /// The reference falls straight through to the same bookkeeping on these paths,
-/// where `rootMoves[0]` is the unsearched default scoring `-VALUE_INFINITE`; a
-/// book probe never writes `rootMoves`. Only `previousTimeReduction` is left
-/// untouched, since its sole writer `iterative_deepening` did not run.
+/// where `rootMoves[0]` is the unsearched default scoring `-VALUE_INFINITE`.
+/// Only `previousTimeReduction` is left untouched, since its sole writer
+/// `iterative_deepening` did not run.
 fn skip_search_carry() -> Option<(Value, Value, Option<f64>)> {
     Some((-VALUE_INFINITE, -VALUE_INFINITE, None))
+}
+
+/// The time-management carry-forward for a book hit. The root was never
+/// searched, so the reference takes both previous scores from the chosen book
+/// move's stored value, read back as an internal value; like the other
+/// short-circuits it leaves `previousTimeReduction` untouched.
+fn book_hit_carry(hit: &BookHit) -> Option<(Value, Value, Option<f64>)> {
+    let score = cp_to_value(Value::from(hit.value));
+    Some((score, score, None))
 }
 
 fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> CoordinatedOutcome {
@@ -2541,7 +2561,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
             return CoordinatedOutcome {
                 histories,
                 nodes: 0,
-                time_state: skip_search_carry(),
+                time_state: book_hit_carry(&hit),
                 calls_cnt,
             };
         }
@@ -3517,6 +3537,84 @@ mod tests {
         assert_eq!(driver.best_previous_average_score, 20);
         assert_eq!(driver.previous_time_reduction, 1.25);
         assert_eq!(driver.last_game_ply, 3);
+    }
+
+    #[test]
+    fn cp_to_value_scales_centipawns_and_passes_mate_values_through() {
+        assert_eq!(cp_to_value(42), 37);
+        assert_eq!(cp_to_value(-42), -37);
+        assert_eq!(cp_to_value(100), PAWN_VALUE);
+        assert_eq!(cp_to_value(VALUE_TB_WIN_IN_MAX_PLY - 1), 28_577);
+        assert_eq!(
+            cp_to_value(VALUE_TB_WIN_IN_MAX_PLY),
+            VALUE_TB_WIN_IN_MAX_PLY
+        );
+        assert_eq!(cp_to_value(-VALUE_MATE), -VALUE_MATE);
+    }
+
+    /// A `go` answered from the book leaves the book move's score, read back
+    /// as an internal value, as both previous scores — not what the search
+    /// before it stored.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn book_hit_stores_the_book_move_score_as_the_previous_scores() {
+        let dir = std::env::temp_dir().join(format!("driver-book-carry-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(dir.join("nn.bin"), zero_network_bytes()).expect("write nn.bin");
+        let ybb =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/book/sample.ybb");
+        std::fs::copy(ybb, dir.join("user_book1.ybb")).expect("copy sample.ybb");
+
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let mut driver = UsiDriver::new(io::empty(), Arc::clone(&output));
+        let wait_for_bestmoves = |want: usize| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while shared_output(&output).matches("bestmove").count() < want {
+                assert!(
+                    Instant::now() < deadline,
+                    "the go must finish: {}",
+                    shared_output(&output)
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        for line in [
+            "setoption name Threads value 1",
+            &format!("setoption name EvalDir value {}", dir.display()),
+            &format!("setoption name BookDir value {}", dir.display()),
+            "setoption name BookFile value user_book1.ybb",
+            "setoption name BookDepthLimit value 0",
+            "setoption name BookEvalBlackLimit value -99999",
+            "setoption name BookEvalWhiteLimit value -99999",
+            "setoption name BookEvalDiff value 0",
+            "setoption name BookMoves value 10000",
+            "isready",
+            // Out of the book, so this one searches.
+            "position startpos moves 7g7f 3c3d",
+            "go depth 1",
+        ] {
+            exec(&mut driver, line);
+        }
+        wait_for_bestmoves(1);
+        driver.finish_search_join();
+        let searched = driver.best_previous_score;
+
+        // The book's only surviving startpos move is 7g7f, stored at 42 cp.
+        exec(&mut driver, "position startpos");
+        exec(&mut driver, "go depth 1");
+        wait_for_bestmoves(2);
+        driver.finish_search_join();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let out = shared_output(&output);
+        assert!(
+            out.lines().any(|l| l.starts_with("bestmove 7g7f")),
+            "the second go must be answered from the book: {out}"
+        );
+        let book_score = cp_to_value(42);
+        assert_ne!(searched, book_score, "the two scores must be told apart");
+        assert_eq!(driver.best_previous_score, book_score);
+        assert_eq!(driver.best_previous_average_score, book_score);
     }
 
     // These exercise `resolve_worker_networks` with a stand-in payload, so they
