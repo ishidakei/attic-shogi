@@ -433,7 +433,7 @@ fn golden_table_checksum_is_stable() {
         digest, GOLDEN_TABLES_SHA256,
         "Zobrist table golden checksum changed — the tables were regenerated. \
          Do NOT update the constant to silence this; verify the tables against \
-         the reference (YaneuraOu @ 369937c0) first."
+         the reference (YaneuraOu @ 1a1df961) first."
     );
 }
 

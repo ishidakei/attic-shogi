@@ -343,44 +343,59 @@ fn go_with_a_skipped_word_searches() {
 
 #[test]
 #[cfg_attr(miri, ignore)]
-fn max_moves_to_draw_adjudicates_a_draw_past_the_horizon() {
-    // A small `MaxMovesToDraw` makes every interior node adjudicate a draw
-    // before the mate is seen, collapsing the reported score from `mate` to a
-    // draw-band `cp`.
+fn max_moves_to_draw_scores_a_last_move_mate_and_draws_past_the_limit() {
+    // With `MaxMovesToDraw` equal to the root's game ply, the mating drop is
+    // the last allowed move and still reports `mate 1`. From a root with no
+    // mate in one, every child lies past the limit with legal moves, so the
+    // score collapses to a draw-band `cp`.
     let dir = TempDir::new("mmtd");
     write_synthetic_nn_bin(dir.path());
     let e = dir.path().to_str().unwrap();
-    let position = format!("position sfen {MATE_AT_PLY_100}");
 
-    let h = start_ready(e, &[]);
+    let h = start_ready(e, &["setoption name MaxMovesToDraw value 100"]);
 
-    go_and_wait(&h, &position, "go depth 2", 1);
-    let unlimited = h.output();
+    go_and_wait(
+        &h,
+        &format!("position sfen {MATE_AT_PLY_100}"),
+        "go depth 2",
+        1,
+    );
+    let mate = h.output();
     assert!(
-        unlimited.lines().any(|l| l.contains("score mate")),
-        "unlimited MaxMovesToDraw must find the mate in:\n{unlimited}"
+        mate.lines().any(|l| l.contains("score mate 1 ")),
+        "a mate on the last allowed move must score as a mate in:\n{mate}"
     );
     assert_eq!(
-        bestmove_lines(&unlimited)[0]
-            .split_whitespace()
-            .next()
-            .unwrap(),
+        bestmove_lines(&mate)[0].split_whitespace().next().unwrap(),
         "G*8a",
-        "unlimited search plays the mating drop in:\n{unlimited}"
+        "the search plays the mating drop in:\n{mate}"
     );
 
     h.send("usinewgame");
-    h.send("setoption name MaxMovesToDraw value 50");
-    go_and_wait(&h, &position, "go depth 2", 2);
+    let startpos_at_100 = STARTPOS.replace(" b - 1", " b - 100");
+    go_and_wait(
+        &h,
+        &format!("position sfen {startpos_at_100}"),
+        "go depth 2",
+        2,
+    );
     let out = h.quit_join();
-    let capped = out[unlimited.len()..].to_string();
+    let capped = &out[mate.len()..];
     assert!(
         !capped.lines().any(|l| l.contains("score mate")),
-        "MaxMovesToDraw must suppress the mate in:\n{capped}"
+        "no mate past the limit in:\n{capped}"
     );
+    let scores: Vec<i32> = capped
+        .lines()
+        .filter_map(|l| {
+            let mut t = l.split_whitespace().skip_while(|&w| w != "cp");
+            t.next()?;
+            t.next()?.parse().ok()
+        })
+        .collect();
     assert!(
-        capped.lines().any(|l| l.contains("score cp")),
-        "the capped search must report a draw-adjudicated cp score in:\n{capped}"
+        !scores.is_empty() && scores.iter().all(|cp| cp.abs() <= 3),
+        "every score must be in the draw band in:\n{capped}"
     );
 }
 

@@ -1389,6 +1389,18 @@ impl Position {
         }
     }
 
+    /// Whether the side to move has no legal move. It runs the full generator,
+    /// so the search calls it only where the move limit is passed.
+    pub fn is_mated(&self) -> bool {
+        let mut buf: Vec<ExtMove> = Vec::with_capacity(64);
+        if self.in_check() {
+            self.generate_evasions(false, &mut buf);
+        } else {
+            self.generate_non_evasions(false, &mut buf);
+        }
+        !buf.iter().any(|em| self.is_legal(em.mv))
+    }
+
     /// Emit the pseudo-legal drops on empty squares in `GenerateDropMoves`
     /// order: pawn drops first, then the other kinds in rank bands.
     fn emit_drops(&self, out: &mut Vec<ExtMove>) {
@@ -1786,6 +1798,16 @@ mod tests {
         let checked = scratch.in_check();
         scratch.undo_move(m, undo);
         checked
+    }
+
+    #[test]
+    fn is_mated_is_an_empty_legal_move_list() {
+        let mated = "4K4/3ggg3/4k4/9/9/9/9/9/9 b - 1";
+        assert!(pos(mated).is_mated());
+        for sfen in FIXTURE_SFENS.iter().chain([&mated]) {
+            let p = pos(sfen);
+            assert_eq!(p.is_mated(), legal_moves(&p).is_empty(), "{sfen}");
+        }
     }
 
     #[test]

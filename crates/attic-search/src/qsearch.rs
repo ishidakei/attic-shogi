@@ -1220,8 +1220,15 @@ impl<'a> QSearch<'a> {
                 return value_from_tt(self.draw_value(draw_type, us), ply);
             }
         }
-        if ply >= MAX_PLY || pos.ply() as i32 > self.max_moves_to_draw {
+        if ply >= MAX_PLY {
             return self.draw_value(RepetitionState::Draw, us) + value_draw(self.nodes);
+        }
+        if pos.ply() as i32 > self.max_moves_to_draw {
+            return if pos.is_mated() {
+                mated_in(ply)
+            } else {
+                self.draw_value(RepetitionState::Draw, us) + value_draw(self.nodes)
+            };
         }
 
         // -----------------------------------------------------------------
@@ -2558,8 +2565,18 @@ impl QSearch<'_> {
             }
             // An aborted non-root node yields the draw score without touching
             // the TT.
-            if self.stopped || ply >= MAX_PLY || pos.ply() as i32 > self.max_moves_to_draw {
+            if self.stopped || ply >= MAX_PLY {
                 return self.draw_value(RepetitionState::Draw, us) + value_draw(self.nodes);
+            }
+            // Past the move limit the game is drawn unless the last allowed
+            // move mated. Repetitions were scored above, so a perpetual check
+            // on the last move is not a win.
+            if pos.ply() as i32 > self.max_moves_to_draw {
+                return if pos.is_mated() {
+                    mated_in(ply)
+                } else {
+                    self.draw_value(RepetitionState::Draw, us) + value_draw(self.nodes)
+                };
             }
 
             // -------------------------------------------------------------
@@ -4920,41 +4937,93 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn run_root_max_moves_to_draw_suppresses_a_mate() {
-        // A gold-drop head mate at a high game ply. Under the default horizon
-        // the search finds it; with the horizon below the game ply every
-        // interior node adjudicates a draw first, so the score collapses to the
-        // draw band. This drives both horizon sites.
+    fn run_root_mate_on_the_last_allowed_move_is_a_mate() {
+        // A gold-drop head mate from a root at game ply 100. With a limit of
+        // 100 the mated child sits at ply 101, past the limit, and still
+        // scores as mated rather than drawn.
         let net = zero_net();
         let p = pos("k8/9/G1N6/9/9/9/9/9/8K b G 100");
-
-        let unlimited = {
+        for depth in [1, 2] {
             let table = fresh_tt();
             let mut q = QSearch::new(&net, &table);
-            q.run_root(&p, 2)
-        };
-        assert!(
-            is_win(unlimited.score),
-            "unlimited horizon must find the mate, got score {}",
-            unlimited.score
-        );
+            q.set_max_moves_to_draw(100);
+            assert_eq!(q.run_root(&p, depth).score, mate_in(1), "depth {depth}");
+        }
+    }
 
-        let capped = {
-            let table = fresh_tt();
-            let mut q = QSearch::new(&net, &table);
-            q.set_max_moves_to_draw(50); // game_ply 100 > 50 at every interior node.
-            q.run_root(&p, 2)
+    // Black's king on 5a, boxed in by three white golds and the white king.
+    const MATED_AT_101: &str = "4K4/3ggg3/4k4/9/9/9/9/9/9 b - 101";
+    const STARTPOS_AT_101: &str =
+        "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 101";
+
+    fn limit_node_at_ply_4(
+        net: &NnueNetwork,
+        sfen: &str,
+        limit: i32,
+        qsearch: bool,
+    ) -> (Value, Value) {
+        let table = fresh_tt();
+        let p = pos(sfen);
+        let mut q = QSearch::new(net, &table);
+        q.root_us = p.side_to_move();
+        q.draw_contempt = DRAW_VALUE_OPTION_DEFAULT * PAWN_VALUE / 100;
+        q.read_tt = true;
+        q.root_depth = 1;
+        q.set_max_moves_to_draw(limit);
+        let value = if qsearch {
+            q.qsearch(&mut p.clone(), 4, -VALUE_INFINITE, VALUE_INFINITE)
+        } else {
+            q.search(
+                &mut p.clone(),
+                4,
+                -VALUE_INFINITE,
+                VALUE_INFINITE,
+                3,
+                false,
+                true,
+                None,
+                None,
+            )
         };
-        assert!(
-            !is_decisive(capped.score),
-            "the horizon must suppress the mate, got score {}",
-            capped.score
-        );
-        assert!(
-            capped.score.abs() <= 2,
-            "capped score must be in the draw band, got {}",
-            capped.score
-        );
+        let draw = q.draw_value(RepetitionState::Draw, p.side_to_move()) + value_draw(0);
+        assert_eq!(q.nodes, 0, "the limit returns before any do_move");
+        (value, draw)
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn past_the_move_limit_a_mated_side_loses_in_both_searches() {
+        let net = zero_net();
+        for qsearch in [false, true] {
+            let (value, _) = limit_node_at_ply_4(&net, MATED_AT_101, 100, qsearch);
+            assert_eq!(value, mated_in(4), "qsearch {qsearch}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn past_the_move_limit_a_side_with_legal_moves_draws_in_both_searches() {
+        let net = zero_net();
+        for qsearch in [false, true] {
+            let (value, draw) = limit_node_at_ply_4(&net, STARTPOS_AT_101, 100, qsearch);
+            assert_eq!(value, draw, "qsearch {qsearch}");
+            assert!(!is_decisive(value));
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn the_mate_in_one_probe_fires_on_the_last_allowed_move_only() {
+        // The probe's node is at game ply 1: with a limit of 1 its mate is the
+        // last allowed move; with a limit of 0 the node itself is past the
+        // limit and has legal moves, so it draws before the probe runs.
+        let net = zero_net();
+        for qsearch in [false, true] {
+            let (value, _) = limit_node_at_ply_4(&net, MATE_IN_1_DROP, 1, qsearch);
+            assert_eq!(value, mate_in(5), "qsearch {qsearch}");
+            let (value, draw) = limit_node_at_ply_4(&net, MATE_IN_1_DROP, 0, qsearch);
+            assert_eq!(value, draw, "qsearch {qsearch}");
+        }
     }
 
     // The values below are hand-computed against the reference's formulas,
