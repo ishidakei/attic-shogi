@@ -368,11 +368,24 @@ fn ponder_move(
 ) -> Option<Move> {
     let mut child = pos.clone();
     child.do_move(best);
-    let moves = find_in_books(books, ignore_book_ply, &child, flipped)?;
-    let first = moves.first()?;
+    let move16 = stored_ponder(books, ignore_book_ply, &child, flipped)?;
     let mut legal: Vec<Move> = Vec::new();
     child.generate_legal_all(&mut legal);
-    widen(&legal, first.move16)
+    widen(&legal, move16)
+}
+
+/// The book's ponder candidate in `child`: its first sorted move, or `None`
+/// when the position is not booked or that record holds a non-move value. An
+/// absent ponder move never reaches the legality test.
+fn stored_ponder(
+    books: &[Book],
+    ignore_book_ply: bool,
+    child: &Position,
+    flipped: bool,
+) -> Option<u16> {
+    let moves = find_in_books(books, ignore_book_ply, child, flipped)?;
+    let move16 = moves.first()?.move16;
+    Move::from_bits(u32::from(move16)).is_ok().then_some(move16)
 }
 
 /// Build the per-candidate book-PV info lines (the `isRoot` multipv block).
@@ -1266,5 +1279,46 @@ mod tests {
             .hit
             .expect("hit");
         assert_eq!(hit.ponder, None, "no child entry → no ponder");
+    }
+
+    #[test]
+    fn an_absent_ponder_move_answers_the_best_move_alone_without_a_legality_test() {
+        let after = {
+            let mut p = pos(STARTPOS_B);
+            p.do_move(parse_usi_move("7g7f", &p).unwrap());
+            p
+        };
+        let root = (
+            sfen_pack(&pos(STARTPOS_B)),
+            1u16,
+            vec![(m16(STARTPOS_B, "7g7f"), 100, 20)],
+        );
+        // A child record whose first move is each non-move value, and a book
+        // with no child record at all.
+        let non_moves = [Move::none(), Move::null(), Move::resign(), Move::win()];
+        let mut books: Vec<Book> = non_moves
+            .iter()
+            .map(|m| {
+                let child = (sfen_pack(&after), after.ply(), vec![(m.move16(), 80, 18)]);
+                Book::from_memory(build_ybb(&[root.clone(), child])).expect("valid ybb")
+            })
+            .collect();
+        books.push(Book::from_memory(build_ybb(std::slice::from_ref(&root))).expect("valid ybb"));
+
+        for (i, book) in books.iter().enumerate() {
+            // The candidate handed to the legality test is already `None`, so
+            // the test never sees the absent move.
+            assert_eq!(
+                stored_ponder(one(book), false, &after, false),
+                None,
+                "book {i}"
+            );
+            let mut prng = Prng::new(1);
+            let hit = probe_book(one(book), false, &pos(STARTPOS_B), &cfg(), &mut prng)
+                .hit
+                .expect("hit");
+            assert_eq!(usi(hit.best), "7g7f", "book {i}");
+            assert_eq!(hit.ponder, None, "book {i}");
+        }
     }
 }
