@@ -527,8 +527,9 @@ pub struct QSearch<'a> {
     control: SearchControl,
     /// The entering-king declaration config for this `go`: the
     /// selected rule plus its precomputed per-side point thresholds, read by the
-    /// two in-search `declaration_win` checks (`run_root`'s root shortcut and the
-    /// interior Step-5 check). Defaults to `CSARule27` with that rule's own
+    /// in-search `declaration_win` checks (`run_root`'s root shortcut, the
+    /// interior check and the quiescence check, and the re-verification of a
+    /// `Move::win()` read from the TT). Defaults to `CSARule27` with that rule's own
     /// thresholds, which is what the fixed-depth parity path searches with; the
     /// driver overrides it per `go` via [`Self::set_entering_king`].
     entering_king: EnteringKingConfig,
@@ -1226,29 +1227,56 @@ impl<'a> QSearch<'a> {
         // targets this exact slot.
         let (found, tt_data, tt_slot) = self.tt.locate(pos_key, side, |m| pos.to_move(m).is_some());
         // `if constexpr (!ReadTT) ttHit = false;`.
-        let tt_hit = found && self.read_tt;
+        let mut tt_hit = found && self.read_tt;
         // `ttData.move = ttHit ? to_move(ttData.move) : Move::none();`. The
         // widening is O(1); the MovePicker's TT stage re-validates.
-        let tt_move = if tt_hit {
+        let mut tt_move = if tt_hit {
             pos.to_move(tt_data.move16)
         } else {
             None
         };
         // `ttData.value = ttHit ? value_from_tt(...) : VALUE_NONE;`.
-        let tt_value = if tt_hit {
+        let mut tt_value = if tt_hit {
             value_from_tt(tt_data.value, ply)
         } else {
             VALUE_NONE
         };
-        let pv_hit = tt_hit && tt_data.is_pv;
+        let mut pv_hit = tt_hit && tt_data.is_pv;
 
-        // Non-PV early TT cutoff.
+        // Non-PV early TT cutoff. A stored declaration win returns here
+        // without being re-verified.
         if !pv_node
             && tt_data.depth >= DEPTH_QS
             && is_valid(tt_value)
             && bound_matches(tt_data.bound, tt_value >= beta)
         {
             return tt_value;
+        }
+
+        // 🌈 Point-rule declaration win, checked whenever the TT holds no
+        // normal move. The `Try` rule's king move is no terminal marker here.
+        if tt_move.is_none() || tt_move == Some(Move::win()) {
+            if declaration_win(pos, &self.entering_king) == Some(Move::win()) {
+                let value = mate_in(ply + 1);
+                self.tt_store(
+                    tt_slot,
+                    pos_key,
+                    value_to_tt(value, ply),
+                    pv_hit,
+                    Bound::Exact,
+                    DEPTH_QS,
+                    move16_of(Move::win()),
+                    VALUE_NONE,
+                );
+                return value;
+            }
+            // A stored win that no longer holds is a miss.
+            if tt_move.is_some() {
+                tt_move = None;
+                tt_value = VALUE_NONE;
+                tt_hit = false;
+                pv_hit = false;
+            }
         }
 
         // -----------------------------------------------------------------
@@ -2178,7 +2206,9 @@ impl QSearch<'_> {
     ///
     /// The reference also appends a repetition/terminal text marker to the PV
     /// string. This port surfaces the PV as moves only and stops at the same
-    /// points, so that cosmetic marker is dropped.
+    /// points, so that cosmetic marker is dropped. A stored `Move::win()` ends
+    /// the line either way: the reference prints it when the declaration still
+    /// holds and stops without it otherwise, and here neither adds a move.
     fn consideration_pv(&self, root_pos: &Position, root_pv: &[Move]) -> Vec<Move> {
         let mut pos = root_pos.clone();
         let mut moves: Vec<Move> = Vec::new();
@@ -2546,13 +2576,13 @@ impl QSearch<'_> {
         let side = us.index() as u8;
         // Captured once, as the reference's `ttWriter` is; every write in this
         // node targets this exact slot.
-        let (tt_hit, tt_data, tt_slot) =
+        let (mut tt_hit, tt_data, tt_slot) =
             self.tt.locate(pos_key, side, |m| pos.to_move(m).is_some());
         self.stack[s].tt_hit = tt_hit;
         // At the root the current PV line's move is treated as the TT move
         // whatever the probe returned, while `tt_data`'s other fields are still
         // consumed as usual.
-        let tt_move = if let Some(rms) = root_moves.as_deref() {
+        let mut tt_move = if let Some(rms) = root_moves.as_deref() {
             Some(rms[self.pv_idx].pv[0])
         } else if tt_hit {
             // The MovePicker's TT stage re-validates this.
@@ -2560,11 +2590,26 @@ impl QSearch<'_> {
         } else {
             None
         };
-        let tt_value = if tt_hit {
+        let mut tt_value = if tt_hit {
             value_from_tt(tt_data.value, ply)
         } else {
             VALUE_NONE
         };
+        // A stored declaration win is re-verified rather than handed on as a
+        // move. If it no longer holds, the entry is a miss; its depth and bound
+        // stay readable, as they do in the reference.
+        if tt_move == Some(Move::win()) {
+            if !root_node
+                && excluded_move != Move::win()
+                && declaration_win(pos, &self.entering_king) == Some(Move::win())
+            {
+                return mate_in(ply + 1);
+            }
+            tt_move = None;
+            tt_value = VALUE_NONE;
+            tt_hit = false;
+            self.stack[s].tt_hit = false;
+        }
         if !excluded_move.is_ok() {
             self.stack[s].tt_pv = pv_node || (tt_hit && tt_data.is_pv);
         }
@@ -2575,8 +2620,29 @@ impl QSearch<'_> {
         let tt_capture = tt_move.is_some_and(|m| Self::is_capture(pos, m));
 
         // -----------------------------------------------------------------
-        // Mate-in-1 and declaration win.
+        // Declaration win and mate-in-1.
         // -----------------------------------------------------------------
+        // The declaration is checked first, so a node where both hold stores
+        // `Move::win()`. Only a point-rule win is stored: the `Try` rule's
+        // king move is not.
+        if (tt_move.is_none() || pv_node)
+            && let Some(mv) = declaration_win(pos, &self.entering_king)
+        {
+            best_value = mate_in(ply + 1);
+            if !excluded_move.is_ok() && mv == Move::win() {
+                self.tt_store(
+                    tt_slot,
+                    pos_key,
+                    value_to_tt(best_value, ply),
+                    ttpv,
+                    Bound::Exact,
+                    (MAX_PLY - 1).min(depth + 6),
+                    move16_of(mv),
+                    VALUE_NONE,
+                );
+            }
+            return best_value;
+        }
         let mut unadjusted_static_eval = VALUE_NONE;
         if !root_node
             && !tt_hit
@@ -2596,9 +2662,6 @@ impl QSearch<'_> {
                 unadjusted_static_eval,
             );
             return best_value;
-        }
-        if (tt_move.is_none() || pv_node) && declaration_win(pos, &self.entering_king).is_some() {
-            return mate_in(ply + 1);
         }
 
         // -----------------------------------------------------------------
@@ -4308,6 +4371,161 @@ mod tests {
         assert_eq!(data.value, mate_in(1));
 
         assert_eq!(at_ply_4(&table), mate_in(5));
+    }
+
+    // -----------------------------------------------------------------
+    // Declaration win in the table.
+    // -----------------------------------------------------------------
+
+    // Black's king on 5b with ten pieces in the enemy camp and enough points
+    // to declare under the default point rule.
+    const DECLARES: &str = "+R+R+B+B5/3GKG3/2SGGGS2/9/9/9/9/9/4k4 b R 1";
+    // Black's king on 5b next to an empty, unattacked 5a: a `Try` declaration,
+    // and nothing under the point rule.
+    const TRY_DECLARES: &str = "9/4K4/9/9/9/9/9/9/8k b - 1";
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn qsearch_declaration_win_returns_mate_and_stores_move_win() {
+        let p = pos(DECLARES);
+        assert_eq!(
+            declaration_win(&p, &EnteringKingConfig::default()),
+            Some(Move::win())
+        );
+        let net = zero_net();
+        let mut table = fresh_tt();
+        let at_ply_4 = |table: &TranspositionTable, pv_node: bool| {
+            let mut q = QSearch::new(&net, table);
+            q.root_us = p.side_to_move();
+            q.pv_node = pv_node;
+            q.read_tt = true;
+            q.qsearch(&mut p.clone(), 4, -VALUE_INFINITE, VALUE_INFINITE)
+        };
+
+        assert_eq!(at_ply_4(&table, false), mate_in(5));
+        let (found, data) = probe_root(&mut table, &p);
+        assert!(found);
+        assert_eq!(data.move16, Move::win().move16());
+        assert_eq!(data.bound, Bound::Exact);
+        assert_eq!(data.depth, DEPTH_QS);
+        assert_eq!(data.value, mate_in(1));
+        assert_eq!(data.eval, VALUE_NONE);
+
+        // A PV visit takes no TT cutoff and re-verifies the stored win.
+        assert_eq!(at_ply_4(&table, true), mate_in(5));
+    }
+
+    /// A stored `Move::win()` whose declaration does not hold is a miss: the
+    /// 1-ply mate probe, which runs only on a miss, finds the mate and
+    /// overwrites the entry.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn qsearch_treats_a_stale_move_win_as_a_miss() {
+        let p = pos(MATE_IN_1_DROP);
+        let mate = p.mate_1ply().expect("fixture has a 1-ply mate");
+        let net = zero_net();
+        let mut table = fresh_tt();
+        prewrite(
+            &mut table,
+            &p,
+            0,
+            false,
+            Bound::Exact,
+            DEPTH_QS,
+            Move::win().move16(),
+            0,
+        );
+        let value = {
+            let mut q = QSearch::new(&net, &table);
+            q.root_us = p.side_to_move();
+            q.pv_node = true;
+            q.read_tt = true;
+            q.qsearch(&mut p.clone(), 4, -VALUE_INFINITE, VALUE_INFINITE)
+        };
+
+        assert_eq!(value, mate_in(5));
+        let (found, data) = probe_root(&mut table, &p);
+        assert!(found);
+        assert_eq!(data.move16, move16_of(mate));
+    }
+
+    fn search_at_ply_4(
+        net: &NnueNetwork,
+        table: &TranspositionTable,
+        p: &Position,
+        entering_king: EnteringKingConfig,
+    ) -> Value {
+        let mut q = QSearch::new(net, table);
+        q.root_us = p.side_to_move();
+        q.draw_contempt = DRAW_VALUE_OPTION_DEFAULT * PAWN_VALUE / 100;
+        q.read_tt = true;
+        q.root_depth = 1;
+        q.set_entering_king(entering_king);
+        q.search(&mut p.clone(), 4, 0, 1, 1, true, false, None, None)
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn search_declaration_win_stores_move_win_and_re_verifies_it() {
+        let p = pos(DECLARES);
+        let net = zero_net();
+        let mut table = fresh_tt();
+        let config = EnteringKingConfig::default();
+
+        assert_eq!(search_at_ply_4(&net, &table, &p, config), mate_in(5));
+        let (found, data) = probe_root(&mut table, &p);
+        assert!(found);
+        assert_eq!(data.move16, Move::win().move16());
+        assert_eq!(data.bound, Bound::Exact);
+        assert_eq!(data.depth, 1 + 6);
+        assert_eq!(data.value, mate_in(1));
+        assert_eq!(data.eval, VALUE_NONE);
+
+        assert_eq!(search_at_ply_4(&net, &table, &p, config), mate_in(5));
+    }
+
+    /// The main search's counterpart of
+    /// `qsearch_treats_a_stale_move_win_as_a_miss`: without the miss, the
+    /// stored exact 0 would cut the node off.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn search_treats_a_stale_move_win_as_a_miss() {
+        let p = pos(MATE_IN_1_DROP);
+        let mate = p.mate_1ply().expect("fixture has a 1-ply mate");
+        let net = zero_net();
+        let mut table = fresh_tt();
+        prewrite(
+            &mut table,
+            &p,
+            0,
+            false,
+            Bound::Exact,
+            50,
+            Move::win().move16(),
+            0,
+        );
+
+        assert_eq!(
+            search_at_ply_4(&net, &table, &p, EnteringKingConfig::default()),
+            mate_in(5)
+        );
+        let (found, data) = probe_root(&mut table, &p);
+        assert!(found);
+        assert_eq!(data.move16, move16_of(mate));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn search_try_rule_declaration_stores_nothing() {
+        let p = pos(TRY_DECLARES);
+        let config = EnteringKingConfig::new(crate::root::EnteringKingRule::Try, &p);
+        assert!(declaration_win(&p, &config).is_some_and(|m| m.is_ok()));
+        let net = zero_net();
+        let mut table = fresh_tt();
+
+        assert_eq!(search_at_ply_4(&net, &table, &p, config), mate_in(5));
+        let (found, _data) = probe_root(&mut table, &p);
+        assert!(!found);
     }
 
     // -----------------------------------------------------------------
