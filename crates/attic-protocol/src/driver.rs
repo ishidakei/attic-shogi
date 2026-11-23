@@ -159,11 +159,10 @@ struct SearchState {
     /// `timeReduction`, seeding the next `go`'s time management.
     ///
     /// Always `Some`: the reference runs that bookkeeping on every path, so the
-    /// SKIP_SEARCH short-circuits (book / declaration / resign / no legal move)
-    /// carry the unsearched defaults `(-VALUE_INFINITE, -VALUE_INFINITE)`. The
-    /// third element is `Some` only after a real search — on a short-circuit the
-    /// reference never touches `previousTimeReduction`, so the persisted value
-    /// must stay put.
+    /// SKIP_SEARCH short-circuits (book / declaration / no legal move) carry
+    /// their result's score as both scores. The third element is `Some` only
+    /// after a real search — on a short-circuit the reference never touches
+    /// `previousTimeReduction`, so the persisted value must stay put.
     time_state: Option<(Value, Value, Option<f64>)>,
     /// The main worker's `callsCnt` down-counter as the search left it.
     calls_cnt: i32,
@@ -2437,25 +2436,27 @@ struct CoordinatedOutcome {
     calls_cnt: i32,
 }
 
-/// The time-management carry-forward for a SKIP_SEARCH short-circuit other than
-/// a book hit ([`book_hit_carry`]) — a declaration win, resign, or no legal move.
+/// The time-management carry-forward for a SKIP_SEARCH short-circuit — a book
+/// hit, a declaration win, or no legal move — whose result scores `score`.
 ///
-/// The reference falls straight through to the same bookkeeping on these paths,
-/// where `rootMoves[0]` is the unsearched default scoring `-VALUE_INFINITE`.
-/// Only `previousTimeReduction` is left untouched, since its sole writer
-/// `iterative_deepening` did not run.
-fn skip_search_carry() -> Option<(Value, Value, Option<f64>)> {
-    Some((-VALUE_INFINITE, -VALUE_INFINITE, None))
-}
-
-/// The time-management carry-forward for a book hit. The root was never
-/// searched, so the reference takes both previous scores from the chosen book
-/// move's stored value, read back as an internal value; like the other
-/// short-circuits it leaves `previousTimeReduction` untouched.
-fn book_hit_carry(hit: &BookHit) -> Option<(Value, Value, Option<f64>)> {
-    let score = cp_to_value(Value::from(hit.value));
+/// The root was never searched, so `rootMoves[0]` holds no score; the reference
+/// stores the result's score as both previous scores, there being no average
+/// either. Only `previousTimeReduction` is left untouched, since its sole
+/// writer `iterative_deepening` did not run.
+fn skip_search_carry(score: Value) -> Option<(Value, Value, Option<f64>)> {
     Some((score, score, None))
 }
+
+/// The carry for a book hit: the chosen book move's stored value, read back as
+/// an internal value.
+fn book_hit_carry(hit: &BookHit) -> Option<(Value, Value, Option<f64>)> {
+    skip_search_carry(cp_to_value(Value::from(hit.value)))
+}
+
+/// The score the reference gives a declaration win: `mate_in(1)`.
+const DECLARATION_WIN_SCORE: Value = VALUE_MATE - 1;
+/// The score the reference gives a root with no legal move: `mated_in(1)`.
+const NO_LEGAL_MOVE_SCORE: Value = -VALUE_MATE + 1;
 
 fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> CoordinatedOutcome {
     let CoordinatorJob {
@@ -2510,7 +2511,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
         return CoordinatedOutcome {
             histories,
             nodes: 0,
-            time_state: skip_search_carry(),
+            time_state: skip_search_carry(NO_LEGAL_MOVE_SCORE),
             calls_cnt,
         };
     }
@@ -2526,7 +2527,7 @@ fn run_coordinated<W: Write + Send + 'static>(job: CoordinatorJob<W>) -> Coordin
         return CoordinatedOutcome {
             histories,
             nodes: 0,
-            time_state: skip_search_carry(),
+            time_state: skip_search_carry(DECLARATION_WIN_SCORE),
             calls_cnt,
         };
     }
@@ -3469,14 +3470,14 @@ mod tests {
     }
 
     // The reference's SKIP_SEARCH bookkeeping, driven through the real
-    // `finish_search_join` with the carry every short-circuit returns.
+    // `finish_search_join` with the carry a short-circuit returns.
     #[test]
     #[cfg_attr(miri, ignore)]
     fn skip_search_carry_updates_scores_and_ply_but_not_time_reduction() {
         assert_eq!(
-            skip_search_carry(),
-            Some((-VALUE_INFINITE, -VALUE_INFINITE, None)),
-            "the short-circuit carry is the -VALUE_INFINITE sentinel with no tr"
+            skip_search_carry(DECLARATION_WIN_SCORE),
+            Some((DECLARATION_WIN_SCORE, DECLARATION_WIN_SCORE, None)),
+            "the short-circuit carry is the result's score twice with no tr"
         );
 
         let output = Arc::new(Mutex::new(Vec::<u8>::new()));
@@ -3488,7 +3489,7 @@ mod tests {
 
         let handle = std::thread::spawn(|| SearchState {
             histories: WorkerHistories::new(),
-            time_state: skip_search_carry(),
+            time_state: skip_search_carry(DECLARATION_WIN_SCORE),
             calls_cnt: 0,
         });
         driver.search = Some(ActiveSearch {
@@ -3500,8 +3501,8 @@ mod tests {
         });
         driver.finish_search_join();
 
-        assert_eq!(driver.best_previous_score, -VALUE_INFINITE);
-        assert_eq!(driver.best_previous_average_score, -VALUE_INFINITE);
+        assert_eq!(driver.best_previous_score, DECLARATION_WIN_SCORE);
+        assert_eq!(driver.best_previous_average_score, DECLARATION_WIN_SCORE);
         assert_eq!(
             driver.last_game_ply, 20,
             "ply advances to the short-circuit's"
@@ -3615,6 +3616,87 @@ mod tests {
         assert_ne!(searched, book_score, "the two scores must be told apart");
         assert_eq!(driver.best_previous_score, book_score);
         assert_eq!(driver.best_previous_average_score, book_score);
+    }
+
+    /// Runs a searched `go` and then a `go` on `sfen`, which skips the search;
+    /// returns the previous score the searched one stored, the driver after the
+    /// second, and everything the two printed.
+    fn search_then_skip(tag: &str, sfen: &str) -> (Value, UsiDriver<io::Empty, Vec<u8>>, String) {
+        let dir = std::env::temp_dir().join(format!("driver-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(dir.join("nn.bin"), zero_network_bytes()).expect("write nn.bin");
+
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let mut driver = UsiDriver::new(io::empty(), Arc::clone(&output));
+        let wait_for_bestmoves = |want: usize| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while shared_output(&output).matches("bestmove").count() < want {
+                assert!(
+                    Instant::now() < deadline,
+                    "the go must finish: {}",
+                    shared_output(&output)
+                );
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        for line in [
+            "setoption name Threads value 1",
+            &format!("setoption name EvalDir value {}", dir.display()),
+            "isready",
+            "position startpos",
+            "go depth 1",
+        ] {
+            exec(&mut driver, line);
+        }
+        wait_for_bestmoves(1);
+        driver.finish_search_join();
+        let searched = driver.best_previous_score;
+
+        exec(&mut driver, &format!("position sfen {sfen}"));
+        exec(&mut driver, "go depth 1");
+        wait_for_bestmoves(2);
+        driver.finish_search_join();
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = shared_output(&output);
+        (searched, driver, out)
+    }
+
+    /// A `go` answered by a declaration win stores `mate_in(1)` as both
+    /// previous scores.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn declaration_win_stores_mate_in_one_as_the_previous_scores() {
+        // Declarable under the default CSARule27.
+        let (searched, driver, out) = search_then_skip(
+            "declaration-carry",
+            "+R+R+B+B5/3GKG3/2SGGGS2/9/9/9/9/9/4k4 b R 1",
+        );
+        assert!(
+            out.lines().any(|l| l == "bestmove win"),
+            "the second go must declare: {out}"
+        );
+        assert_eq!(DECLARATION_WIN_SCORE, 31_999);
+        assert_ne!(searched, DECLARATION_WIN_SCORE);
+        assert_eq!(driver.best_previous_score, DECLARATION_WIN_SCORE);
+        assert_eq!(driver.best_previous_average_score, DECLARATION_WIN_SCORE);
+    }
+
+    /// A `go` on a root with no legal move stores `mated_in(1)` as both
+    /// previous scores.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn no_legal_move_stores_mated_in_one_as_the_previous_scores() {
+        // White is mated.
+        let (searched, driver, out) =
+            search_then_skip("no-move-carry", "4k4/4G4/3S5/9/9/9/9/9/4K4 w - 1");
+        assert!(
+            out.lines().any(|l| l == "bestmove resign"),
+            "the second go must resign: {out}"
+        );
+        assert_eq!(NO_LEGAL_MOVE_SCORE, -31_999);
+        assert_ne!(searched, NO_LEGAL_MOVE_SCORE);
+        assert_eq!(driver.best_previous_score, NO_LEGAL_MOVE_SCORE);
+        assert_eq!(driver.best_previous_average_score, NO_LEGAL_MOVE_SCORE);
     }
 
     // These exercise `resolve_worker_networks` with a stand-in payload, so they
