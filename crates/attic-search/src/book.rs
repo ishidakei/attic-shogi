@@ -196,6 +196,8 @@ pub struct BookHit {
     pub ponder: Option<Move>,
     /// Stored eval of the selected move.
     pub value: i16,
+    /// Stored search depth of the selected move.
+    pub depth: u16,
     /// One info line per surviving candidate, best-first.
     pub info_lines: Vec<BookInfoLine>,
 }
@@ -349,6 +351,7 @@ pub fn probe_book(
         best: best.mv,
         ponder,
         value: best.value,
+        depth: best.depth,
         info_lines,
     });
     result
@@ -698,7 +701,31 @@ mod tests {
             let hit = r.hit.expect("hit");
             assert_eq!(usi(hit.best), "7g7f", "seed {seed}");
             assert_eq!(hit.value, 100);
+            assert_eq!(hit.depth, 20);
         }
+    }
+
+    #[test]
+    fn hit_carries_the_depth_of_the_selected_move() {
+        let book = three_move_book();
+        let c = cfg();
+        let depth_of = |m: &str| match m {
+            "7g7f" => 20,
+            "2g2f" => 18,
+            "6i7h" => 16,
+            _ => unreachable!("{m}"),
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for seed in 1u64..64 {
+            let mut prng = Prng::new(seed);
+            let hit = probe_book(one(&book), false, &pos(STARTPOS_B), &c, &mut prng)
+                .hit
+                .expect("hit");
+            let best = usi(hit.best);
+            assert_eq!(hit.depth, depth_of(&best), "seed {seed}: {best}");
+            seen.insert(best);
+        }
+        assert!(seen.len() > 1, "the seeds must pick more than the top move");
     }
 
     #[test]

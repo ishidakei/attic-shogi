@@ -87,11 +87,19 @@ fn book_hit_line_reports_zero_nodes_and_nps_with_a_floored_time() {
     );
     let out = drive_with_seed(&session, TEST_BOOK_SEED);
 
-    let line = out
-        .lines()
-        .find(|l| l.starts_with("info depth 0 "))
-        .unwrap_or_else(|| panic!("missing book depth-0 info line in:\n{out}"));
+    let lines: Vec<&str> = out.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("bestmove "))
+        .unwrap_or_else(|| panic!("missing bestmove in:\n{out}"));
+    let line = lines[at - 1];
+    assert!(line.starts_with("info depth "), "final info line: {line:?}");
 
+    assert_eq!(
+        u64_field(line, "depth"),
+        20,
+        "the stored depth of the book move"
+    );
     assert_eq!(u64_field(line, "nodes"), 0, "book hit searches nothing");
     assert_eq!(u64_field(line, "nps"), 0, "no nodes means no nps");
     let time = u64_field(line, "time");

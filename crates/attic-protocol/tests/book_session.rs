@@ -2,15 +2,15 @@
 //! all-zero network and a `.ybb` staged in a temp dir.
 //!
 //! A book hit short-circuits the search entirely, so a reply equal to the book's
-//! best move and carrying the depth-0 book `info` signature is what proves the
-//! book was consulted.
+//! best move and carrying the book `info` signature (`nodes 0 nps 0`) is what
+//! proves the book was consulted.
 
 mod common;
 
 use attic_state::{format_sfen, parse_usi_move};
 use common::{
-    StreamHarness, TEST_BOOK_SEED, TempDir, bestmove_lines, drive_with_seed, parse,
-    stage_sample_ybb, write_synthetic_nn_bin, write_ybb,
+    StreamHarness, TEST_BOOK_SEED, TempDir, bestmove_lines, book_final_info_lines, drive_with_seed,
+    parse, stage_sample_ybb, write_synthetic_nn_bin, write_ybb,
 };
 
 const STARTPOS_B: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
@@ -64,7 +64,7 @@ fn default_no_book_emits_no_book_output_and_searches() {
         "no book info output expected with defaults, got:\n{out}"
     );
     assert!(
-        !out.contains("info depth 0 "),
+        book_final_info_lines(&out).is_empty(),
         "no book short-circuit with defaults, got:\n{out}"
     );
     assert!(
@@ -143,11 +143,23 @@ fn run_book_hits(on_the_fly: bool) {
             "book move for {sfen} (on_the_fly={on_the_fly}):\n{out}"
         );
     }
-    // A book hit reports a depth-0 line; a search never does.
-    assert!(
-        out.contains("info depth 0 "),
-        "book hits must emit a depth-0 info line:\n{out}"
+    // The final line of each reply carries the stored depth of the chosen move.
+    let finals = book_final_info_lines(&out);
+    assert_eq!(
+        finals.len(),
+        cases.len(),
+        "one final book info line per go:\n{out}"
     );
+    for ((sfen, want), (line, depth)) in cases.iter().zip(finals.iter().zip([20, 14, 8, 3])) {
+        assert!(
+            line.starts_with(&format!("info depth {depth} multipv 1 ")),
+            "final line for {sfen} must carry depth {depth}: {line:?}"
+        );
+        assert!(
+            line.contains(&format!(" pv {want}")),
+            "final line for {sfen} must lead with {want}: {line:?}"
+        );
+    }
     assert!(
         !out.lines().any(|l| l.starts_with("info depth 1 ")),
         "no normal search should run for in-book positions:\n{out}"
@@ -182,7 +194,7 @@ fn own_book_off_runs_a_real_search() {
         "USI_OwnBook=false must run a real search:\n{out}"
     );
     assert!(
-        !out.contains("info depth 0 "),
+        book_final_info_lines(&out).is_empty(),
         "no book short-circuit when the book is gated off:\n{out}"
     );
 }
@@ -220,7 +232,11 @@ fn wrong_game_ply_misses_then_ignore_book_ply_hits() {
         "7g7f",
         "IgnoreBookPly must let ply-2 hit the ply-1 entry:\n{out}"
     );
-    assert!(out.contains("info depth 0 "), "book hit expected:\n{out}");
+    assert_eq!(
+        book_final_info_lines(&out).len(),
+        1,
+        "book hit expected:\n{out}"
+    );
 }
 
 #[test]
@@ -359,7 +375,13 @@ fn go_infinite_book_hit_holds_bestmove_until_stop() {
         h.output()
     );
     let out = h.quit_join();
-    assert!(out.contains("info depth 0 "), "book depth-0 line:\n{out}");
+    let finals = book_final_info_lines(&out);
+    assert_eq!(finals.len(), 1, "final book info line:\n{out}");
+    assert!(
+        finals[0].starts_with("info depth 20 multipv 1 "),
+        "final book info line carries the stored depth: {:?}",
+        finals[0]
+    );
     let bm = bestmove_lines(&out);
     assert_eq!(bm.len(), 1);
     assert_eq!(bm[0].split_whitespace().next().unwrap(), "7g7f");

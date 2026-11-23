@@ -8,8 +8,8 @@
 mod common;
 
 use common::{
-    TEST_BOOK_SEED, TempDir, bestmove_lines, drive, drive_with_seed, stage_sample_ybb,
-    write_synthetic_nn_bin,
+    TEST_BOOK_SEED, TempDir, bestmove_lines, book_final_info_lines, drive, drive_with_seed,
+    stage_sample_ybb, write_synthetic_nn_bin,
 };
 
 const STARTPOS_B: &str = "lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1";
@@ -129,7 +129,7 @@ fn every_advertised_book_choice_loads_from_book_dir() {
             "`{choice}` was rejected as an unsupported format:\n{out}"
         );
         assert!(
-            out.contains("info depth 0 "),
+            book_final_info_lines(&out).len() == 1,
             "`{choice}` must short-circuit the search with a book hit:\n{out}"
         );
         let bm = bestmove_lines(&out);

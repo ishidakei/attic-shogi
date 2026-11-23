@@ -1827,8 +1827,8 @@ struct SkipStamp {
 }
 
 /// Emit a book hit's output the way the reference does on `search_skipped`: one
-/// `info` line per surviving candidate, then a final depth-0 `info` line and
-/// the `bestmove [ponder]`.
+/// `info` line per surviving candidate, then a final `info` line carrying the
+/// selected move's stored depth, and the `bestmove [ponder]`.
 ///
 /// Under `go ponder` / `go infinite` the final line and `bestmove` are held
 /// until `stop` or a `ponderhit` — the SKIP_SEARCH wait loop.
@@ -1879,7 +1879,8 @@ fn emit_book_hit<W: Write>(
     let mut guard = writer.lock().unwrap_or_else(|e| e.into_inner());
     let mut f = Formatter::new(&mut *guard);
     let _ = f.info(&format!(
-        "depth 0 multipv 1 score {} nodes 0 nps 0 hashfull {hashfull} time {time_ms} pv {pv}",
+        "depth {} multipv 1 score {} nodes 0 nps 0 hashfull {hashfull} time {time_ms} pv {pv}",
+        hit.depth,
         format_score(Value::from(hit.value)),
     ));
     let _ = f.bestmove(&bm);

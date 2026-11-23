@@ -149,6 +149,19 @@ pub fn bestmove_lines(out: &str) -> Vec<&str> {
         .collect()
 }
 
+/// The final `info` line of every reply a book hit answered: the line just
+/// before a `bestmove` that reports `nodes 0 nps 0`, which a search that ran
+/// never does.
+pub fn book_final_info_lines(out: &str) -> Vec<&str> {
+    let lines: Vec<&str> = out.lines().collect();
+    lines
+        .windows(2)
+        .filter(|w| w[1].starts_with("bestmove "))
+        .map(|w| w[0])
+        .filter(|l| l.starts_with("info depth ") && l.contains(" nodes 0 nps 0 "))
+        .collect()
+}
+
 /// One book move for [`write_ybb`]: `(usi, value, depth)`.
 pub type YbbMove<'a> = (&'a str, i16, u16);
 
