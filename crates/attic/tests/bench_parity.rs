@@ -1,4 +1,4 @@
-//! `bench` node counts against the reference engine (YaneuraOu @ 44a7a37b,
+//! `bench` node counts against the reference engine (YaneuraOu @ 56c1c3ee,
 //! built with `cargo xtask build-reference` and run as
 //! `YaneuraOu-by-gcc bench 1024 1 <limit> default <depth|nodes>` against the
 //! same `nn.bin`). Every expected figure below is the reference's output, not
@@ -108,8 +108,8 @@ fn nodes_1m_bench_stops_where_the_reference_does() {
     assert_bench(
         "nodes_1m_bench_stops_where_the_reference_does",
         "bench 1024 1 1000000 default nodes",
-        &[1_000_164, 1_000_774, 1_000_276, 1_000_080],
-        4_001_294,
+        &[1_000_164, 1_000_774, 1_000_602, 1_000_246],
+        4_001_786,
     );
 }
 
@@ -120,8 +120,8 @@ fn nodes_100k_bench_stops_where_the_reference_does() {
     assert_bench(
         "nodes_100k_bench_stops_where_the_reference_does",
         "bench 1024 1 100000 default nodes",
-        &[100_052, 100_097, 100_105, 100_124],
-        400_378,
+        &[100_052, 100_097, 100_020, 100_067],
+        400_236,
     );
 }
 
@@ -146,5 +146,5 @@ fn depth_10_bench_matches_the_reference() {
     ) else {
         return;
     };
-    assert_eq!(run.total, 61_507);
+    assert_eq!(run.total, 71_383);
 }

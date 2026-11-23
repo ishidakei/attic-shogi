@@ -4,7 +4,7 @@
   "hash_mb": 256,
   "fv_scale": 28,
   "bestmove": "6f5g",
-  "score": { "cp": -36 },
-  "nodes": 4138,
-  "pv": ["6f5g", "2d5g+", "N*4d", "5b5c"]
+  "score": { "cp": 30 },
+  "nodes": 5777,
+  "pv": ["6f5g", "2d5g+", "6h5g"]
 }

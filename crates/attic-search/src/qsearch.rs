@@ -47,7 +47,8 @@ use attic_storage::{Bound, TranspositionTable, TtSlot, Value};
 use crate::history::{ContinuationCorrectionHistory, ContinuationHistory, CorrChannel};
 use crate::movepick::MovePicker;
 use crate::root::{
-    EnteringKingConfig, RootKind, RootMove, RootOutcome, declaration_win, generate_root_moves,
+    EnteringKingConfig, EnteringKingRule, RootKind, RootMove, RootOutcome, declaration_win,
+    generate_root_moves,
 };
 use crate::timeman::TimeManagement;
 use crate::update::{
@@ -1279,6 +1280,19 @@ impl<'a> QSearch<'a> {
             }
         }
 
+        // 🌈 A PV node does not cut on the table value, so a stored mate in one
+        // is searched rather than pruned below.
+        let tt_mate = pv_node && tt_move.is_some_and(Move::is_ok) && tt_value == mate_in(ply + 1);
+
+        // The child's mate check cannot confirm a try-rule win, so it is
+        // confirmed here. The point rules make no extra declaration check.
+        if tt_mate
+            && self.entering_king.rule() == EnteringKingRule::Try
+            && declaration_win(pos, &self.entering_king) == tt_move
+        {
+            return mate_in(ply + 1);
+        }
+
         // -----------------------------------------------------------------
         // Step 4. Static evaluation.
         // -----------------------------------------------------------------
@@ -1395,8 +1409,9 @@ impl<'a> QSearch<'a> {
             let capture = !mv.is_drop() && pos.board().get(mv.to_sq()).is_some();
             move_count += 1;
 
-            // Step 6. Pruning, only while not already losing.
-            if !is_loss(best_value) {
+            // Step 6. Pruning, only while not already losing, and never of a
+            // stored mate in one.
+            if !is_loss(best_value) && !(tt_mate && Some(mv) == tt_move) {
                 if !gives_check && Some(mv.to_sq()) != prev_sq && !is_loss(futility_base) {
                     // Prune from the 3rd non-recapture on.
                     if move_count > 2 {
@@ -1415,7 +1430,7 @@ impl<'a> QSearch<'a> {
                     }
                 }
 
-                // This also drops a quiet TT move.
+                // This also drops a quiet TT move that is no stored mate.
                 if !capture {
                     continue;
                 }
@@ -4526,6 +4541,67 @@ mod tests {
         assert_eq!(search_at_ply_4(&net, &table, &p, config), mate_in(5));
         let (found, _data) = probe_root(&mut table, &p);
         assert!(!found);
+    }
+
+    /// A PV quiescence visit at ply 4 whose entry holds `mv` with `value`.
+    fn qsearch_pv_with_tt_move(
+        p: &Position,
+        mv: Move,
+        value: Value,
+        entering_king: EnteringKingConfig,
+    ) -> (Value, u64) {
+        let net = zero_net();
+        let mut table = fresh_tt();
+        prewrite(
+            &mut table,
+            p,
+            value,
+            true,
+            Bound::Lower,
+            DEPTH_QS,
+            move16_of(mv),
+            0,
+        );
+        let mut q = QSearch::new(&net, &table);
+        q.root_us = p.side_to_move();
+        q.pv_node = true;
+        q.read_tt = true;
+        q.set_entering_king(entering_king);
+        let value = q.qsearch(&mut p.clone(), 4, -VALUE_INFINITE, VALUE_INFINITE);
+        (value, q.nodes)
+    }
+
+    /// The quiescence move loop drops every non-capture, but a quiet move
+    /// stored as a mate in one is searched and its mate returned.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn qsearch_pv_searches_a_stored_quiet_mate_in_one() {
+        let p = pos(MATE_IN_1_DROP);
+        let mate = p.mate_1ply().expect("fixture has a 1-ply mate");
+        assert!(mate.is_drop());
+        let config = EnteringKingConfig::default();
+
+        let (value, nodes) = qsearch_pv_with_tt_move(&p, mate, mate_in(1), config);
+        assert_eq!(value, mate_in(5));
+        assert!(nodes >= 1, "the stored move was not searched");
+
+        // Stored with any other value, the drop is pruned as a quiet move.
+        let (value, _) = qsearch_pv_with_tt_move(&p, mate, 0, config);
+        assert!(!is_win(value), "a non-mate entry kept its quiet move");
+    }
+
+    /// Under the try rule a stored king move that still reaches the goal
+    /// returns the mate before any move is made.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn qsearch_pv_confirms_a_stored_try_win_before_the_move_loop() {
+        let p = pos(TRY_DECLARES);
+        let config = EnteringKingConfig::new(EnteringKingRule::Try, &p);
+        let try_move = declaration_win(&p, &config).expect("fixture declares a try");
+
+        let (value, nodes) = qsearch_pv_with_tt_move(&p, try_move, mate_in(1), config);
+        assert_eq!(value, mate_in(5));
+        assert_eq!(nodes, 0);
     }
 
     // -----------------------------------------------------------------
