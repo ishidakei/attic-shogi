@@ -138,7 +138,8 @@ fn partial_insertion_sort(a: &mut [ExtMove], limit: i32) {
     }
 }
 
-/// `score<CAPTURES>` for a single capture.
+/// `score<CAPTURES>` for a single capture, with or without
+/// `GenerateAllLegalMoves`: the reference scores `CAPTURES_ALL` the same way.
 ///
 /// The moving-piece index is the reference's `moved_piece(m)`, which aliases
 /// `moved_piece_after()` — the **after-promotion** piece. The pre-move piece
@@ -1116,6 +1117,33 @@ mod tests {
             on.contains(&"5d5b".to_string()),
             "all-mode must yield the lance capture non-promotion: {on:?}",
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn generate_all_legal_moves_captures_are_ordered_by_victim_value() {
+        // The pawn-takes-pawn is generated first, so only the MVV scoring puts
+        // the rook-takes-bishop captures ahead of it.
+        let p = pos("k8/8b/9/4p4/4P3R/9/9/9/K8 b - 1");
+        let h = init_histories();
+        assert!(!p.in_check());
+        let mut generated = Vec::new();
+        p.generate_captures(true, &mut generated);
+        assert_eq!(format_usi_move(generated[0].mv), "5e5d");
+
+        let expected = vec!["1e1b+".to_string(), "1e1b".to_string(), "5e5d".to_string()];
+        let main = collect_usi(
+            MovePicker::new_main_search(&p, None, 4, 1, SENTINEL_PLANES, true),
+            &p,
+            &h,
+        );
+        assert_eq!(main[..3], expected[..], "main picker order: {main:?}");
+        let qsearch = collect_usi(
+            MovePicker::new_qsearch(&p, None, SENTINEL_PLANES, true),
+            &p,
+            &h,
+        );
+        assert_eq!(qsearch, expected);
     }
 
     #[test]
