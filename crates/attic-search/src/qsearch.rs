@@ -167,6 +167,33 @@ fn interpolate(x: f64, x0: f64, x1: f64, y0: f64, y1: f64) -> f64 {
     y0 + (y1 - y0) * (x - x0) / (x1 - x0)
 }
 
+/// The two terms of the thinking-time budget that read the root lines: the
+/// best move's share of the nodes, scaled to 100000, and the falling-eval
+/// factor, which is above 1 when the score is dropping against the previous
+/// iterations and below when rising.
+///
+/// Both read the best line, `root_moves[0]`, rather than the last line a
+/// MultiPV iteration searched. Its effort is set against `first_line_nodes`,
+/// the worker's node count when the iteration's first line finished, because
+/// the later lines' nodes are never spent on the best move and would only
+/// dilute its share. With a single line both reduce to the last line's value
+/// and the iteration's node count.
+fn line_budget_terms(
+    root_moves: &[RootMove],
+    first_line_nodes: u64,
+    best_previous_average_score: Value,
+    previous_iter_value: Value,
+) -> (u64, f64) {
+    let best = &root_moves[0];
+    let nodes_effort = best.effort * 100_000 / first_line_nodes.max(1);
+    let falling_eval = ((11.48
+        + 2.30 * (best_previous_average_score - best.score) as f64
+        + 1.1 * (previous_iter_value - best.score) as f64)
+        / 100.0)
+        .clamp(0.576, 1.728);
+    (nodes_effort, falling_eval)
+}
+
 /// The weights, out of 32, a root move's score averages give its new score:
 /// the more of the move's effort this search took, the heavier, within
 /// `12..=24`; the mean-squared average caps it at 16. `n` is the nodes this
@@ -1678,6 +1705,9 @@ impl QSearch<'_> {
         // Plies a fail high at the root keeps off the following iterations'
         // first line, given back two per iteration.
         let mut fail_high_recovery: i32 = 0;
+        // This worker's own node count, not the aggregate, when the latest
+        // iteration's first line finished: see `line_budget_terms`.
+        let mut total_effort: u64 = 0;
 
         // Main-thread persistent inputs for the time-management block, carried
         // in via the time control.
@@ -1862,6 +1892,10 @@ impl QSearch<'_> {
                     uci_pv_sent = pv_idx + 1 == multi_pv;
                 }
 
+                if pv_idx == 0 {
+                    total_effort = self.nodes;
+                }
+
                 if self.stopped {
                     break;
                 }
@@ -1961,26 +1995,18 @@ impl QSearch<'_> {
                 // A pondering search always deepens and, over budget, arms
                 // `stopOnPonderhit` instead of fixing the end time.
                 let pondering = self.is_pondering();
-                // Read before the mutable borrow. `nodesEffort` divides by this
-                // worker's **own** node counter, not the aggregate.
-                let own_nodes = self.nodes.max(1);
-                let effort = root_moves[0].effort;
                 let single_root_move = root_moves.len() == 1;
                 let tc = self.control.time.as_ref().expect("time control present");
                 let optimum = tc.tm.optimum() as f64;
                 let maximum = tc.tm.maximum() as f64;
                 let elapsed = tc.tm.elapsed_from(Instant::now());
 
-                // The best root move's share of the nodes, scaled to 100000.
-                let nodes_effort = effort * 100_000 / own_nodes;
-
-                // Above 1 when the score is dropping against previous iterations,
-                // below when rising.
-                let falling_eval = ((11.48
-                    + 2.30 * (best_previous_average_score - iter_best_value) as f64
-                    + 1.1 * (iter_value[iter_idx] - iter_best_value) as f64)
-                    / 100.0)
-                    .clamp(0.576, 1.728);
+                let (nodes_effort, falling_eval) = line_budget_terms(
+                    &root_moves,
+                    total_effort,
+                    best_previous_average_score,
+                    iter_value[iter_idx],
+                );
 
                 // Shorter when the best move is stable across iterations.
                 time_reduction = interpolate(
@@ -2041,8 +2067,9 @@ impl QSearch<'_> {
                 }
             }
 
-            // iterValue ring update.
-            iter_value[iter_idx] = iter_best_value;
+            // iterValue ring update, with the best line's score for the same
+            // reason `line_budget_terms` reads it.
+            iter_value[iter_idx] = root_moves[0].score;
             iter_idx = (iter_idx + 1) & 3;
         }
 
@@ -5078,6 +5105,68 @@ mod tests {
         // A falling line, as for the best-move effort.
         assert_eq!(interpolate(75800.0, 75800.0, 104510.0, 0.969, 0.5), 0.969);
         assert!((interpolate(104510.0, 75800.0, 104510.0, 0.969, 0.5) - 0.5).abs() < 1e-12);
+    }
+
+    /// Root lines in order, each `(score, effort)`.
+    fn budget_lines(lines: &[(Value, u64)]) -> Vec<RootMove> {
+        lines
+            .iter()
+            .map(|&(score, effort)| {
+                let mut rm = RootMove::new(Move::none());
+                rm.score = score;
+                rm.effort = effort;
+                rm
+            })
+            .collect()
+    }
+
+    #[test]
+    fn multipv_nodes_effort_is_a_share_of_the_first_line_nodes() {
+        // Three lines: 80000 nodes up to the end of the first, 200000 in all.
+        let lines = budget_lines(&[(100, 78_000), (40, 70_000), (-30, 52_000)]);
+        let (nodes_effort, _) = line_budget_terms(&lines, 80_000, 120, 125);
+        assert_eq!(nodes_effort, 97_500);
+        // Against the whole iteration the share would read 39000, below the
+        // point where a concentrated effort starts to shorten the budget.
+        let (whole_iteration, _) = line_budget_terms(&lines, 200_000, 120, 125);
+        assert_eq!(whole_iteration, 39_000);
+    }
+
+    #[test]
+    fn multipv_falling_eval_reads_the_best_line_not_the_last() {
+        // The last line searched scored -30; the best line holds 100.
+        let lines = budget_lines(&[(100, 78_000), (40, 70_000), (-30, 52_000)]);
+        let (_, falling_eval) = line_budget_terms(&lines, 80_000, 120, 125);
+        // (11.48 + 2.30 * 20 + 1.1 * 25) / 100.
+        assert!((falling_eval - 0.8498).abs() < 1e-12, "{falling_eval}");
+        // The last line's -30 would read as a collapse and hit the upper clamp.
+        let as_if_last = budget_lines(&[(-30, 60_000)]);
+        assert_eq!(line_budget_terms(&as_if_last, 80_000, 120, 125).1, 1.728);
+    }
+
+    #[test]
+    fn single_line_budget_terms_are_the_line_value_over_the_iteration_nodes() {
+        // With one line, the line's value is the best line's score and the first
+        // line's node count is the iteration's.
+        let (best_value, effort, nodes) = (100, 70_000u64, 90_000u64);
+        let (best_previous_average_score, previous_iter_value) = (120, 125);
+        let lines = budget_lines(&[(best_value, effort)]);
+        let (nodes_effort, falling_eval) = line_budget_terms(
+            &lines,
+            nodes,
+            best_previous_average_score,
+            previous_iter_value,
+        );
+
+        assert_eq!(nodes_effort, effort * 100_000 / nodes.max(1));
+        assert_eq!(nodes_effort, 77_777);
+        let expected_falling_eval = ((11.48
+            + 2.30 * (best_previous_average_score - best_value) as f64
+            + 1.1 * (previous_iter_value - best_value) as f64)
+            / 100.0)
+            .clamp(0.576, 1.728);
+        assert_eq!(falling_eval, expected_falling_eval);
+        assert!((falling_eval - 0.8498).abs() < 1e-12, "{falling_eval}");
     }
 
     /// Every node of a root search is made under one of the root moves, so
