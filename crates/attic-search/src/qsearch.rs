@@ -2911,8 +2911,10 @@ impl QSearch<'_> {
                 && beta >= -2000
             {
                 // Odd threads reduce one ply less; a large margin over beta
-                // reduces more; mate-seeking mode halves the reduction.
-                let mut r = 7 + depth / 3 + ((static_eval - beta) / 256).max(0)
+                // reduces more, by at most `ply / 2` so the margin cannot
+                // over-reduce near the root; mate-seeking mode halves the
+                // reduction.
+                let mut r = 7 + depth / 3 + ((static_eval - beta) / 256).clamp(0, ply / 2)
                     - (self.thread_idx() & 1) as i32;
                 r -= self.seek_mate as i32 * r / 2;
                 self.stack[s].current_move = Move::null();
@@ -5231,9 +5233,9 @@ mod tests {
             .expect("a quiet king move exists");
 
         // With `eval == -1` at depth 1 the null move is tried at `beta <= -353`,
-        // and with `R = 7 + (-1 + 353) / 256 = 8` the child is a qsearch, so no
-        // `do_move` happens. The child, below a null move, also stands pat at
-        // -1, so the null value is 1.
+        // and at the root the margin term is capped at `ply / 2 = 0`, so with
+        // `R = 7` the child is a qsearch and no `do_move` happens. The child,
+        // below a null move, also stands pat at -1, so the null value is 1.
         let mut tt = fresh_tt();
         prewrite(
             &mut tt,
