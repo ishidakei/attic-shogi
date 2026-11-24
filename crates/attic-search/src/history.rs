@@ -87,6 +87,43 @@ fn captured_code(p: Piece) -> usize {
     1 + p.kind.index() + if p.promoted { 8 } else { 0 }
 }
 
+/// Offset of the `[pc][to]` entry within one `[pc][to]` plane.
+fn piece_to_offset(pc: Piece, to: Square) -> usize {
+    piece_code(pc) * SQ_NB + to.index() as usize
+}
+
+/// Number of entries in a table indexed by the low 16 bits of a packed move.
+const MOVE_PLANE_LEN: usize = 1 << 16;
+
+/// One `[move.raw16]` plane of a move-indexed table — `mainHistory[us]` or
+/// `lowPlyHistory[ply]` — resolved once so that a scoring loop indexes it
+/// directly.
+#[derive(Clone, Copy)]
+pub struct MovePlane<'a>(&'a [i16; MOVE_PLANE_LEN]);
+
+impl MovePlane<'_> {
+    /// The entry for `m`.
+    pub fn get(self, m: Move) -> i32 {
+        self.0[(m.to_bits() & 0xFFFF) as usize] as i32
+    }
+}
+
+/// Number of entries in one `[pc][to]` plane.
+const PIECE_TO_PLANE_LEN: usize = PIECE_NB * SQ_NB;
+
+/// One `[pc][to]` plane of a node-shared table — a continuation-history plane
+/// or a pawn-history slot — resolved once so that a scoring loop indexes it
+/// directly.
+#[derive(Clone, Copy)]
+pub struct PieceToPlane<'a>(&'a [AtomicI16; PIECE_TO_PLANE_LEN]);
+
+impl PieceToPlane<'_> {
+    /// The entry for piece `pc` moving to `to`.
+    pub fn get(self, pc: Piece, to: Square) -> i32 {
+        self.0[piece_to_offset(pc, to)].load(Ordering::Relaxed) as i32
+    }
+}
+
 /// `captureHistory[pc][to][type_of(captured)]` — the capture-ordering bonus for
 /// "moved piece `pc` captures a `captured`-type piece on square `to`".
 pub struct CapturePieceToHistory {
@@ -144,7 +181,7 @@ pub struct ButterflyHistory {
 impl Default for ButterflyHistory {
     fn default() -> Self {
         Self {
-            table: zeroed_slice(Color::COUNT * (1 << 16)),
+            table: zeroed_slice(Color::COUNT * MOVE_PLANE_LEN),
         }
     }
 }
@@ -168,12 +205,17 @@ impl ButterflyHistory {
     }
 
     fn index(us: Color, m: Move) -> usize {
-        us.index() * (1 << 16) + (m.to_bits() & 0xFFFF) as usize
+        us.index() * MOVE_PLANE_LEN + (m.to_bits() & 0xFFFF) as usize
     }
 
     /// The quiet-move history for `m` played by `us`.
     pub fn get(&self, us: Color, m: Move) -> i32 {
         self.table[Self::index(us, m)] as i32
+    }
+
+    /// The `mainHistory[us]` plane.
+    pub fn side(&self, us: Color) -> MovePlane<'_> {
+        MovePlane(&self.table.as_chunks::<MOVE_PLANE_LEN>().0[us.index()])
     }
 
     /// Gravity-update `mainHistory[us][move.raw16]`.
@@ -208,7 +250,7 @@ impl PieceToHistory {
     }
 
     fn index(pc: Piece, to: Square) -> usize {
-        piece_code(pc) * SQ_NB + to.index() as usize
+        piece_to_offset(pc, to)
     }
 
     /// The continuation bonus for piece `pc` moving to `to`.
@@ -233,7 +275,7 @@ pub struct LowPlyHistory {
 impl Default for LowPlyHistory {
     fn default() -> Self {
         Self {
-            table: zeroed_slice(LOW_PLY_HISTORY_SIZE * (1 << 16)),
+            table: zeroed_slice(LOW_PLY_HISTORY_SIZE * MOVE_PLANE_LEN),
         }
     }
 }
@@ -250,13 +292,22 @@ impl LowPlyHistory {
     }
 
     fn index(ply: usize, m: Move) -> usize {
-        ply * (1 << 16) + (m.to_bits() & 0xFFFF) as usize
+        ply * MOVE_PLANE_LEN + (m.to_bits() & 0xFFFF) as usize
     }
 
     /// The near-root bonus for `m` at `ply`. The caller guarantees
     /// `ply < LOW_PLY_HISTORY_SIZE`.
     pub fn get(&self, ply: usize, m: Move) -> i32 {
         self.table[Self::index(ply, m)] as i32
+    }
+
+    /// The `lowPlyHistory[ply]` plane, or `None` at `ply >= LOW_PLY_HISTORY_SIZE`.
+    pub fn plane(&self, ply: usize) -> Option<MovePlane<'_>> {
+        self.table
+            .as_chunks::<MOVE_PLANE_LEN>()
+            .0
+            .get(ply)
+            .map(MovePlane)
     }
 
     /// Gravity-update `lowPlyHistory[ply][move.raw16]`. The caller guarantees
@@ -312,7 +363,7 @@ fn apply_gravity_atomic(cell: &AtomicI16, bonus: i32, d: i32) {
 /// side to move.
 const CORR_SLOT_LEN: usize = Color::COUNT * CorrChannel::COUNT;
 /// Number of `i16` entries a pawn-history slot holds (`[pc][to]`).
-const PAWN_SLOT_LEN: usize = PIECE_NB * SQ_NB;
+const PAWN_SLOT_LEN: usize = PIECE_TO_PLANE_LEN;
 
 /// The reference `SharedHistories`: the unified correction history, the pawn
 /// history and the continuation history, **shared between the worker threads
@@ -427,13 +478,19 @@ impl SharedHistories {
     /// `plane = pawn_key & pawn_mask`, then `[pc][to]`.
     fn pawn_index(&self, pawn_key: u64, pc: Piece, to: Square) -> usize {
         let plane = (pawn_key as usize) & self.pawn_mask;
-        (plane * PIECE_NB + piece_code(pc)) * SQ_NB + to.index() as usize
+        plane * PAWN_SLOT_LEN + piece_to_offset(pc, to)
     }
 
     /// The pawn-structure bonus for piece `pc` moving to `to` in the plane keyed
     /// by `pawn_key`.
     pub fn pawn_get(&self, pawn_key: u64, pc: Piece, to: Square) -> i32 {
         self.pawn[self.pawn_index(pawn_key, pc, to)].load(Ordering::Relaxed) as i32
+    }
+
+    /// The `[pc][to]` plane keyed by `pawn_key` (`pawn_entry(pos)`).
+    pub fn pawn_plane(&self, pawn_key: u64) -> PieceToPlane<'_> {
+        let plane = (pawn_key as usize) & self.pawn_mask;
+        PieceToPlane(&self.pawn.as_chunks::<PAWN_SLOT_LEN>().0[plane])
     }
 
     /// Gravity-update the `[pc][to]` entry in the plane keyed by `pawn_key`.
@@ -525,7 +582,7 @@ impl Default for ContinuationHistory {
 
 impl ContinuationHistory {
     /// Entries per plane.
-    const PLANE_LEN: usize = PIECE_NB * SQ_NB;
+    const PLANE_LEN: usize = PIECE_TO_PLANE_LEN;
     /// Plane count, over `[in_check][capture][pc][to]`.
     const NUM_PLANES: usize = 2 * 2 * PIECE_NB * SQ_NB;
 
@@ -549,12 +606,17 @@ impl ContinuationHistory {
     }
 
     fn cell(plane: usize, pc: Piece, to: Square) -> usize {
-        plane * Self::PLANE_LEN + piece_code(pc) * SQ_NB + to.index() as usize
+        plane * Self::PLANE_LEN + piece_to_offset(pc, to)
     }
 
     /// The inner `[pc][to]` value in `plane`.
     pub fn get_at(&self, plane: usize, pc: Piece, to: Square) -> i32 {
         self.table[Self::cell(plane, pc, to)].load(Ordering::Relaxed) as i32
+    }
+
+    /// The `[pc][to]` plane at flat index `plane`.
+    pub fn plane(&self, plane: usize) -> PieceToPlane<'_> {
+        PieceToPlane(&self.table.as_chunks::<{ Self::PLANE_LEN }>().0[plane])
     }
 
     /// Gravity-update the inner `[pc][to]` entry in `plane`.

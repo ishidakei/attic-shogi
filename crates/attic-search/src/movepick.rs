@@ -62,7 +62,7 @@ use std::cell::RefCell;
 
 use attic_state::{CheckSquares, ExtMove, Move, Position, piece_value};
 
-use crate::history::LOW_PLY_HISTORY_SIZE;
+use crate::history::{MovePlane, PieceToPlane};
 use crate::update::WorkerHistories;
 
 /// `goodQuietThreshold`: quiets scoring above this go to `GOOD_QUIET`, the rest
@@ -155,9 +155,26 @@ fn score_capture(pos: &Position, m: Move, hist: &WorkerHistories) -> i32 {
     hist.capture.get(moved, to, victim) + 7 * piece_value(victim)
 }
 
+/// The history planes `score<EVASIONS>` reads for a non-capturing evasion,
+/// resolved once per stage entry rather than once per move.
+#[derive(Clone, Copy)]
+struct EvasionTables<'a> {
+    main: MovePlane<'a>,
+    cont0: PieceToPlane<'a>,
+}
+
+impl<'a> EvasionTables<'a> {
+    fn new(pos: &Position, hist: &'a WorkerHistories, cont_plane0: usize) -> Self {
+        EvasionTables {
+            main: hist.main.side(pos.side_to_move()),
+            cont0: hist.continuation().plane(cont_plane0),
+        }
+    }
+}
+
 /// `score<EVASIONS>` for a single evasion. A capturing evasion is offset by
 /// `1 << 28`, so that it outranks every quiet one.
-fn score_evasion(pos: &Position, m: Move, hist: &WorkerHistories, cont_plane0: usize) -> i32 {
+fn score_evasion(pos: &Position, m: Move, t: EvasionTables<'_>) -> i32 {
     let to = m.to_sq();
     let victim = if m.is_drop() {
         None
@@ -167,36 +184,53 @@ fn score_evasion(pos: &Position, m: Move, hist: &WorkerHistories, cont_plane0: u
     if let Some(v) = victim {
         piece_value(v) + (1 << 28)
     } else {
-        let us = pos.side_to_move();
         // Indexed by the after-promotion piece, as in [`score_capture`]; for a
         // drop that is the dropped piece in the side-to-move's colour.
         let pc = m.moved_piece_after();
-        hist.main.get(us, m) + hist.continuation().get_at(cont_plane0, pc, to)
+        t.main.get(m) + t.cont0.get(pc, to)
     }
 }
 
-/// `score<QUIETS>` for a single quiet move. It reads continuation planes
-/// `[0][1][2][3][5]`, index `4` being deliberately absent. The Stockfish
-/// "threat by a lesser piece" term is `#if STOCKFISH`-only, so it is omitted.
+/// The history planes `score<QUIETS>` reads, resolved once per stage entry
+/// rather than once per move: continuation planes `[0][1][2][3][5]`, index `4`
+/// being deliberately absent, and the `lowPlyHistory` plane only near the
+/// root.
+struct QuietTables<'a> {
+    main: MovePlane<'a>,
+    pawn: PieceToPlane<'a>,
+    cont: [PieceToPlane<'a>; 5],
+    low_ply: Option<MovePlane<'a>>,
+}
+
+impl<'a> QuietTables<'a> {
+    fn new(pos: &Position, ply: i32, hist: &'a WorkerHistories, cont_planes: [usize; 6]) -> Self {
+        let cont = hist.continuation();
+        QuietTables {
+            main: hist.main.side(pos.side_to_move()),
+            pawn: hist.shared.pawn_plane(pos.pawn_key()),
+            cont: [0, 1, 2, 3, 5].map(|i| cont.plane(cont_planes[i])),
+            low_ply: hist.low_ply.plane(ply as usize),
+        }
+    }
+}
+
+/// `score<QUIETS>` for a single quiet move. The Stockfish "threat by a lesser
+/// piece" term is `#if STOCKFISH`-only, so it is omitted.
 fn score_quiet(
     pos: &Position,
     m: Move,
     ply: i32,
-    hist: &WorkerHistories,
-    cont_planes: [usize; 6],
+    t: &QuietTables<'_>,
     check_squares: &CheckSquares,
 ) -> i32 {
-    let us = pos.side_to_move();
     let to = m.to_sq();
     let pc = m.moved_piece_after();
 
-    let mut value = 2 * hist.main.get(us, m);
-    value += 2 * hist.shared.pawn_get(pos.pawn_key(), pc, to);
-    value += hist.continuation().get_at(cont_planes[0], pc, to);
-    value += hist.continuation().get_at(cont_planes[1], pc, to);
-    value += hist.continuation().get_at(cont_planes[2], pc, to);
-    value += hist.continuation().get_at(cont_planes[3], pc, to);
-    value += hist.continuation().get_at(cont_planes[5], pc, to);
+    let mut value = 2 * t.main.get(m);
+    value += 2 * t.pawn.get(pc, to);
+    for plane in t.cont {
+        value += plane.get(pc, to);
+    }
 
     // A bonus for a direct check that is not a losing sacrifice, read off the
     // `checkSquares` snapshot taken once at `QUIET_INIT` entry.
@@ -205,8 +239,8 @@ fn score_quiet(
     }
 
     // `lowPlyHistory` near the root.
-    if (ply as usize) < LOW_PLY_HISTORY_SIZE {
-        value += 8 * hist.low_ply.get(ply as usize, m) / (1 + ply);
+    if let Some(low_ply) = t.low_ply {
+        value += 8 * low_ply.get(m) / (1 + ply);
     }
 
     value
@@ -455,14 +489,16 @@ impl MovePicker {
 
     /// Score the captures / evasions region in place against the *live* `hist`.
     fn score_captures_in_place(&mut self, pos: &Position, hist: &WorkerHistories) {
-        let evasion = self.kind == Kind::Evasion;
-        for i in 0..self.end_captures {
-            let m = self.scratch.buf[i].mv;
-            self.scratch.buf[i].value = if evasion {
-                score_evasion(pos, m, hist, self.cont_planes[0])
-            } else {
-                score_capture(pos, m, hist)
-            };
+        let captures = &mut self.scratch.buf[0..self.end_captures];
+        if self.kind == Kind::Evasion {
+            let tables = EvasionTables::new(pos, hist, self.cont_planes[0]);
+            for e in captures {
+                e.value = score_evasion(pos, e.mv, tables);
+            }
+        } else {
+            for e in captures {
+                e.value = score_capture(pos, e.mv, hist);
+            }
         }
     }
 
@@ -471,10 +507,9 @@ impl MovePicker {
         // The board is fixed for the picker's lifetime, so one snapshot serves
         // the whole quiet region.
         let check_squares = pos.check_squares();
-        for i in self.end_captures..self.end_generated {
-            let m = self.scratch.buf[i].mv;
-            self.scratch.buf[i].value =
-                score_quiet(pos, m, self.ply, hist, self.cont_planes, &check_squares);
+        let tables = QuietTables::new(pos, self.ply, hist, self.cont_planes);
+        for e in &mut self.scratch.buf[self.end_captures..self.end_generated] {
+            e.value = score_quiet(pos, e.mv, self.ply, &tables, &check_squares);
         }
     }
 
@@ -667,8 +702,8 @@ mod twin {
     use attic_state::{Move, Position};
 
     use super::{
-        ExtMove, GOOD_QUIET_THRESHOLD, Kind, partial_insertion_sort, score_capture, score_evasion,
-        score_quiet,
+        EvasionTables, ExtMove, GOOD_QUIET_THRESHOLD, Kind, QuietTables, partial_insertion_sort,
+        score_capture, score_evasion, score_quiet,
     };
     use crate::update::WorkerHistories;
 
@@ -850,10 +885,11 @@ mod twin {
 
         fn init_captures(&mut self, pos: &Position, hist: &WorkerHistories) {
             self.scratch.scored.clear();
+            let evasion_tables = EvasionTables::new(pos, hist, self.cont_planes[0]);
             for i in 0..self.scratch.raw_captures.len() {
                 let m = self.scratch.raw_captures[i];
                 let value = if self.kind == Kind::Evasion {
-                    score_evasion(pos, m, hist, self.cont_planes[0])
+                    score_evasion(pos, m, evasion_tables)
                 } else {
                     score_capture(pos, m, hist)
                 };
@@ -892,9 +928,10 @@ mod twin {
         fn init_quiets(&mut self, pos: &Position, hist: &WorkerHistories) {
             self.scratch.scored.clear();
             let check_squares = pos.check_squares();
+            let tables = QuietTables::new(pos, self.ply, hist, self.cont_planes);
             for i in 0..self.scratch.raw_quiets.len() {
                 let m = self.scratch.raw_quiets[i];
-                let value = score_quiet(pos, m, self.ply, hist, self.cont_planes, &check_squares);
+                let value = score_quiet(pos, m, self.ply, &tables, &check_squares);
                 self.scratch.scored.push(ExtMove { mv: m, value });
             }
             partial_insertion_sort(&mut self.scratch.scored, -3560 * self.depth);
